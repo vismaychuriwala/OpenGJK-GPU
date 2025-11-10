@@ -42,20 +42,22 @@ OpenGJK Performance Testing
 Polytopes: 1000
 Vertices per polytope: 1000
 
-GPU time: 4.8420 ms
+GPU time: 4.4241 ms
 GPU distance (first pair): 5.655237
 GPU distance (last pair): 6.642425
 GPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
 
-CPU time: 10.9885 ms
+CPU time: 11.0449 ms
 CPU distance (first pair): 5.655237
 CPU distance (last pair): 6.642425
 CPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
 
-Speedup: 2.27x
+Speedup: 2.50x
+
+Validation PASSED: First 100 results match within tolerance (1e-05)
 ```
 
-Both implementations produce identical results, validating correctness of the GPU port.
+The validation automatically compares the first 100 distance computations between GPU and CPU implementations, confirming correctness of the GPU port.
 
 * **Tested On:**
   * OS: Windows 11

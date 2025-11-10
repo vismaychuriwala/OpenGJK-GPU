@@ -139,6 +139,7 @@ main() {
   gkPolytope* polytopes2 = (gkPolytope*)malloc(NUM_POLYTOPES * sizeof(gkPolytope));
   gkSimplex* simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
   gkFloat* distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+  gkFloat* gpu_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
 
   /* Initialize polytope pairs with unique data */
   for (int i = 0; i < NUM_POLYTOPES; i++) {
@@ -152,12 +153,12 @@ main() {
   }
 
   /* Invoke the GJK procedure on GPU for all pairs */
-  GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, simplices, distances);
+  GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, simplices, gpu_distances);
 
   /* Print GPU results */
   printf("GPU time: %.4f ms\n", GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation());
-  printf("GPU distance (first pair): %.6f\n", distances[0]);
-  printf("GPU distance (last pair): %.6f\n", distances[NUM_POLYTOPES - 1]);
+  printf("GPU distance (first pair): %.6f\n", gpu_distances[0]);
+  printf("GPU distance (last pair): %.6f\n", gpu_distances[NUM_POLYTOPES - 1]);
   printf("GPU witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n\n",
          simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
          simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
@@ -181,7 +182,28 @@ main() {
   /* Print speedup */
   float speedup = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation() /
                   GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-  printf("Speedup: %.2fx\n", speedup);
+  printf("Speedup: %.2fx\n\n", speedup);
+
+  /* Validate results - compare first 100 distances */
+  int test_count = (NUM_POLYTOPES < 100) ? NUM_POLYTOPES : 100;
+  bool all_passed = true;
+  const gkFloat tolerance = 1e-5f;
+
+  for (int i = 0; i < test_count; i++) {
+    gkFloat diff = fabs(gpu_distances[i] - distances[i]);
+    if (diff > tolerance) {
+      all_passed = false;
+      printf("Mismatch at index %d: GPU=%.6f, CPU=%.6f, diff=%.6e\n",
+             i, gpu_distances[i], distances[i], diff);
+    }
+  }
+
+  if (all_passed) {
+    printf("\033[32mValidation PASSED\033[0m: First %d results match within tolerance (%.0e)\n",
+           test_count, tolerance);
+  } else {
+    printf("\033[31mValidation FAILED\033[0m: Some results do not match\n");
+  }
 
   /* Free all allocated memory */
   for (int i = 0; i < NUM_POLYTOPES; i++) {
@@ -194,6 +216,7 @@ main() {
   free(polytopes2);
   free(simplices);
   free(distances);
+  free(gpu_distances);
 
   printf("\nTesting complete!\n");
   return (0);
