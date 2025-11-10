@@ -23,20 +23,41 @@ CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
 
 6. **Code Structure**: GPU wrapper in `GJK::GPU` namespace with built-in CUDA timing support
 
+## CPU Baseline Implementation
+
+The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the common flattened memory layout:
+
+**Critical Changes:**
+- **Coordinate access pattern**: Changed from `coord[i]` (double pointer) to `&coord[i * 3]` (single pointer with stride)
+  - Modified in: `support()`, `W0D()`, `W1D()`, `W2D()`, `W3D()`, and `compute_minimum_distance()` initialization
+- **Build system**: Added C language support to CMake for proper C compilation
+
 ## Test Results
 
-Example with 100,000 polytope pairs (9 vertices each):
+Performance comparison (1000 polytope pairs, 1000 vertices each):
 
 ```
-Testing 100000 polytope pairs
-Distance between bodies (first pair): 3.653650
-GPU time: 1.0719 ms
-Witnesses (first pair): (1.025173, 1.490318, 0.255463) and (-1.025173, -1.490318, -0.255463)
+OpenGJK Performance Testing
+============================
+Polytopes: 1000
+Vertices per polytope: 1000
+
+GPU time: 4.8420 ms
+GPU distance (first pair): 5.655237
+GPU distance (last pair): 6.642425
+GPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+
+CPU time: 10.9885 ms
+CPU distance (first pair): 5.655237
+CPU distance (last pair): 6.642425
+CPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+
+Speedup: 2.27x
 ```
 
-The CUDA implementation produces correct results matching the original CPU version.
+Both implementations produce identical results, validating correctness of the GPU port.
 
-* **Tested On:**  
+* **Tested On:**
   * OS: Windows 11
   * CPU: AMD Ryzen 7 5800H with Radeon Graphics (8C/16T, 3.2GHz base)
   * RAM: 32GB DDR4

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(OpenGJK-GPU_test LANGUAGES CUDA CXX)
+project(OpenGJK-GPU_test LANGUAGES C CUDA CXX)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -31,11 +31,13 @@ set(headers
     "examples/testing_helpers.hpp"
     "examples/common/timer.h"
     "examples/gpu/example.h"
+    "examples/cpu/example.h"
     )
 
 set(sources
     "examples/main.cpp"
     "examples/gpu/example.cu"
+    "examples/cpu/example.cpp"
     )
 
 list(SORT headers)

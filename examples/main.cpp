@@ -28,15 +28,15 @@
 #include <math.h>
 #include <cuda_runtime.h>
 
-#include "GJK/gpu/openGJK.h"
 #include "examples/gpu/example.h"
+#include "examples/cpu/example.h"
 
 #define fscanf_s fscanf
 #define M_PI 3.14159265358979323846  /* pi */
 
 // Test configuration
-#define NUM_POLYTOPES 10000
-#define VERTS_PER_POLYTOPE 10000
+#define NUM_POLYTOPES 1000
+#define VERTS_PER_POLYTOPE 1000
 
 /// @brief Function for reading input file with body's coordinates (flattened array version).
 int
@@ -110,8 +110,8 @@ gkFloat* generatePolytope(int numVerts, gkFloat offsetX, gkFloat offsetY, gkFloa
  */
 int
 main() {
-  printf("OpenGJK GPU Performance Testing\n");
-  printf("================================\n");
+  printf("OpenGJK Performance Testing\n");
+  printf("============================\n");
   printf("Polytopes: %d\n", NUM_POLYTOPES);
   printf("Vertices per polytope: %d\n\n", VERTS_PER_POLYTOPE);
 
@@ -154,13 +154,34 @@ main() {
   /* Invoke the GJK procedure on GPU for all pairs */
   GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, simplices, distances);
 
-  /* Print results */
+  /* Print GPU results */
   printf("GPU time: %.4f ms\n", GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation());
-  printf("Distance (first pair): %.6f\n", distances[0]);
-  printf("Distance (last pair): %.6f\n", distances[NUM_POLYTOPES - 1]);
-  printf("Witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n",
+  printf("GPU distance (first pair): %.6f\n", distances[0]);
+  printf("GPU distance (last pair): %.6f\n", distances[NUM_POLYTOPES - 1]);
+  printf("GPU witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n\n",
          simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
          simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
+
+  /* Reset simplices for CPU run */
+  for (int i = 0; i < NUM_POLYTOPES; i++) {
+    simplices[i].nvrtx = 0;
+  }
+
+  /* Invoke the GJK procedure on CPU for all pairs */
+  GJK::CPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, simplices, distances);
+
+  /* Print CPU results */
+  printf("CPU time: %.4f ms\n", GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation());
+  printf("CPU distance (first pair): %.6f\n", distances[0]);
+  printf("CPU distance (last pair): %.6f\n", distances[NUM_POLYTOPES - 1]);
+  printf("CPU witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n\n",
+         simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
+         simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
+
+  /* Print speedup */
+  float speedup = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation() /
+                  GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+  printf("Speedup: %.2fx\n", speedup);
 
   /* Free all allocated memory */
   for (int i = 0; i < NUM_POLYTOPES; i++) {
