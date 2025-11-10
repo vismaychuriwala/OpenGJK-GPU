@@ -32,7 +32,7 @@
 #include "examples/gpu/example.h"
 
 #define fscanf_s fscanf
-#define NUM_POLYTOPE_PAIRS 10000  // Number of polytope pairs to test
+#define NUM_POLYTOPE_PAIRS 100000  // Number of polytope pairs to test
 
 /// @brief Function for reading input file with body's coordinates (flattened array version).
 int

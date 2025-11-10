@@ -1,5 +1,7 @@
 #pragma once
 
+#define USE_32BITS 1
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <float.h>
