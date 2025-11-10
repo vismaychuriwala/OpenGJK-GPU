@@ -1,9 +1,9 @@
 set(headers
-    "openGJK.h"
+    "gpu/openGJK.h"
     )
 
 set(sources
-    "openGJK.cu"
+    "gpu/openGJK.cu"
     )
 
 list(SORT headers)

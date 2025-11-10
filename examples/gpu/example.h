@@ -1,7 +1,7 @@
 #ifndef EXAMPLE_H
 #define EXAMPLE_H
 
-#include "GJK/openGJK.h"
+#include "GJK/gpu/openGJK.h"
 #include "../common/timer.h"
 
 namespace GJK {

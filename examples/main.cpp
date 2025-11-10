@@ -28,11 +28,15 @@
 #include <math.h>
 #include <cuda_runtime.h>
 
-#include "GJK/openGJK.h"
+#include "GJK/gpu/openGJK.h"
 #include "examples/gpu/example.h"
 
 #define fscanf_s fscanf
-#define NUM_POLYTOPE_PAIRS 100000  // Number of polytope pairs to test
+#define M_PI 3.14159265358979323846  /* pi */
+
+// Test configuration
+#define NUM_POLYTOPES 10000
+#define VERTS_PER_POLYTOPE 10000
 
 /// @brief Function for reading input file with body's coordinates (flattened array version).
 int
@@ -82,63 +86,94 @@ readinput(const char* inputfile, gkFloat** pts, int* out) {
   return (0);
 }
 
+/// @brief Generate a polytope with specified number of vertices and random offset
+gkFloat* generatePolytope(int numVerts, gkFloat offsetX, gkFloat offsetY, gkFloat offsetZ) {
+  gkFloat* verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+
+  // Generate random points on a sphere (simple polytope generation)
+  for (int i = 0; i < numVerts; i++) {
+    float theta = (float)rand() / RAND_MAX * 2.0f * M_PI;
+    float phi = (float)rand() / RAND_MAX * M_PI;
+    float r = 1.0f + (float)rand() / RAND_MAX * 0.5f;
+
+    verts[i*3 + 0] = r * sin(phi) * cos(theta) + offsetX;
+    verts[i*3 + 1] = r * sin(phi) * sin(theta) + offsetY;
+    verts[i*3 + 2] = r * cos(phi) + offsetZ;
+  }
+
+  return verts;
+}
+
 /**
- * @brief Main program - CUDA version with minimal changes.
+ * @brief Main program - CUDA version with unique polytopes.
  *
  */
 int
 main() {
-  /* Number of vertices defining body 1 and body 2, respectively.          */
-  int nvrtx1, nvrtx2;
-  /* Specify name of input files for body 1 and body 2, respectively.      */
-  char inputfileA[40] = "../examples/userP.dat", inputfileB[40] = "../examples/userQ.dat";
-  /* Pointers to vertices' coordinates of body 1 and body 2, respectively. */
-  gkFloat* vrtx1_base = NULL;
-  gkFloat* vrtx2_base = NULL;
+  printf("OpenGJK GPU Performance Testing\n");
+  printf("================================\n");
+  printf("Polytopes: %d\n", NUM_POLYTOPES);
+  printf("Vertices per polytope: %d\n\n", VERTS_PER_POLYTOPE);
 
-  /* Import base coordinates from files */
-  if (readinput(inputfileA, &vrtx1_base, &nvrtx1)) {
-    return (1);
+  /* Allocate arrays for all polytope vertex data */
+  gkFloat** vrtx1_array = (gkFloat**)malloc(NUM_POLYTOPES * sizeof(gkFloat*));
+  gkFloat** vrtx2_array = (gkFloat**)malloc(NUM_POLYTOPES * sizeof(gkFloat*));
+
+  /* Generate unique polytopes with random offsets */
+  for (int i = 0; i < NUM_POLYTOPES; i++) {
+    // Random offset for each polytope pair
+    gkFloat offset1_x = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+    gkFloat offset1_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+    gkFloat offset1_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+
+    gkFloat offset2_x = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+    gkFloat offset2_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+    gkFloat offset2_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+
+    vrtx1_array[i] = generatePolytope(VERTS_PER_POLYTOPE, offset1_x, offset1_y, offset1_z);
+    vrtx2_array[i] = generatePolytope(VERTS_PER_POLYTOPE, offset2_x, offset2_y, offset2_z);
   }
-  if (readinput(inputfileB, &vrtx2_base, &nvrtx2)) {
-    return (1);
-  }
 
-  /* Allocate arrays for multiple polytope pairs */
-  gkPolytope* polytopes1 = (gkPolytope*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkPolytope));
-  gkPolytope* polytopes2 = (gkPolytope*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkPolytope));
-  gkSimplex* simplices = (gkSimplex*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkSimplex));
-  gkFloat* distances = (gkFloat*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkFloat));
+  /* Allocate arrays for polytope pairs */
+  gkPolytope* polytopes1 = (gkPolytope*)malloc(NUM_POLYTOPES * sizeof(gkPolytope));
+  gkPolytope* polytopes2 = (gkPolytope*)malloc(NUM_POLYTOPES * sizeof(gkPolytope));
+  gkSimplex* simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+  gkFloat* distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
 
-  /* Replicate the base polytope data for each pair */
-  for (int i = 0; i < NUM_POLYTOPE_PAIRS; i++) {
-    polytopes1[i].numpoints = nvrtx1;
-    polytopes1[i].coord = vrtx1_base;  // All point to same base data
+  /* Initialize polytope pairs with unique data */
+  for (int i = 0; i < NUM_POLYTOPES; i++) {
+    polytopes1[i].numpoints = VERTS_PER_POLYTOPE;
+    polytopes1[i].coord = vrtx1_array[i];
 
-    polytopes2[i].numpoints = nvrtx2;
-    polytopes2[i].coord = vrtx2_base;  // All point to same base data
+    polytopes2[i].numpoints = VERTS_PER_POLYTOPE;
+    polytopes2[i].coord = vrtx2_array[i];
 
     simplices[i].nvrtx = 0;  // Initialize simplex as empty
   }
 
   /* Invoke the GJK procedure on GPU for all pairs */
-  GJK::GPU::computeDistances(NUM_POLYTOPE_PAIRS, polytopes1, polytopes2, simplices, distances);
+  GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, simplices, distances);
 
-  /* Print results for first pair only */
-  printf("Testing %d polytope pairs\n", NUM_POLYTOPE_PAIRS);
-  printf("Distance between bodies (first pair): %f\n", distances[0]);
+  /* Print results */
   printf("GPU time: %.4f ms\n", GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation());
-  printf("Witnesses (first pair): (%f, %f, %f) and (%f, %f, %f)\n",
+  printf("Distance (first pair): %.6f\n", distances[0]);
+  printf("Distance (last pair): %.6f\n", distances[NUM_POLYTOPES - 1]);
+  printf("Witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n",
          simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
          simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
 
-  /* Free memory */
-  free(vrtx1_base);
-  free(vrtx2_base);
+  /* Free all allocated memory */
+  for (int i = 0; i < NUM_POLYTOPES; i++) {
+    free(vrtx1_array[i]);
+    free(vrtx2_array[i]);
+  }
+  free(vrtx1_array);
+  free(vrtx2_array);
   free(polytopes1);
   free(polytopes2);
   free(simplices);
   free(distances);
 
+  printf("\nTesting complete!\n");
   return (0);
 }
