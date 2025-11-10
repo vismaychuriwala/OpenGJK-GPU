@@ -13,7 +13,7 @@ CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
 
 3. **Kernel Signature**: Changed from CPU function to `__global__` kernel:
    ```cuda
-   __global__ void compute_minimum_distance(gkPolytope* polytypes1, gkPolytope* polytypes2,
+   __global__ void compute_minimum_distance(gkPolytope* polytopes1, gkPolytope* polytopes2,
                                              gkSimplex* simplices, gkFloat* distances, int n);
    ```
 
@@ -21,13 +21,17 @@ CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
 
 5. **Precision Macros**: Added `gkSqrt` macro for float/double precision handling
 
+6. **Code Structure**: GPU wrapper in `GJK::GPU` namespace with built-in CUDA timing support
+
 ## Test Results
 
-Built and ran the basic example with userP.dat and userQ.dat (9 vertices each):
+Example with 10,000 polytope pairs (9 vertices each):
 
 ```
-Distance between bodies 3.653650
-Witnesses: (1.025173, 1.490318, 0.255463) and (-1.025173, -1.490318, -0.255463)
+Testing 10000 polytope pairs
+Distance between bodies (first pair): 3.653650
+GPU time: 1.3343 ms
+Witnesses (first pair): (1.025173, 1.490318, 0.255463) and (-1.025173, -1.490318, -0.255463)
 ```
 
 The CUDA implementation produces correct results matching the original CPU version.

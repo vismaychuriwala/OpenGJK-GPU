@@ -29,9 +29,10 @@
 #include <cuda_runtime.h>
 
 #include "GJK/openGJK.h"
-#include "example.h"
+#include "examples/gpu/example.h"
 
 #define fscanf_s fscanf
+#define NUM_POLYTOPE_PAIRS 10000  // Number of polytope pairs to test
 
 /// @brief Function for reading input file with body's coordinates (flattened array version).
 int
@@ -87,86 +88,57 @@ readinput(const char* inputfile, gkFloat** pts, int* out) {
  */
 int
 main() {
-  /* Squared distance computed by openGJK.                                 */
-  gkFloat dd;
-  /* Structure of simplex used by openGJK.                                 */
-  gkSimplex s;
   /* Number of vertices defining body 1 and body 2, respectively.          */
   int nvrtx1, nvrtx2;
-  /* Structures of body 1 and body 2, respectively.                        */
-  gkPolytope bd1;
-  gkPolytope bd2;
   /* Specify name of input files for body 1 and body 2, respectively.      */
   char inputfileA[40] = "../examples/userP.dat", inputfileB[40] = "../examples/userQ.dat";
   /* Pointers to vertices' coordinates of body 1 and body 2, respectively. */
-  gkFloat* vrtx1 = NULL;
-  gkFloat* vrtx2 = NULL;
+  gkFloat* vrtx1_base = NULL;
+  gkFloat* vrtx2_base = NULL;
 
-  /* Import coordinates of object 1. */
-  if (readinput(inputfileA, &vrtx1, &nvrtx1)) {
+  /* Import base coordinates from files */
+  if (readinput(inputfileA, &vrtx1_base, &nvrtx1)) {
     return (1);
   }
-  bd1.coord = vrtx1;
-  bd1.numpoints = nvrtx1;
-
-  /* Import coordinates of object 2. */
-  if (readinput(inputfileB, &vrtx2, &nvrtx2)) {
+  if (readinput(inputfileB, &vrtx2_base, &nvrtx2)) {
     return (1);
   }
-  bd2.coord = vrtx2;
-  bd2.numpoints = nvrtx2;
 
-  /* Initialise simplex as empty */
-  s.nvrtx = 0;
+  /* Allocate arrays for multiple polytope pairs */
+  gkPolytope* polytopes1 = (gkPolytope*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkPolytope));
+  gkPolytope* polytopes2 = (gkPolytope*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkPolytope));
+  gkSimplex* simplices = (gkSimplex*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkSimplex));
+  gkFloat* distances = (gkFloat*)malloc(NUM_POLYTOPE_PAIRS * sizeof(gkFloat));
 
-  /* Allocate device memory */
-  gkPolytope* d_bd1;
-  gkPolytope* d_bd2;
-  gkSimplex* d_s;
-  gkFloat* d_distance;
-  gkFloat* d_coord1;
-  gkFloat* d_coord2;
+  /* Replicate the base polytope data for each pair */
+  for (int i = 0; i < NUM_POLYTOPE_PAIRS; i++) {
+    polytopes1[i].numpoints = nvrtx1;
+    polytopes1[i].coord = vrtx1_base;  // All point to same base data
 
-  cudaMalloc(&d_bd1, sizeof(gkPolytope));
-  cudaMalloc(&d_bd2, sizeof(gkPolytope));
-  cudaMalloc(&d_s, sizeof(gkSimplex));
-  cudaMalloc(&d_distance, sizeof(gkFloat));
-  cudaMalloc(&d_coord1, nvrtx1 * 3 * sizeof(gkFloat));
-  cudaMalloc(&d_coord2, nvrtx2 * 3 * sizeof(gkFloat));
+    polytopes2[i].numpoints = nvrtx2;
+    polytopes2[i].coord = vrtx2_base;  // All point to same base data
 
-  /* Copy coordinate data to device */
-  cudaMemcpy(d_coord1, vrtx1, nvrtx1 * 3 * sizeof(gkFloat), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_coord2, vrtx2, nvrtx2 * 3 * sizeof(gkFloat), cudaMemcpyHostToDevice);
+    simplices[i].nvrtx = 0;  // Initialize simplex as empty
+  }
 
-  /* Set up polytope structures with device pointers */
-  bd1.coord = d_coord1;
-  bd2.coord = d_coord2;
-  cudaMemcpy(d_bd1, &bd1, sizeof(gkPolytope), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_bd2, &bd2, sizeof(gkPolytope), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_s, &s, sizeof(gkSimplex), cudaMemcpyHostToDevice);
+  /* Invoke the GJK procedure on GPU for all pairs */
+  GJK::GPU::computeDistances(NUM_POLYTOPE_PAIRS, polytopes1, polytopes2, simplices, distances);
 
-  /* Invoke the GJK procedure on GPU */
-  launch_gjk_kernel(d_bd1, d_bd2, d_s, d_distance, 1);
-
-  /* Copy results back */
-  cudaMemcpy(&dd, d_distance, sizeof(gkFloat), cudaMemcpyDeviceToHost);
-  cudaMemcpy(&s, d_s, sizeof(gkSimplex), cudaMemcpyDeviceToHost);
-
-  /* Print distance between objects. */
-  printf("Distance between bodies %f\n", dd);
-  printf("Witnesses: (%f, %f, %f) and (%f, %f, %f)\n",
-         s.witnesses[0][0], s.witnesses[0][1], s.witnesses[0][2],
-         s.witnesses[1][0], s.witnesses[1][1], s.witnesses[1][2]);
+  /* Print results for first pair only */
+  printf("Testing %d polytope pairs\n", NUM_POLYTOPE_PAIRS);
+  printf("Distance between bodies (first pair): %f\n", distances[0]);
+  printf("GPU time: %.4f ms\n", GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation());
+  printf("Witnesses (first pair): (%f, %f, %f) and (%f, %f, %f)\n",
+         simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
+         simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
 
   /* Free memory */
-  free(vrtx1);
-  free(vrtx2);
-  cudaFree(d_bd1);
-  cudaFree(d_bd2);
-  cudaFree(d_s);
-  cudaFree(d_distance);
-  cudaFree(d_coord1);
-  cudaFree(d_coord2);
+  free(vrtx1_base);
+  free(vrtx2_base);
+  free(polytopes1);
+  free(polytopes2);
+  free(simplices);
+  free(distances);
 
   return (0);
 }
