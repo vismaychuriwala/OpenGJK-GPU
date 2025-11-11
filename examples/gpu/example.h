@@ -40,6 +40,22 @@ namespace GJK {
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
                             gkFloat* distances);
+
+        /**
+         * Runs performance tests for all combinations of polytope counts and vertex counts.
+         * Tests CPU, GPU, and warp-parallel GPU implementations and saves results to CSV.
+         *
+         * @param numPolytopesArray     Array of polytope counts to test
+         * @param numPolytopesArraySize Size of numPolytopesArray
+         * @param numVerticesArray       Array of vertex counts per polytope to test
+         * @param numVerticesArraySize  Size of numVerticesArray
+         * @param outputFile            Path to output CSV file
+         */
+        void testing(const int* numPolytopesArray,
+                     int numPolytopesArraySize,
+                     const int* numVerticesArray,
+                     int numVerticesArraySize,
+                     const char* outputFile);
     }
 }
 
