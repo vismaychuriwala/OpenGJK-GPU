@@ -23,6 +23,8 @@ CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
 
 6. **Code Structure**: GPU wrapper in `GJK::GPU` namespace with built-in CUDA timing support
 
+7. **Warp Parallel Implementation** Added warpParallelGJK.cu and warpParallelGJK.h which use 16 threads per polytope-polytope collision. Currently main speedup over normal GPU implementation is from parallelising the support function calls.
+
 ## CPU Baseline Implementation
 
 The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the common flattened memory layout:
@@ -55,6 +57,43 @@ CPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
 Speedup: 2.50x
 
 Validation PASSED: First 100 results match within tolerance (1e-05)
+```
+
+
+```
+OpenGJK Performance Testing
+============================
+Polytopes: 1000
+Vertices per polytope: 1000
+
+GPU time: 3.2839 ms
+GPU distance (first pair): 5.655237
+GPU distance (last pair): 6.642425
+GPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+
+Warp-Parallel GPU time: 0.4349 ms
+Warp-Parallel GPU distance (first pair): 5.655237
+Warp-Parallel GPU distance (last pair): 6.642425
+Warp-Parallel GPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+
+GPU Speedup (Warp-Parallel vs Regular): 7.55x
+  -> Warp-parallel is 7.55x faster
+
+CPU time: 11.8557 ms
+CPU distance (first pair): 5.655237
+CPU distance (last pair): 6.642425
+CPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+
+Speedup (CPU vs Regular GPU): 3.61x
+Speedup (CPU vs Warp-Parallel GPU): 27.26x
+
+Validating GPU vs CPU results:
+Validation PASSED: GPU vs CPU - First 100 results match within tolerance (1e-05)
+
+Validating Warp-Parallel GPU vs CPU results:
+Validation PASSED: Warp-Parallel GPU vs CPU - First 100 results match within tolerance (1e-05)
+
+Testing complete!
 ```
 
 The validation automatically compares the first 100 distance computations between GPU and CPU implementations, confirming correctness of the GPU port.
