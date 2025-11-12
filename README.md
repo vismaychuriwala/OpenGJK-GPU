@@ -34,6 +34,16 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
   - Modified in: `support()`, `W0D()`, `W1D()`, `W2D()`, `W3D()`, and `compute_minimum_distance()` initialization
 - **Build system**: Added C language support to CMake for proper C compilation
 
+
+## Graphs
+
+We generate graphs for comparing the run time of the different implementations across different numbers of polytopes and numbers of vertices. Note that the way we created polytopes to run the implementations on involved generating new sets of polytopes for each combination of numbers of polytopes and numbers of vertices. Because of this comparing the same implementation across different parameters is not straightforward because the GPU runtime is largely dependent on the single polytope-polytope collision that takes the longest time to run. This means an especially complex collision could be generated even with a small number of polytopes/vertices causing the runtime to be longer than future testing with a higher number of polytopes/vertices. We will conduct more robust and standardized testing moving forwards to help prevent this.
+
+|![](images/TimeVsNumVertices1.png)|![](images/TimeVsNumPolytopes1.png)|![](images/TimeVsNumPolytopes2.png)|
+|:--:|:--:|:--:|
+
+## Diagrams
+
 ## Test Results
 
 Performance comparison (1000 polytope pairs, 1000 vertices each):

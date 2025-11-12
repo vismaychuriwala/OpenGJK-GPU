@@ -249,87 +249,106 @@ namespace GJK {
                 for (int vIdx = 0; vIdx < numVerticesArraySize; vIdx++) {
                     int numVertices = numVerticesArray[vIdx];
 
-                    /* Allocate arrays for all polytope vertex data */
-                    gkFloat** vrtx1_array = (gkFloat**)malloc(numPolytopes * sizeof(gkFloat*));
-                    gkFloat** vrtx2_array = (gkFloat**)malloc(numPolytopes * sizeof(gkFloat*));
+                    // SUms for averaging over 10 runs
+                    float cpu_time_sum = 0.0f;
+                    float gpu_time_sum = 0.0f;
+                    float warp_gpu_time_sum = 0.0f;
+                    const int NUM_RUNS = 10;
 
-                    // Random offsets for each polytope pair
-                    for (int i = 0; i < numPolytopes; i++) {
-                        gkFloat offset1_x = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
-                        gkFloat offset1_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
-                        gkFloat offset1_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+                    // Run each test configuration 10 times and accumulate results
+                    for (int run = 0; run < NUM_RUNS; run++) {
+                        /* Allocate arrays for all polytope vertex data */
+                        gkFloat** vrtx1_array = (gkFloat**)malloc(numPolytopes * sizeof(gkFloat*));
+                        gkFloat** vrtx2_array = (gkFloat**)malloc(numPolytopes * sizeof(gkFloat*));
 
-                        gkFloat offset2_x = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
-                        gkFloat offset2_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
-                        gkFloat offset2_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+                        // Random offsets for each polytope pair
+                        for (int i = 0; i < numPolytopes; i++) {
+                            gkFloat offset1_x = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+                            gkFloat offset1_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+                            gkFloat offset1_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
 
-                        vrtx1_array[i] = generatePolytope(numVertices, offset1_x, offset1_y, offset1_z);
-                        vrtx2_array[i] = generatePolytope(numVertices, offset2_x, offset2_y, offset2_z);
+                            gkFloat offset2_x = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+                            gkFloat offset2_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+                            gkFloat offset2_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
+
+                            vrtx1_array[i] = generatePolytope(numVertices, offset1_x, offset1_y, offset1_z);
+                            vrtx2_array[i] = generatePolytope(numVertices, offset2_x, offset2_y, offset2_z);
+                        }
+
+                        // Allocate arrays for polytope pairs
+                        gkPolytope* polytopes1 = (gkPolytope*)malloc(numPolytopes * sizeof(gkPolytope));
+                        gkPolytope* polytopes2 = (gkPolytope*)malloc(numPolytopes * sizeof(gkPolytope));
+                        gkSimplex* simplices_cpu = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
+                        gkSimplex* simplices_gpu = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
+                        gkSimplex* simplices_warp = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
+                        gkSimplex* warm_up_simplices = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
+                        gkFloat* distances_cpu = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
+                        gkFloat* distances_gpu = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
+                        gkFloat* distances_warp = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
+                        gkFloat* warm_up_distances = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
+
+                        /* Initialize polytope pairs with unique data */
+                        for (int i = 0; i < numPolytopes; i++) {
+                            polytopes1[i].numpoints = numVertices;
+                            polytopes1[i].coord = vrtx1_array[i];
+
+                            polytopes2[i].numpoints = numVertices;
+                            polytopes2[i].coord = vrtx2_array[i];
+
+                            simplices_cpu[i].nvrtx = 0;
+                            simplices_gpu[i].nvrtx = 0;
+                            simplices_warp[i].nvrtx = 0;
+                            warm_up_simplices[i].nvrtx = 0;
+                        }
+
+                        // Warm up GPU (only on first run to save time)
+                        if (run == 0) {
+                            GJK::GPU::computeDistances(numPolytopes, polytopes1, polytopes2, warm_up_simplices, warm_up_distances);
+                            GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation(); // Discard warm-up time
+                        }
+
+                        // Test CPU implementation
+                        GJK::CPU::computeDistances(numPolytopes, polytopes1, polytopes2, simplices_cpu, distances_cpu);
+                        float cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
+                        cpu_time_sum += cpu_time;
+
+                        // Test GPU implementation
+                        GJK::GPU::computeDistances(numPolytopes, polytopes1, polytopes2, simplices_gpu, distances_gpu);
+                        float gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+                        gpu_time_sum += gpu_time;
+
+                        // Test Warp-Parallel GPU implementation
+                        GJK::GPU::computeDistancesWarpParallel(numPolytopes, polytopes1, polytopes2, simplices_warp, distances_warp);
+                        float warp_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+                        warp_gpu_time_sum += warp_gpu_time;
+
+                        // Free memory for this run
+                        for (int i = 0; i < numPolytopes; i++) {
+                            free(vrtx1_array[i]);
+                            free(vrtx2_array[i]);
+                        }
+                        free(vrtx1_array);
+                        free(vrtx2_array);
+                        free(polytopes1);
+                        free(polytopes2);
+                        free(simplices_cpu);
+                        free(simplices_gpu);
+                        free(simplices_warp);
+                        free(warm_up_simplices);
+                        free(distances_cpu);
+                        free(distances_gpu);
+                        free(distances_warp);
+                        free(warm_up_distances);
                     }
 
-                    // Allocate arrays for polytope pairs
-                    gkPolytope* polytopes1 = (gkPolytope*)malloc(numPolytopes * sizeof(gkPolytope));
-                    gkPolytope* polytopes2 = (gkPolytope*)malloc(numPolytopes * sizeof(gkPolytope));
-                    gkSimplex* simplices_cpu = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
-                    gkSimplex* simplices_gpu = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
-                    gkSimplex* simplices_warp = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
-                    gkSimplex* warm_up_simplices = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
-                    gkFloat* distances_cpu = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
-                    gkFloat* distances_gpu = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
-                    gkFloat* distances_warp = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
-                    gkFloat* warm_up_distances = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
+                    // Calculate averages
+                    float cpu_time_avg = cpu_time_sum / NUM_RUNS;
+                    float gpu_time_avg = gpu_time_sum / NUM_RUNS;
+                    float warp_gpu_time_avg = warp_gpu_time_sum / NUM_RUNS;
 
-                     /* Initialize polytope pairs with unique data */
-                    for (int i = 0; i < numPolytopes; i++) {
-                        polytopes1[i].numpoints = numVertices;
-                        polytopes1[i].coord = vrtx1_array[i];
-
-                        polytopes2[i].numpoints = numVertices;
-                        polytopes2[i].coord = vrtx2_array[i];
-
-                        simplices_cpu[i].nvrtx = 0;
-                        simplices_gpu[i].nvrtx = 0;
-                        simplices_warp[i].nvrtx = 0;
-                        warm_up_simplices[i].nvrtx = 0;
-                    }
-
-                    // Warm up GPU
-                    GJK::GPU::computeDistances(numPolytopes, polytopes1, polytopes2, warm_up_simplices, warm_up_distances);
-                    GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation(); // Discard warm-up time
-
-                    // Test CPU implementation
-                    GJK::CPU::computeDistances(numPolytopes, polytopes1, polytopes2, simplices_cpu, distances_cpu);
-                    float cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
-
-                    // Test GPU implementation
-                    GJK::GPU::computeDistances(numPolytopes, polytopes1, polytopes2, simplices_gpu, distances_gpu);
-                    float gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-
-                    // Test Warp-Parallel GPU implementation
-                    GJK::GPU::computeDistancesWarpParallel(numPolytopes, polytopes1, polytopes2, simplices_warp, distances_warp);
-                    float warp_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-
-                    // Write results to CSV
+                    // Write average results to CSV
                     fprintf(fp, "%d,%d,%.6f,%.6f,%.6f\n", 
-                            numPolytopes, numVertices, cpu_time, gpu_time, warp_gpu_time);
-
-                    // Free memory
-                    for (int i = 0; i < numPolytopes; i++) {
-                        free(vrtx1_array[i]);
-                        free(vrtx2_array[i]);
-                    }
-                    free(vrtx1_array);
-                    free(vrtx2_array);
-                    free(polytopes1);
-                    free(polytopes2);
-                    free(simplices_cpu);
-                    free(simplices_gpu);
-                    free(simplices_warp);
-                    free(warm_up_simplices);
-                    free(distances_cpu);
-                    free(distances_gpu);
-                    free(distances_warp);
-                    free(warm_up_distances);
+                            numPolytopes, numVertices, cpu_time_avg, gpu_time_avg, warp_gpu_time_avg);
                 }
             }
 

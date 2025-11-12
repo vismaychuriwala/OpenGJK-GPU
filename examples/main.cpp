@@ -39,7 +39,7 @@
 #define NUM_POLYTOPES 1000
 #define VERTS_PER_POLYTOPE 100
 
-#define SAVE_PERFORMANCE_DATA_TO_FILE 0
+#define SAVE_PERFORMANCE_DATA_TO_FILE 1
 #define OUTPUT_FILE "../data/gpu_performance_results.csv"
 
 /// @brief Function for reading input file with body's coordinates (flattened array version).
@@ -285,7 +285,7 @@ main() {
   free(warp_gpu_distances);
   free(warm_up_gpu_distances);
 
-  printf("\nTesting complete!\n");
+  printf("\Validation Testing complete!\n");
 
 #if SAVE_PERFORMANCE_DATA_TO_FILE
   // Run spread of performance testing for csv file output
