@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <cuda_runtime.h>
+#include <string>
 
 #include "examples/gpu/example.h"
 #include "examples/cpu/example.h"
@@ -36,7 +37,10 @@
 
 // Test configuration
 #define NUM_POLYTOPES 1000
-#define VERTS_PER_POLYTOPE 1000
+#define VERTS_PER_POLYTOPE 100
+
+#define SAVE_PERFORMANCE_DATA_TO_FILE 0
+#define OUTPUT_FILE "../data/gpu_performance_results_!.csv"
 
 /// @brief Function for reading input file with body's coordinates (flattened array version).
 int
@@ -343,6 +347,15 @@ main() {
   free(warp_gpu_distances);
   free(warm_up_gpu_distances);
 
-  printf("\nTesting complete!\n");
+  printf("\Validation Testing complete!\n");
+
+#if SAVE_PERFORMANCE_DATA_TO_FILE
+  // Run spread of performance testing for csv file output
+  int polytopeCounts[] = {10, 50, 100, 500, 1000, 5000};
+  int vertexCounts[] = {10, 25, 50, 100, 200, 500};
+  std::string outputFile = OUTPUT_FILE;
+
+  GJK::GPU::testing(polytopeCounts, sizeof(polytopeCounts) / sizeof(polytopeCounts[0]), vertexCounts, sizeof(vertexCounts) / sizeof(vertexCounts[0]), outputFile.c_str());
+#endif
   return (0);
 }
