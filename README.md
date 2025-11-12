@@ -125,4 +125,4 @@ The validation automatically compares the first 100 distance computations betwee
   * RAM: 32GB DDR4
   * GPU: NVIDIA GeForce RTX 3060 Laptop GPU (6GB GDDR6)
   * CUDA Toolkit: 13.0
-  * Driver Version: 581.15
+  * Driver Version: 581.80
