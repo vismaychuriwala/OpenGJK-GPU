@@ -113,7 +113,12 @@ main() {
   printf("OpenGJK Performance Testing\n");
   printf("============================\n");
   printf("Polytopes: %d\n", NUM_POLYTOPES);
-  printf("Vertices per polytope: %d\n\n", VERTS_PER_POLYTOPE);
+  printf("Vertices per polytope: %d\n", VERTS_PER_POLYTOPE);
+#ifdef USE_32BITS
+  printf("Precision: 32-bit (float)\n\n");
+#else
+  printf("Precision: 64-bit (double)\n\n");
+#endif
 
   /* Allocate arrays for all polytope vertex data */
   gkFloat** vrtx1_array = (gkFloat**)malloc(NUM_POLYTOPES * sizeof(gkFloat*));
@@ -158,45 +163,17 @@ main() {
     warm_up_gpu_simplices[i].nvrtx = 0; // Initialize warm up gpu simplices as empty
   }
 
-  /* Invoke the GJk procedure on GPU for all pairs */
-  /* This data is not used for anything, but is simply to warm up the gpu so there is less discrepancy between which GPU implementation is tested first*/
+  /* Warm up GPU to reduce measurement discrepancy */
   GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, warm_up_gpu_simplices, warm_up_gpu_distances);
   float warm_up_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
 
   /* Invoke the GJK procedure on GPU for all pairs */
   GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, simplices, gpu_distances);
-
-  /* Print GPU results */
   float gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-  printf("GPU time: %.4f ms\n", gpu_time);
-  printf("GPU distance (first pair): %.6f\n", gpu_distances[0]);
-  printf("GPU distance (last pair): %.6f\n", gpu_distances[NUM_POLYTOPES - 1]);
-  printf("GPU witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n\n",
-         simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
-         simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
 
   /* Invoke the warp-parallel GJK procedure on GPU for all pairs */
   GJK::GPU::computeDistancesWarpParallel(NUM_POLYTOPES, polytopes1, polytopes2, warp_simplices, warp_gpu_distances);
-
-  /* Print warp-parallel GPU results */
   float warp_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-  printf("Warp-Parallel GPU time: %.4f ms\n", warp_gpu_time);
-  printf("Warp-Parallel GPU distance (first pair): %.6f\n", warp_gpu_distances[0]);
-  printf("Warp-Parallel GPU distance (last pair): %.6f\n", warp_gpu_distances[NUM_POLYTOPES - 1]);
-  printf("Warp-Parallel GPU witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n\n",
-    warp_simplices[0].witnesses[0][0], warp_simplices[0].witnesses[0][1], warp_simplices[0].witnesses[0][2],
-    warp_simplices[0].witnesses[1][0], warp_simplices[0].witnesses[1][1], warp_simplices[0].witnesses[1][2]);
-
-  /* Compare GPU versions */
-  if (gpu_time > 0 && warp_gpu_time > 0) {
-    float gpu_speedup = gpu_time / warp_gpu_time;
-    printf("GPU Speedup (Warp-Parallel vs Regular): %.2fx\n", gpu_speedup);
-    if (gpu_speedup > 1.0f) {
-      printf("  -> Warp-parallel is %.2fx faster\n\n", gpu_speedup);
-    } else {
-      printf("  -> Regular GPU is %.2fx faster\n\n", 1.0f / gpu_speedup);
-    }
-  }
 
   /* Reset simplices for CPU run */
   for (int i = 0; i < NUM_POLYTOPES; i++) {
@@ -205,63 +182,148 @@ main() {
 
   /* Invoke the GJK procedure on CPU for all pairs */
   GJK::CPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, simplices, distances);
-
-  /* Print CPU results */
-  printf("CPU time: %.4f ms\n", GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation());
-  printf("CPU distance (first pair): %.6f\n", distances[0]);
-  printf("CPU distance (last pair): %.6f\n", distances[NUM_POLYTOPES - 1]);
-  printf("CPU witnesses (first pair): (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n\n",
-         simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
-         simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
-
-  /* Print speedup comparisons */
   float cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
-  float speedup_regular = cpu_time / gpu_time;
-  float speedup_warp = cpu_time / warp_gpu_time;
-  printf("Speedup (CPU vs Regular GPU): %.2fx\n", speedup_regular);
-  printf("Speedup (CPU vs Warp-Parallel GPU): %.2fx\n\n", speedup_warp);
 
-  /* Validate results - compare first 100 distances */
+  /* Validate results first to determine coloring */
   int test_count = (NUM_POLYTOPES < 100) ? NUM_POLYTOPES : 100;
   bool all_passed = true;
   bool warp_gpu_passed = true;
   const gkFloat tolerance = 1e-5f;
 
   /* Validate GPU vs CPU */
-  printf("Validating GPU vs CPU results:\n");
   for (int i = 0; i < test_count; i++) {
     gkFloat diff = fabs(gpu_distances[i] - distances[i]);
     if (diff > tolerance) {
       all_passed = false;
-      printf("Mismatch at index %d: GPU=%.6f, CPU=%.6f, diff=%.6e\n",
+      break;
+    }
+  }
+
+  /* Validate Warp-Parallel GPU vs CPU */
+  for (int i = 0; i < test_count; i++) {
+    gkFloat diff = fabs(warp_gpu_distances[i] - distances[i]);
+    if (diff > tolerance) {
+      warp_gpu_passed = false;
+      break;
+    }
+  }
+
+  /* Print execution times with color based on validation */
+  printf("\n");
+  printf("================================================================================\n");
+  printf("                           EXECUTION TIMES                                      \n");
+  printf("================================================================================\n");
+  printf("Regular GPU:               %s%.4f ms\033[0m\n", all_passed ? "\033[36m" : "\033[31m", gpu_time);
+  printf("Warp-Parallel GPU:         %s%.4f ms\033[0m\n", warp_gpu_passed ? "\033[36m" : "\033[31m", warp_gpu_time);
+  printf("CPU:                       \033[36m%.4f ms\033[0m\n", cpu_time);
+
+  printf("\n");
+  printf("================================================================================\n");
+  printf("                          PERFORMANCE COMPARISON                                \n");
+  printf("================================================================================\n");
+
+  /* Compare GPU versions */
+  if (gpu_time > 0 && warp_gpu_time > 0) {
+    float gpu_speedup = gpu_time / warp_gpu_time;
+    printf("Warp-Parallel vs Regular GPU:  ");
+    if (gpu_speedup > 1.05f) {
+      printf("\033[32m%.2fx faster\033[0m (warp-parallel wins)\n", gpu_speedup);
+    } else if (gpu_speedup < 0.95f) {
+      printf("\033[33m%.2fx slower\033[0m (regular wins)\n", 1.0f / gpu_speedup);
+    } else {
+      printf("\033[33m%.2fx\033[0m (similar performance)\n", gpu_speedup);
+    }
+  }
+
+  /* Print speedup comparisons */
+  float speedup_regular = cpu_time / gpu_time;
+  float speedup_warp = cpu_time / warp_gpu_time;
+
+  printf("CPU vs Regular GPU:            ");
+  if (speedup_regular > 1.0f) {
+    printf("\033[32m%.2fx speedup\033[0m\n", speedup_regular);
+  } else {
+    printf("\033[33m%.2fx slowdown\033[0m\n", speedup_regular);
+  }
+
+  printf("CPU vs Warp-Parallel GPU:      ");
+  if (speedup_warp > 1.0f) {
+    printf("\033[32m%.2fx speedup\033[0m\n", speedup_warp);
+  } else {
+    printf("\033[33m%.2fx slowdown\033[0m\n", speedup_warp);
+  }
+
+  printf("\n");
+  printf("================================================================================\n");
+  printf("                            VALIDATION RESULTS                                  \n");
+  printf("================================================================================\n");
+
+  /* Print detailed validation results */
+  printf("Regular GPU vs CPU:        ");
+  bool has_errors = false;
+  for (int i = 0; i < test_count; i++) {
+    gkFloat diff = fabs(gpu_distances[i] - distances[i]);
+    if (diff > tolerance) {
+      if (!has_errors) printf("\n"); // Move to new line for error details
+      has_errors = true;
+      printf("  Mismatch at index %d: GPU=%.6f, CPU=%.6f, diff=%.6e\n",
              i, gpu_distances[i], distances[i], diff);
     }
   }
 
   if (all_passed) {
-    printf("\033[32mValidation PASSED\033[0m: GPU vs CPU - First %d results match within tolerance (%.0e)\n",
+    printf("\033[32mPASSED\033[0m (first %d results within %.0e tolerance)\n",
            test_count, tolerance);
   } else {
-    printf("\033[31mValidation FAILED\033[0m: GPU vs CPU - Some results do not match\n");
+    printf("\033[31mFAILED\033[0m\n");
   }
 
   /* Validate Warp-Parallel GPU vs CPU */
-  printf("\nValidating Warp-Parallel GPU vs CPU results:\n");
+  printf("Warp-Parallel GPU vs CPU:  ");
+  has_errors = false;
   for (int i = 0; i < test_count; i++) {
     gkFloat diff = fabs(warp_gpu_distances[i] - distances[i]);
     if (diff > tolerance) {
-      warp_gpu_passed = false;
-      printf("Mismatch at index %d: Warp-Parallel GPU=%.6f, CPU=%.6f, diff=%.6e\n",
+      if (!has_errors) printf("\n"); // Move to new line for error details
+      has_errors = true;
+      printf("  Mismatch at index %d: Warp-GPU=%.6f, CPU=%.6f, diff=%.6e\n",
              i, warp_gpu_distances[i], distances[i], diff);
     }
   }
 
   if (warp_gpu_passed) {
-    printf("\033[32mValidation PASSED\033[0m: Warp-Parallel GPU vs CPU - First %d results match within tolerance (%.0e)\n",
+    printf("\033[32mPASSED\033[0m (first %d results within %.0e tolerance)\n",
            test_count, tolerance);
   } else {
-    printf("\033[31mValidation FAILED\033[0m: Warp-Parallel GPU vs CPU - Some results do not match\n");
+    printf("\033[31mFAILED\033[0m\n");
   }
+
+  printf("\n");
+  printf("================================================================================\n");
+  printf("                            DISTANCE RESULTS                                    \n");
+  printf("================================================================================\n");
+  printf("Regular GPU:\n");
+  printf("  Distance (first pair):   %.6f\n", gpu_distances[0]);
+  printf("  Distance (last pair):    %.6f\n", gpu_distances[NUM_POLYTOPES - 1]);
+  printf("  Witnesses (first pair):  (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n",
+         simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
+         simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
+
+  printf("\nWarp-Parallel GPU:\n");
+  printf("  Distance (first pair):   %.6f\n", warp_gpu_distances[0]);
+  printf("  Distance (last pair):    %.6f\n", warp_gpu_distances[NUM_POLYTOPES - 1]);
+  printf("  Witnesses (first pair):  (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n",
+    warp_simplices[0].witnesses[0][0], warp_simplices[0].witnesses[0][1], warp_simplices[0].witnesses[0][2],
+    warp_simplices[0].witnesses[1][0], warp_simplices[0].witnesses[1][1], warp_simplices[0].witnesses[1][2]);
+
+  printf("\nCPU:\n");
+  printf("  Distance (first pair):   %.6f\n", distances[0]);
+  printf("  Distance (last pair):    %.6f\n", distances[NUM_POLYTOPES - 1]);
+  printf("  Witnesses (first pair):  (%.3f, %.3f, %.3f) and (%.3f, %.3f, %.3f)\n",
+         simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
+         simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
+
+  printf("================================================================================\n");
 
 
   /* Free all allocated memory */

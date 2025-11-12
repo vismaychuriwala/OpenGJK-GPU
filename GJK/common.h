@@ -3,13 +3,13 @@
 
 #include <float.h>
 
-#define USE_32BITS 1
-
 /*! @brief Precision of floating-point numbers.
  *
- * Default is set to 64-bit (Double). Change this to quickly play around with
- * 16- and 32-bit. */
-#if USE_32BITS
+ * Default is set to 64-bit (Double). Comment/uncomment the line below to switch
+ * between 32-bit and 64-bit precision. */
+#define USE_32BITS  // Comment this line to use 64-bit (double) precision
+
+#ifdef USE_32BITS
 #define gkFloat float
 #define gkEpsilon FLT_EPSILON
 #define gkSqrt sqrtf

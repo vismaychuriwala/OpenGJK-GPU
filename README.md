@@ -34,6 +34,12 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
   - Modified in: `support()`, `W0D()`, `W1D()`, `W2D()`, `W3D()`, and `compute_minimum_distance()` initialization
 - **Build system**: Added C language support to CMake for proper C compilation
 
+## Precision Configuration
+
+To switch between 32-bit (float) and 64-bit (double) precision, edit `GJK/common.h` line 10:
+- **32-bit**: `#define USE_32BITS`
+- **64-bit**: `//#define USE_32BITS`
+
 ## Test Results
 
 Performance comparison (1000 polytope pairs, 1000 vertices each):
@@ -43,55 +49,47 @@ OpenGJK Performance Testing
 ============================
 Polytopes: 1000
 Vertices per polytope: 1000
-
-GPU time: 4.4241 ms
-GPU distance (first pair): 5.655237
-GPU distance (last pair): 6.642425
-GPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
-
-CPU time: 11.0449 ms
-CPU distance (first pair): 5.655237
-CPU distance (last pair): 6.642425
-CPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
-
-Speedup: 2.50x
-
-Validation PASSED: First 100 results match within tolerance (1e-05)
-```
+Precision: 32-bit (float)
 
 
-```
-OpenGJK Performance Testing
-============================
-Polytopes: 1000
-Vertices per polytope: 1000
+================================================================================
+                           EXECUTION TIMES
+================================================================================
+Regular GPU:               3.4191 ms
+Warp-Parallel GPU:         0.9624 ms
+CPU:                       12.1139 ms
 
-GPU time: 3.2839 ms
-GPU distance (first pair): 5.655237
-GPU distance (last pair): 6.642425
-GPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+================================================================================
+                          PERFORMANCE COMPARISON
+================================================================================
+Warp-Parallel vs Regular GPU:  3.55x faster (warp-parallel wins)
+CPU vs Regular GPU:            3.54x speedup
+CPU vs Warp-Parallel GPU:      12.59x speedup
 
-Warp-Parallel GPU time: 0.4349 ms
-Warp-Parallel GPU distance (first pair): 5.655237
-Warp-Parallel GPU distance (last pair): 6.642425
-Warp-Parallel GPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+================================================================================
+                            VALIDATION RESULTS
+================================================================================
+Regular GPU vs CPU:        PASSED (first 100 results within 1e-05 tolerance)
+Warp-Parallel GPU vs CPU:  PASSED (first 100 results within 1e-05 tolerance)
 
-GPU Speedup (Warp-Parallel vs Regular): 7.55x
-  -> Warp-parallel is 7.55x faster
+================================================================================
+                            DISTANCE RESULTS
+================================================================================
+Regular GPU:
+  Distance (first pair):   5.655237
+  Distance (last pair):    6.642425
+  Witnesses (first pair):  (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
 
-CPU time: 11.8557 ms
-CPU distance (first pair): 5.655237
-CPU distance (last pair): 6.642425
-CPU witnesses (first pair): (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+Warp-Parallel GPU:
+  Distance (first pair):   5.655237
+  Distance (last pair):    6.642425
+  Witnesses (first pair):  (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
 
-Speedup (CPU vs Regular GPU): 3.61x
-Speedup (CPU vs Warp-Parallel GPU): 27.26x
-
-Validating GPU vs CPU results:
-Validation PASSED: GPU vs CPU - First 100 results match within tolerance (1e-05)
-
-Validating Warp-Parallel GPU vs CPU results:
-Validation PASSED: Warp-Parallel GPU vs CPU - First 100 results match within tolerance (1e-05)
+CPU:
+  Distance (first pair):   5.655237
+  Distance (last pair):    6.642425
+  Witnesses (first pair):  (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
+================================================================================
 
 Testing complete!
 ```
