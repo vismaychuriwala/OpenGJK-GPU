@@ -37,11 +37,19 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
 
 ## Graphs
 
-We generate graphs for comparing the run time of the different implementations across different numbers of polytopes and numbers of vertices. Note that the way we created polytopes to run the implementations on involved generating new sets of polytopes for each combination of numbers of polytopes and numbers of vertices. Because of this comparing the same implementation across different parameters is not straightforward because the GPU runtime is largely dependent on the single polytope-polytope collision that takes the longest time to run. This means an especially complex collision could be generated even with a small number of polytopes/vertices causing the runtime to be longer than future testing with a higher number of polytopes/vertices. We will conduct more robust and standardized testing moving forwards to help prevent this.
+Performance comparison across different configurations (1000 polytopes or 1000 vertices fixed):
 
-|![](images/TimeVsNumVertices1.png)|![](images/TimeVsNumPolytopes1.png)|![](images/TimeVsNumPolytopes2.png)|
-|:--:|:--:|:--:|
+|![](images/polytopes_vs_time_32bit_logx.png)|![](images/vertices_vs_time_32bit_logx.png)|
+|:--:|:--:|
 
+Note: Linear y-axis plots compress lower timing values, making comparisons difficult. Log-log plots below show full range:
+
+|![](images/polytopes_vs_time_32bit_loglog.png)|![](images/vertices_vs_time_32bit_loglog.png)|
+|:--:|:--:|
+|![](images/polytopes_vs_time_64bit_loglog.png)|![](images/vertices_vs_time_64bit_loglog.png)|
+|![](images/polytopes_vs_time_both_loglog.png)|![](images/vertices_vs_time_both_loglog.png)|
+
+Notice how the GPU-versions, especially the warp-parallel version are consistently faster for nearly all of our testing. The differences get larger as the number of vertices/polytopes get larger. The warp-parallel GJK consistently outperforms all other algorithms. Also, note the considerable differences in the timings for 64-bit precision, especially for the GPU algorithms.
 ## Diagrams
 
 

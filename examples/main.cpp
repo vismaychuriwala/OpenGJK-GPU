@@ -37,7 +37,7 @@
 
 // Test configuration
 #define NUM_POLYTOPES 1000
-#define VERTS_PER_POLYTOPE 100
+#define VERTS_PER_POLYTOPE 1000
 
 #define SAVE_PERFORMANCE_DATA_TO_FILE 0
 #define OUTPUT_FILE "../data/gpu_performance_results_!.csv"
