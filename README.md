@@ -44,6 +44,11 @@ We generate graphs for comparing the run time of the different implementations a
 
 ## Diagrams
 
+
+|![](images/GPUGJKBlockDiagram.png)|
+|:--:|
+| *Warp Parallel GPU Implementation Block Diagram* |
+
 ## Test Results
 
 Performance comparison (1000 polytope pairs, 1000 vertices each):
