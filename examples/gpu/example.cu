@@ -197,6 +197,144 @@ namespace GJK {
             cudaFree(d_coord2);
         }
 
+        void computeGJKAndEPA(int n,
+                            const gkPolytope* bd1,
+                            const gkPolytope* bd2,
+                            gkSimplex* simplices,
+                            gkFloat* distances,
+                            gkFloat* witness1,
+                            gkFloat* witness2) {
+            if (n <= 0) return;
+
+            // Device pointers
+            gkPolytope* d_bd1 = nullptr;
+            gkPolytope* d_bd2 = nullptr;
+            gkSimplex* d_simplices = nullptr;
+            gkFloat* d_distances = nullptr;
+            gkFloat* d_witness1 = nullptr;
+            gkFloat* d_witness2 = nullptr;
+            gkFloat* d_coord1 = nullptr;
+            gkFloat* d_coord2 = nullptr;
+
+            // Allocate device memory
+            cudaMalloc(&d_bd1, n * sizeof(gkPolytope));
+            cudaMalloc(&d_bd2, n * sizeof(gkPolytope));
+            cudaMalloc(&d_simplices, n * sizeof(gkSimplex));
+            cudaMalloc(&d_distances, n * sizeof(gkFloat));
+            cudaMalloc(&d_witness1, n * 3 * sizeof(gkFloat));
+            cudaMalloc(&d_witness2, n * 3 * sizeof(gkFloat));
+
+            int total_coords1 = 0;
+            int total_coords2 = 0;
+            for (int i = 0; i < n; i++) {
+                total_coords1 += bd1[i].numpoints * 3;
+                total_coords2 += bd2[i].numpoints * 3;
+            }
+
+            cudaMalloc(&d_coord1, total_coords1 * sizeof(gkFloat));
+            cudaMalloc(&d_coord2, total_coords2 * sizeof(gkFloat));
+
+            gkPolytope* temp_bd1 = new gkPolytope[n];
+            gkPolytope* temp_bd2 = new gkPolytope[n];
+
+            int offset1 = 0;
+            int offset2 = 0;
+            for (int i = 0; i < n; i++) {
+                temp_bd1[i] = bd1[i];
+                temp_bd2[i] = bd2[i];
+
+                int coord_size1 = bd1[i].numpoints * 3 * sizeof(gkFloat);
+                int coord_size2 = bd2[i].numpoints * 3 * sizeof(gkFloat);
+
+                cudaMemcpy(d_coord1 + offset1, bd1[i].coord, coord_size1, cudaMemcpyHostToDevice);
+                cudaMemcpy(d_coord2 + offset2, bd2[i].coord, coord_size2, cudaMemcpyHostToDevice);
+
+                temp_bd1[i].coord = d_coord1 + offset1;
+                temp_bd2[i].coord = d_coord2 + offset2;
+
+                offset1 += bd1[i].numpoints * 3;
+                offset2 += bd2[i].numpoints * 3;
+            }
+
+            // Copy polytope structures to device
+            cudaMemcpy(d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
+            
+            // Launch GJK kernel with timing
+            timer().startGpuTimer();
+            const int THREADS_PER_COMPUTATION_GJK = 16;
+            int blockSizeGJK = 256;
+            int collisionsPerBlockGJK = blockSizeGJK / THREADS_PER_COMPUTATION_GJK;
+            int numBlocksGJK = (n + collisionsPerBlockGJK - 1) / collisionsPerBlockGJK;
+            compute_minimum_distance_warp_parallel<<<numBlocksGJK, blockSizeGJK>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
+            
+            // Wait for GJK to complete before starting EPA
+            cudaDeviceSynchronize();
+            
+            // Copy GJK results to print them
+            gkFloat* gjk_distances = new gkFloat[n];
+            gkSimplex* gjk_simplices = new gkSimplex[n];
+            gkFloat* gjk_witness1 = new gkFloat[n * 3];
+            gkFloat* gjk_witness2 = new gkFloat[n * 3];
+            
+            cudaMemcpy(gjk_distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+            cudaMemcpy(gjk_simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+            
+            // Copy witness points from simplice
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < 3; j++) {
+                    gjk_witness1[i * 3 + j] = gjk_simplices[i].witnesses[0][j];
+                    gjk_witness2[i * 3 + j] = gjk_simplices[i].witnesses[1][j];
+                }
+            }
+            
+            // Print GJK results
+            printf("\n=== GJK Results (before EPA) ===\n");
+            for (int i = 0; i < n; i++) {
+                printf("  Collision %d:\n", i);
+                printf("    Simplex vertices: %d\n", gjk_simplices[i].nvrtx);
+                printf("    Distance: %f\n", gjk_distances[i]);
+                printf("    Witness 1: (%.6f, %.6f, %.6f)\n", 
+                       gjk_witness1[i * 3 + 0], gjk_witness1[i * 3 + 1], gjk_witness1[i * 3 + 2]);
+                printf("    Witness 2: (%.6f, %.6f, %.6f)\n", 
+                       gjk_witness2[i * 3 + 0], gjk_witness2[i * 3 + 1], gjk_witness2[i * 3 + 2]);
+            }
+            printf("================================\n\n");
+            
+            // Clean up temporary arrays
+            delete[] gjk_distances;
+            delete[] gjk_simplices;
+            delete[] gjk_witness1;
+            delete[] gjk_witness2;
+
+            // Launch EPA kernel
+            // Each collision uses 32 threads (one warp)
+            const int THREADS_PER_COMPUTATION_EPA = 32;
+            int blockSizeEPA = 256;
+            int collisionsPerBlockEPA = blockSizeEPA / THREADS_PER_COMPUTATION_EPA;
+            int numBlocksEPA = (n + collisionsPerBlockEPA - 1) / collisionsPerBlockEPA;
+            compute_epa_warp_parallel<<<numBlocksEPA, blockSizeEPA>>>(d_bd1, d_bd2, d_simplices, d_distances, d_witness1, d_witness2, n);
+            timer().endGpuTimer();
+
+            cudaMemcpy(distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+            cudaMemcpy(simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+            cudaMemcpy(witness1, d_witness1, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+            cudaMemcpy(witness2, d_witness2, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+
+            // Free memory
+            delete[] temp_bd1;
+            delete[] temp_bd2;
+            cudaFree(d_bd1);
+            cudaFree(d_bd2);
+            cudaFree(d_simplices);
+            cudaFree(d_distances);
+            cudaFree(d_witness1);
+            cudaFree(d_witness2);
+            cudaFree(d_coord1);
+            cudaFree(d_coord2);
+        }
+
         /// @brief Generate a polytope with specified number of vertices and random offset
         static gkFloat* generatePolytope(int numVerts, gkFloat offsetX, gkFloat offsetY, gkFloat offsetZ) {
             gkFloat* verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
@@ -354,6 +492,389 @@ namespace GJK {
 
             fclose(fp);
             printf("Performance testing complete! Results saved to %s\n", outputFile);
+        }
+
+        void EPATesting() {
+            printf("\n========================================\n");
+            printf("EPA Algorithm Testing\n");
+            printf("========================================\n\n");
+
+
+
+            // These are test cases for degenerate cases. Still in progress
+            // Test Case 1: Two overlapping cubes
+            //printf("Test Case 1: Two overlapping cubes\n");
+            //printf("-----------------------------------\n");
+            //{
+            //    // Create two cubes that overlap
+            //    // Cube 1: centered at (0, 0, 0), size 2x2x2
+            //    // Cube 2: centered at (1, 0, 0), size 2x2x2 (overlaps by 1 unit)
+            //    const int numVerts = 8;
+            //    gkFloat* cube1_verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //    gkFloat* cube2_verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+
+            //    // Cube 1 vertices (centered at origin, size 2)
+            //    int idx = 0;
+            //    for (int x = -1; x <= 1; x += 2) {
+            //        for (int y = -1; y <= 1; y += 2) {
+            //            for (int z = -1; z <= 1; z += 2) {
+            //                cube1_verts[idx * 3 + 0] = x;
+            //                cube1_verts[idx * 3 + 1] = y;
+            //                cube1_verts[idx * 3 + 2] = z;
+            //                idx++;
+            //            }
+            //        }
+            //    }
+
+            //    // Cube 2 vertices (centered at (1, 0, 0), size 2)
+            //    idx = 0;
+            //    for (int x = -1; x <= 1; x += 2) {
+            //        for (int y = -1; y <= 1; y += 2) {
+            //            for (int z = -1; z <= 1; z += 2) {
+            //                cube2_verts[idx * 3 + 0] = x + 1.0f;
+            //                cube2_verts[idx * 3 + 1] = y;
+            //                cube2_verts[idx * 3 + 2] = z;
+            //                idx++;
+            //            }
+            //        }
+            //    }
+
+            //    gkPolytope polytope1, polytope2;
+            //    polytope1.numpoints = numVerts;
+            //    polytope1.coord = cube1_verts;
+            //    polytope2.numpoints = numVerts;
+            //    polytope2.coord = cube2_verts;
+
+            //    gkSimplex simplex;
+            //    simplex.nvrtx = 0;
+            //    gkFloat distance;
+            //    gkFloat witness1[3], witness2[3];
+
+            //    computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2);
+
+            //    printf("  Simplex vertices: %d\n", simplex.nvrtx);
+            //    printf("  Distance/Penetration: %.6f\n", distance);
+            //    printf("  Expected: Collision (distance should be small/negative)\n");
+            //    printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
+            //    printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+            //    
+            //    // Verify witness points are within bounds
+            //    bool valid1 = (witness1[0] >= -1.0f && witness1[0] <= 1.0f) &&
+            //                 (witness1[1] >= -1.0f && witness1[1] <= 1.0f) &&
+            //                 (witness1[2] >= -1.0f && witness1[2] <= 1.0f);
+            //    bool valid2 = (witness2[0] >= 0.0f && witness2[0] <= 2.0f) &&
+            //                 (witness2[1] >= -1.0f && witness2[1] <= 1.0f) &&
+            //                 (witness2[2] >= -1.0f && witness2[2] <= 1.0f);
+            //    
+            //    if (simplex.nvrtx == 4 && valid1 && valid2) {
+            //        printf("  PASS: Collision detected, witness points valid\n");
+            //    } else {
+            //        printf("  FAIL: Invalid results\n");
+            //    }
+            //    printf("\n");
+
+            //    free(cube1_verts);
+            //    free(cube2_verts);
+            //}
+
+            //// Test Case 2: Two touching cubes (just touching, no penetration)
+            //printf("Test Case 2: Two touching cubes\n");
+            //printf("-----------------------------------\n");
+            //{
+            //    const int numVerts = 8;
+            //    gkFloat* cube1_verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //    gkFloat* cube2_verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+
+            //    // Cube 1: centered at (0, 0, 0), size 2x2x2
+            //    int idx = 0;
+            //    for (int x = -1; x <= 1; x += 2) {
+            //        for (int y = -1; y <= 1; y += 2) {
+            //            for (int z = -1; z <= 1; z += 2) {
+            //                cube1_verts[idx * 3 + 0] = x;
+            //                cube1_verts[idx * 3 + 1] = y;
+            //                cube1_verts[idx * 3 + 2] = z;
+            //                idx++;
+            //            }
+            //        }
+            //    }
+
+            //    // Cube 2: centered at (2, 0, 0), size 2x2x2 (touching at x=1)
+            //    idx = 0;
+            //    for (int x = -1; x <= 1; x += 2) {
+            //        for (int y = -1; y <= 1; y += 2) {
+            //            for (int z = -1; z <= 1; z += 2) {
+            //                cube2_verts[idx * 3 + 0] = x + 2.0f;
+            //                cube2_verts[idx * 3 + 1] = y;
+            //                cube2_verts[idx * 3 + 2] = z;
+            //                idx++;
+            //            }
+            //        }
+            //    }
+
+            //    gkPolytope polytope1, polytope2;
+            //    polytope1.numpoints = numVerts;
+            //    polytope1.coord = cube1_verts;
+            //    polytope2.numpoints = numVerts;
+            //    polytope2.coord = cube2_verts;
+
+            //    gkSimplex simplex;
+            //    simplex.nvrtx = 0;
+            //    gkFloat distance;
+            //    gkFloat witness1[3], witness2[3];
+
+            //    computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2);
+
+            //    printf("  Simplex vertices: %d\n", simplex.nvrtx);
+            //    printf("  Distance: %.6f\n", distance);
+            //    printf("  Expected: Very small distance (near zero)\n");
+            //    printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
+            //    printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+            //    
+            //    if (distance >= 0 && distance < 0.01f) {
+            //        printf(" PASS: Distance near zero as expected\n");
+            //    } else {
+            //        printf(" WARNING: Distance may indicate collision or separation\n");
+            //    }
+            //    printf("\n");
+
+            //    free(cube1_verts);
+            //    free(cube2_verts);
+            //}
+
+            //// Test Case 3: Two separated cubes
+            //printf("Test Case 3: Two separated cubes\n");
+            //printf("-----------------------------------\n");
+            //{
+            //    const int numVerts = 8;
+            //    gkFloat* cube1_verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //    gkFloat* cube2_verts = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+
+            //    // Cube 1: centered at (0, 0, 0), size 2x2x2
+            //    int idx = 0;
+            //    for (int x = -1; x <= 1; x += 2) {
+            //        for (int y = -1; y <= 1; y += 2) {
+            //            for (int z = -1; z <= 1; z += 2) {
+            //                cube1_verts[idx * 3 + 0] = x;
+            //                cube1_verts[idx * 3 + 1] = y;
+            //                cube1_verts[idx * 3 + 2] = z;
+            //                idx++;
+            //            }
+            //        }
+            //    }
+
+            //   // Cube 2: centered at (5, 0, 0), size 2x2x2 (separated by 3 units)
+            //   idx = 0;
+            //   for (int x = -1; x <= 1; x += 2) {
+            //       for (int y = -1; y <= 1; y += 2) {
+            //           for (int z = -1; z <= 1; z += 2) {
+            //               cube2_verts[idx * 3 + 0] = x + 5.0f;
+            //               cube2_verts[idx * 3 + 1] = y;
+            //               cube2_verts[idx * 3 + 2] = z;
+            //               idx++;
+            //           }
+            //       }
+            //   }
+
+            //   gkPolytope polytope1, polytope2;
+            //   polytope1.numpoints = numVerts;
+            //   polytope1.coord = cube1_verts;
+            //   polytope2.numpoints = numVerts;
+            //   polytope2.coord = cube2_verts;
+
+            //   gkSimplex simplex;
+            //   simplex.nvrtx = 0;
+            //   gkFloat distance;
+            //   gkFloat witness1[3], witness2[3];
+
+            //   computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2);
+
+            //   printf("  Simplex vertices: %d\n", simplex.nvrtx);
+            //   printf("  Distance: %.6f\n", distance);
+            //   printf("  Expected: Distance ≈ 3.0 (separation between cubes)\n");
+            //   printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
+            //   printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+            //   
+            //   if (simplex.nvrtx < 4 && distance > 2.9f && distance < 3.1f) {
+            //       printf(" PASS: Correct separation distance\n");
+            //   } else if (simplex.nvrtx < 4) {
+            //       printf(" WARNING: Distance may be incorrect\n");
+            //   } else {
+            //       printf(" FAIL: Should not detect collision\n");
+            //   }
+            //   printf("\n");
+
+            //   free(cube1_verts);
+            //   free(cube2_verts);
+            //}
+
+            //// Test Case 4: Multiple test cases at once
+            //printf("Test Case 4: Multiple polytope pairs\n");
+            //printf("-----------------------------------\n");
+            //{
+            //   const int numTests = 3;
+            //   const int numVerts = 8;
+            //   
+            //   gkPolytope* polytopes1 = (gkPolytope*)malloc(numTests * sizeof(gkPolytope));
+            //   gkPolytope* polytopes2 = (gkPolytope*)malloc(numTests * sizeof(gkPolytope));
+            //   gkSimplex* simplices = (gkSimplex*)malloc(numTests * sizeof(gkSimplex));
+            //   gkFloat* distances = (gkFloat*)malloc(numTests * sizeof(gkFloat));
+            //   gkFloat* witness1 = (gkFloat*)malloc(numTests * 3 * sizeof(gkFloat));
+            //   gkFloat* witness2 = (gkFloat*)malloc(numTests * 3 * sizeof(gkFloat));
+            //   
+            //   gkFloat** verts1 = (gkFloat**)malloc(numTests * sizeof(gkFloat*));
+            //   gkFloat** verts2 = (gkFloat**)malloc(numTests * sizeof(gkFloat*));
+
+            //   // Test 1: Overlapping
+            //   verts1[0] = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //   verts2[0] = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //   int idx = 0;
+            //   for (int x = -1; x <= 1; x += 2) {
+            //       for (int y = -1; y <= 1; y += 2) {
+            //           for (int z = -1; z <= 1; z += 2) {
+            //               verts1[0][idx * 3 + 0] = x;
+            //               verts1[0][idx * 3 + 1] = y;
+            //               verts1[0][idx * 3 + 2] = z;
+            //               verts2[0][idx * 3 + 0] = x + 0.5f;
+            //               verts2[0][idx * 3 + 1] = y;
+            //               verts2[0][idx * 3 + 2] = z;
+            //               idx++;
+            //           }
+            //       }
+            //   }
+
+            //   // Test 2: Separated
+            //   verts1[1] = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //   verts2[1] = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //   idx = 0;
+            //   for (int x = -1; x <= 1; x += 2) {
+            //       for (int y = -1; y <= 1; y += 2) {
+            //           for (int z = -1; z <= 1; z += 2) {
+            //               verts1[1][idx * 3 + 0] = x;
+            //               verts1[1][idx * 3 + 1] = y;
+            //               verts1[1][idx * 3 + 2] = z;
+            //               verts2[1][idx * 3 + 0] = x + 4.0f;
+            //               verts2[1][idx * 3 + 1] = y;
+            //               verts2[1][idx * 3 + 2] = z;
+            //               idx++;
+            //           }
+            //       }
+            //   }
+
+            //   // Test 3: Overlapping in different axis
+            //   verts1[2] = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //   verts2[2] = (gkFloat*)malloc(numVerts * 3 * sizeof(gkFloat));
+            //   idx = 0;
+            //   for (int x = -1; x <= 1; x += 2) {
+            //       for (int y = -1; y <= 1; y += 2) {
+            //           for (int z = -1; z <= 1; z += 2) {
+            //               verts1[2][idx * 3 + 0] = x;
+            //               verts1[2][idx * 3 + 1] = y;
+            //               verts1[2][idx * 3 + 2] = z;
+            //               verts2[2][idx * 3 + 0] = x;
+            //               verts2[2][idx * 3 + 1] = y + 0.5f;
+            //               verts2[2][idx * 3 + 2] = z;
+            //               idx++;
+            //           }
+            //       }
+            //   }
+
+            //   for (int i = 0; i < numTests; i++) {
+            //       polytopes1[i].numpoints = numVerts;
+            //       polytopes1[i].coord = verts1[i];
+            //       polytopes2[i].numpoints = numVerts;
+            //       polytopes2[i].coord = verts2[i];
+            //       simplices[i].nvrtx = 0;
+            //   }
+
+            //   computeGJKAndEPA(numTests, polytopes1, polytopes2, simplices, distances, witness1, witness2);
+
+            //   printf("  Results for %d test cases:\n", numTests);
+            //   for (int i = 0; i < numTests; i++) {
+            //       printf("    Test %d: Simplex=%d, Distance=%.6f\n", 
+            //              i + 1, simplices[i].nvrtx, distances[i]);
+            //       printf("            Witness1=(%.3f, %.3f, %.3f), Witness2=(%.3f, %.3f, %.3f)\n",
+            //              witness1[i * 3 + 0], witness1[i * 3 + 1], witness1[i * 3 + 2],
+            //              witness2[i * 3 + 0], witness2[i * 3 + 1], witness2[i * 3 + 2]);
+            //   }
+            //   
+            //   int collisions = 0;
+            //   for (int i = 0; i < numTests; i++) {
+            //       if (simplices[i].nvrtx == 4) collisions++;
+            //   }
+            //   printf(" Detected %d collisions out of %d tests\n", collisions, numTests);
+            //   printf("\n");
+
+            //   for (int i = 0; i < numTests; i++) {
+            //       free(verts1[i]);
+            //       free(verts2[i]);
+            //   }
+            //   free(verts1);
+            //   free(verts2);
+            //   free(polytopes1);
+            //   free(polytopes2);
+            //   free(simplices);
+            //   free(distances);
+            //   free(witness1);
+            //   free(witness2);
+            //}
+
+            // Test Case 5: Overlapping polytopes with many vertices
+            printf("Test Case 5: Overlapping polytopes (~50 vertices each)\n");
+            printf("-----------------------------------\n");
+            {
+                const int numVerts = 50;
+                gkPolytope polytope1, polytope2;
+                
+                // Generate polytopes that overlap
+                // Polytope 1: centered at (0, 0, 0)
+                gkFloat* verts1 = generatePolytope(numVerts, 0.0f, 0.0f, 0.0f);
+                
+                // Polytope 2: centered at (0.5, 0, 0) - overlaps with polytope 1
+                gkFloat* verts2 = generatePolytope(numVerts, 0.5f, 0.0f, 0.0f);
+                
+                polytope1.numpoints = numVerts;
+                polytope1.coord = verts1;
+                polytope2.numpoints = numVerts;
+                polytope2.coord = verts2;
+                
+                gkSimplex simplex;
+                simplex.nvrtx = 0;
+                gkFloat distance;
+                gkFloat witness1[3], witness2[3];
+                
+                computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2);
+                
+                printf("  Simplex vertices: %d\n", simplex.nvrtx);
+                printf("  Distance/Penetration: %.6f\n", distance);
+                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
+                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+                
+                // Check penetration distance
+                // For overlapping polytopes, distance should be negative (penetration depth)
+                // or very small positive (just touching)
+                if (simplex.nvrtx == 4) {
+                    if (distance < 0.0f) {
+                        printf("  PASS: Collision detected with penetration depth of %.6f\n", -distance);
+                    } else if (distance < 0.1f) {
+                        printf("  PASS: Collision detected (very small distance/penetration)\n");
+                    } else {
+                        printf("  WARNING: Collision detected but distance seems large: %.6f\n", distance);
+                    }
+                } else {
+                    printf("  WARNING: Simplex has %d vertices (expected 4 for collision)\n", simplex.nvrtx);
+                    if (distance > 0.0f) {
+                        printf("  INFO: Polytopes are separated by distance: %.6f\n", distance);
+                    }
+                }
+                printf("\n");
+                
+                free(verts1);
+                free(verts2);
+            }
+
+            printf("========================================\n");
+            printf("EPA Testing Complete\n");
+            printf("========================================\n\n");
         }
     }
 }

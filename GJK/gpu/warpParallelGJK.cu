@@ -137,25 +137,25 @@
 
 
 
-__device__ inline static gkFloat determinant(const gkFloat * p,
-  const gkFloat * q,
-  const gkFloat * r) {
+__device__ inline static gkFloat determinant(const gkFloat* p,
+  const gkFloat* q,
+  const gkFloat* r) {
   return p[0] * ((q[1] * r[2]) - (r[1] * q[2])) -
     p[1] * (q[0] * r[2] - r[0] * q[2]) +
     p[2] * (q[0] * r[1] - r[0] * q[1]);
 }
 
-__device__ inline static void crossProduct(const gkFloat * a,
-  const gkFloat * b,
-  gkFloat * c) {
+__device__ inline static void crossProduct(const gkFloat* a,
+  const gkFloat* b,
+  gkFloat* c) {
   c[0] = a[1] * b[2] - a[2] * b[1];
   c[1] = a[2] * b[0] - a[0] * b[2];
   c[2] = a[0] * b[1] - a[1] * b[0];
 }
 
-__device__ inline static void projectOnLine(const gkFloat * p,
-  const gkFloat * q,
-  gkFloat * v) {
+__device__ inline static void projectOnLine(const gkFloat* p,
+  const gkFloat* q,
+  gkFloat* v) {
   gkFloat pq[3];
   pq[0] = p[0] - q[0];
   pq[1] = p[1] - q[1];
@@ -168,10 +168,10 @@ __device__ inline static void projectOnLine(const gkFloat * p,
   }
 }
 
-__device__ inline static void projectOnPlane(const gkFloat * p,
-  const gkFloat * q,
-  const gkFloat * r,
-  gkFloat * v) {
+__device__ inline static void projectOnPlane(const gkFloat* p,
+  const gkFloat* q,
+  const gkFloat* r,
+  gkFloat* v) {
   gkFloat n[3], pq[3], pr[3];
 
   for (int i = 0; i < 3; i++) {
@@ -189,7 +189,7 @@ __device__ inline static void projectOnPlane(const gkFloat * p,
   }
 }
 
-__device__ inline static int hff1(const gkFloat * p, const gkFloat * q) {
+__device__ inline static int hff1(const gkFloat* p, const gkFloat* q) {
   gkFloat tmp = 0;
 
   for (int i = 0; i < 3; i++) {
@@ -202,8 +202,8 @@ __device__ inline static int hff1(const gkFloat * p, const gkFloat * q) {
   return 0;
 }
 
-__device__ inline static int hff2(const gkFloat * p, const gkFloat * q,
-  const gkFloat * r) {
+__device__ inline static int hff2(const gkFloat* p, const gkFloat* q,
+  const gkFloat* r) {
   gkFloat ntmp[3];
   gkFloat n[3], pq[3], pr[3];
 
@@ -220,8 +220,8 @@ __device__ inline static int hff2(const gkFloat * p, const gkFloat * q,
   return dotProduct(p, n) < 0;  // Discard r if true
 }
 
-__device__ inline static int hff3(const gkFloat * p, const gkFloat * q,
-  const gkFloat * r) {
+__device__ inline static int hff3(const gkFloat* p, const gkFloat* q,
+  const gkFloat* r) {
   gkFloat n[3], pq[3], pr[3];
 
   for (int i = 0; i < 3; i++) {
@@ -235,7 +235,7 @@ __device__ inline static int hff3(const gkFloat * p, const gkFloat * q,
   return dotProduct(p, n) <= 0;  // discard s if true
 }
 
-__device__ inline static void S1D(gkSimplex * s, gkFloat * v) {
+__device__ inline static void S1D(gkSimplex* s, gkFloat* v) {
   const gkFloat* s1p = s->vrtx[1];
   const gkFloat* s2p = s->vrtx[0];
 
@@ -249,7 +249,7 @@ __device__ inline static void S1D(gkSimplex * s, gkFloat * v) {
   }
 }
 
-__device__ inline static void S2D(gkSimplex * s, gkFloat * v) {
+__device__ inline static void S2D(gkSimplex* s, gkFloat* v) {
   const gkFloat* s1p = s->vrtx[2];
   const gkFloat* s2p = s->vrtx[1];
   const gkFloat* s3p = s->vrtx[0];
@@ -300,7 +300,7 @@ __device__ inline static void S2D(gkSimplex * s, gkFloat * v) {
   }
 }
 
-__device__ inline static void S3D(gkSimplex * s, gkFloat * v) {
+__device__ inline static void S3D(gkSimplex* s, gkFloat* v) {
   gkFloat s1[3], s2[3], s3[3], s4[3], s1s2[3], s1s3[3], s1s4[3];
   gkFloat si[3], sj[3], sk[3];
   int s1_idx[2], s2_idx[2], s3_idx[2];
@@ -635,8 +635,8 @@ __device__ inline static void S3D(gkSimplex * s, gkFloat * v) {
   }
 }
 
-__device__ inline static void support(gkPolytope * body,
-  const gkFloat * v) {
+__device__ inline static void support(gkPolytope* body,
+  const gkFloat* v) {
   gkFloat s, maxs;
   gkFloat vrt[3];
   int better = -1;
@@ -662,7 +662,7 @@ __device__ inline static void support(gkPolytope * body,
   }
 }
 
-__device__ inline static void subalgorithm(gkSimplex * s, gkFloat * v) {
+__device__ inline static void subalgorithm(gkSimplex* s, gkFloat* v) {
   switch (s->nvrtx) {
   case 4:
     S3D(s, v);
@@ -679,8 +679,8 @@ __device__ inline static void subalgorithm(gkSimplex * s, gkFloat * v) {
   }
 }
 
-__device__ inline static void W0D(const gkPolytope * bd1, const gkPolytope * bd2,
-  gkSimplex * smp) {
+__device__ inline static void W0D(const gkPolytope* bd1, const gkPolytope* bd2,
+  gkSimplex* smp) {
   const int idx00 = smp->vrtx_idx[0][0];
   const int idx01 = smp->vrtx_idx[0][1];
   for (int t = 0; t < 3; t++) {
@@ -689,8 +689,8 @@ __device__ inline static void W0D(const gkPolytope * bd1, const gkPolytope * bd2
   }
 }
 
-__device__ inline static void W1D(const gkPolytope * bd1, const gkPolytope * bd2,
-  gkSimplex * smp) {
+__device__ inline static void W1D(const gkPolytope* bd1, const gkPolytope* bd2,
+  gkSimplex* smp) {
   gkFloat pq[3], po[3];
 
   const gkFloat* p = smp->vrtx[0];
@@ -723,8 +723,8 @@ __device__ inline static void W1D(const gkPolytope * bd1, const gkPolytope * bd2
   }
 }
 
-__device__ inline static void W2D(const gkPolytope * bd1, const gkPolytope * bd2,
-  gkSimplex * smp) {
+__device__ inline static void W2D(const gkPolytope* bd1, const gkPolytope* bd2,
+  gkSimplex* smp) {
   gkFloat pq[3], pr[3], po[3];
 
   const gkFloat* p = smp->vrtx[0];
@@ -820,8 +820,8 @@ __device__ inline static void W2D(const gkPolytope * bd1, const gkPolytope * bd2
   }
 }
 
-__device__ inline static void W3D(const gkPolytope * bd1, const gkPolytope * bd2,
-  gkSimplex * smp) {
+__device__ inline static void W3D(const gkPolytope* bd1, const gkPolytope* bd2,
+  gkSimplex* smp) {
   gkFloat pq[3], pr[3], ps[3], po[3];
 
   const gkFloat* p = smp->vrtx[0];
@@ -957,8 +957,8 @@ __device__ inline static void W3D(const gkPolytope * bd1, const gkPolytope * bd2
   }
 }
 
-__device__ inline static void compute_witnesses(const gkPolytope * bd1,
-  const gkPolytope * bd2, gkSimplex * smp) {
+__device__ inline static void compute_witnesses(const gkPolytope* bd1,
+  const gkPolytope* bd2, gkSimplex* smp) {
   switch (smp->nvrtx) {
   case 4:
     W3D(bd1, bd2, smp);
@@ -980,10 +980,10 @@ __device__ inline static void compute_witnesses(const gkPolytope * bd1,
 }
 
 __global__ void compute_minimum_distance(
-  gkPolytope * polytypes1,
-  gkPolytope * polytypes2,
-  gkSimplex * simplices,
-  gkFloat * distances,
+  gkPolytope* polytypes1,
+  gkPolytope* polytypes2,
+  gkSimplex* simplices,
+  gkFloat* distances,
   int n) {
 
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -1119,62 +1119,61 @@ __global__ void compute_minimum_distance(
 
 // Parallel version of support function using all threads in a half-warp
 __device__ inline static void support_parallel(gkPolytope* body,
-    const gkFloat* v, int half_lane_idx, unsigned int half_warp_mask, int half_warp_base_thread_idx) {
-    
-    // Each thread searches a subset of the total points in the body so they can compute in parallel
-    const int points_per_thread = (body->numpoints + THREADS_PER_COMPUTATION - 1) / THREADS_PER_COMPUTATION;
-    const int start_idx = half_lane_idx * points_per_thread;
-    const int end_idx = (start_idx + points_per_thread < body->numpoints) ? 
-                        (start_idx + points_per_thread) : body->numpoints;
-    
-    // Initialize each thead with its current best point
-    gkFloat local_maxs = dotProduct(body->s, v);
-    int local_better = -1;
-    gkFloat vrt[3];
-    
-    // Each thread searches its assigned range of points
-    for (int i = start_idx; i < end_idx; ++i) {
-      for (int j = 0; j < 3; ++j) {
-        vrt[j] = getCoord(body, i, j);
-      }
-      gkFloat s = dotProduct(vrt, v);
-      if (s > local_maxs) {
-        local_maxs = s;
-        local_better = i;
-      }
-    }
-    
-    // Parallel reduction to find global maximum across all threads in the half-warp
-    gkFloat global_maxs = local_maxs;
-    int global_better = local_better;
-    
-    // Reduction tree compare with threads at increasing offsets (power of 2)
-    for (int offset = THREADS_PER_COMPUTATION / 2; offset > 0; offset /= 2) {
-      // Get maxs and better index from thread at offset distance
-      gkFloat other_maxs = __shfl_down_sync(half_warp_mask, global_maxs, offset);
-      int other_better = __shfl_down_sync(half_warp_mask, global_better, offset);
-      
-      // Update values if other thread found a better point
-      if (other_maxs > global_maxs || 
-          (other_maxs == global_maxs && other_better != -1 && global_better == -1)) {
-        global_maxs = other_maxs;
-        global_better = other_better;
-      }
-    }
-    
-    // Broadcast the best result to all threads (from thread 0 of our half-warp) to make sure all threads agree
-    global_maxs = __shfl_sync(half_warp_mask, global_maxs, half_warp_base_thread_idx);
-    global_better = __shfl_sync(half_warp_mask, global_better, half_warp_base_thread_idx);
-    
-    // Thread 0 in the half-warp updates the body with the best result
-    if (half_lane_idx == 0 && global_better != -1) {
-      body->s[0] = getCoord(body, global_better, 0);
-      body->s[1] = getCoord(body, global_better, 1);
-      body->s[2] = getCoord(body, global_better, 2);
-      body->s_idx = global_better;
-    }
-}
+  const gkFloat* v, int half_lane_idx, unsigned int half_warp_mask, int half_warp_base_thread_idx) {
 
+  // Each thread searches a subset of the total points in the body so they can compute in parallel
+  const int points_per_thread = (body->numpoints + THREADS_PER_COMPUTATION - 1) / THREADS_PER_COMPUTATION;
+  const int start_idx = half_lane_idx * points_per_thread;
+  const int end_idx = (start_idx + points_per_thread < body->numpoints) ?
+    (start_idx + points_per_thread) : body->numpoints;
+
+  // Initialize each thead with its current best point
+  gkFloat local_maxs = dotProduct(body->s, v);
+  int local_better = -1;
+  gkFloat vrt[3];
+
+  // Each thread searches its assigned range of points
+  for (int i = start_idx; i < end_idx; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      vrt[j] = getCoord(body, i, j);
+    }
+    gkFloat s = dotProduct(vrt, v);
+    if (s > local_maxs) {
+      local_maxs = s;
+      local_better = i;
+    }
+  }
+
+  // Parallel reduction to find global maximum across all threads in the half-warp
+  gkFloat global_maxs = local_maxs;
+  int global_better = local_better;
+
+  // Reduction tree compare with threads at increasing offsets (power of 2)
+  for (int offset = THREADS_PER_COMPUTATION / 2; offset > 0; offset /= 2) {
+    // Get maxs and better index from thread at offset distance
+    gkFloat other_maxs = __shfl_down_sync(half_warp_mask, global_maxs, offset);
+    int other_better = __shfl_down_sync(half_warp_mask, global_better, offset);
+
+    // Update values if other thread found a better point
+    if (other_maxs > global_maxs ||
+      (other_maxs == global_maxs && other_better != -1 && global_better == -1)) {
+      global_maxs = other_maxs;
+      global_better = other_better;
+    }
+  }
+
+  // Broadcast the best result to all threads (from thread 0 of our half-warp) to make sure all threads agree
+  global_maxs = __shfl_sync(half_warp_mask, global_maxs, half_warp_base_thread_idx);
+  global_better = __shfl_sync(half_warp_mask, global_better, half_warp_base_thread_idx);
+
+  // Thread 0 in the half-warp updates the body with the best result
+  if (half_lane_idx == 0 && global_better != -1) {
+    body->s[0] = getCoord(body, global_better, 0);
+    body->s[1] = getCoord(body, global_better, 1);
+    body->s[2] = getCoord(body, global_better, 2);
+    body->s_idx = global_better;
+  }
+}
 
 // TODO: possibly some redudndant memory/warp operations that could be optimized
 __global__ void compute_minimum_distance_warp_parallel(
@@ -1183,30 +1182,30 @@ __global__ void compute_minimum_distance_warp_parallel(
   gkSimplex* simplices,
   gkFloat* distances,
   int n) {
-  
+
   // Calculate which collision this half-warp handles
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
   int half_warp_idx = index / THREADS_PER_COMPUTATION;
-  
+
   // Get thread indexwithin the warp (0-31) and within the half-warp (0-15)
   int warp_lane_idx = threadIdx.x % 32;  // Lane ID within warp
   int half_warp_in_warp = warp_lane_idx / THREADS_PER_COMPUTATION;  // Which half-warp iwe are in (0 or 1)
   int half_lane_idx = warp_lane_idx % THREADS_PER_COMPUTATION;  // thread idx within half-warp (0-15)
-  
+
   // Calculate the lead thread index for our half-warp within the warp (0 or 16)
   // This is the thread that will coordinate the half warp and complete and broadcast computations we only need one thread to do
   int half_warp_base_thread_idx = half_warp_in_warp * THREADS_PER_COMPUTATION;
-  
+
   // Create mask for our half-warp (0xFFFF for first half, 0xFFFF0000 for second half) to determine which threads to sync with
   unsigned int half_warp_mask = (half_warp_in_warp == 0) ? 0xFFFF : 0xFFFF0000;
-  
+
   if (half_warp_idx >= n) {
     return;
   }
 
   // Each half-warp (16 threads) handles a single GJK computation
   // all threads in the half-warp work on the same collision
-  
+
   // Copy to local memory for fast access during iteration
   gkPolytope bd1 = polytypes1[half_warp_idx];
   gkPolytope bd2 = polytypes2[half_warp_idx];
@@ -1253,9 +1252,9 @@ __global__ void compute_minimum_distance_warp_parallel(
     }
     bd2.s_idx = 0;
   }
-  
+
   __syncwarp(half_warp_mask);
-  
+
   // Broadcast initial simplex state to all threads from thread 0 of our half-warp
   s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
   for (int t = 0; t < 3; ++t) {
@@ -1263,7 +1262,7 @@ __global__ void compute_minimum_distance_warp_parallel(
   }
   s.vrtx_idx[0][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][0], half_warp_base_thread_idx);
   s.vrtx_idx[0][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][1], half_warp_base_thread_idx);
-  
+
   // Broadcast initial support points to all threads (needed for support_parallel)
   bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
   bd1.s[1] = __shfl_sync(half_warp_mask, bd1.s[1], half_warp_base_thread_idx);
@@ -1277,22 +1276,22 @@ __global__ void compute_minimum_distance_warp_parallel(
   /* Begin GJK iteration */
   // Thread 0 controls the loop but all threads participate in parallel operations
   bool continue_iteration = true;
-  
+
   while (continue_iteration) {
     // Broadcast k and s.nvrtx to all threads for loop condition check
     k = __shfl_sync(half_warp_mask, k, half_warp_base_thread_idx);
     s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
-    
+
     // Check loop conditions
     if (s.nvrtx == 4 || k == mk) {
       continue_iteration = false;
       break;
     }
-    
+
     if (half_lane_idx == 0) {
       k++;
     }
-    
+
     __syncwarp(half_warp_mask);
 
     /* Update negative search direction - all threads compute*/
@@ -1305,9 +1304,9 @@ __global__ void compute_minimum_distance_warp_parallel(
     // All threads participate in finding support points for speedup but only thread 0 updates the body
     support_parallel(&bd1, vminus, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
     support_parallel(&bd2, v, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
-    
+
     __syncwarp(half_warp_mask);
-    
+
     // bd1.s and bd2.s are updated by support_parallel
     // Broadcast the updated support points to ensure all threads have them
     bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
@@ -1318,7 +1317,7 @@ __global__ void compute_minimum_distance_warp_parallel(
     bd2.s[1] = __shfl_sync(half_warp_mask, bd2.s[1], half_warp_base_thread_idx);
     bd2.s[2] = __shfl_sync(half_warp_mask, bd2.s[2], half_warp_base_thread_idx);
     bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
-    
+
     // all threads compute w for witness point computation
     for (int t = 0; t < 3; ++t) {
       w[t] = bd1.s[t] - bd2.s[t];
@@ -1330,7 +1329,7 @@ __global__ void compute_minimum_distance_warp_parallel(
      * further) - all threads compute - v and w are same on all threads */
     gkFloat norm2_v = norm2(v);
     gkFloat exeedtol_rel = (norm2_v - dotProduct(v, w));
-    
+
     // All threads check exit conditions
     bool should_break = false;
     if (exeedtol_rel <= (eps_rel * norm2_v) || exeedtol_rel < eps_tot22) {
@@ -1355,18 +1354,18 @@ __global__ void compute_minimum_distance_warp_parallel(
       s.vrtx_idx[i][1] = w_idx[1];
       s.nvrtx++;
     }
-    
+
     // Broadcast updated simplex state
     s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
     i = __shfl_sync(half_warp_mask, i, half_warp_base_thread_idx);
-    
+
     // Broadcast new vertex coordinates to all threads
     for (int t = 0; t < 3; ++t) {
       s.vrtx[i][t] = __shfl_sync(half_warp_mask, s.vrtx[i][t], half_warp_base_thread_idx);
     }
     s.vrtx_idx[i][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][0], half_warp_base_thread_idx);
     s.vrtx_idx[i][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][1], half_warp_base_thread_idx);
-    
+
     __syncwarp(half_warp_mask);
 
     /* Invoke distance sub-algorithm */
@@ -1374,13 +1373,13 @@ __global__ void compute_minimum_distance_warp_parallel(
     if (half_lane_idx == 0) {
       subalgorithm(&s, v);
     }
-    
+
     // Broadcast updated v and simplex state
     v[0] = __shfl_sync(half_warp_mask, v[0], half_warp_base_thread_idx);
     v[1] = __shfl_sync(half_warp_mask, v[1], half_warp_base_thread_idx);
     v[2] = __shfl_sync(half_warp_mask, v[2], half_warp_base_thread_idx);
     s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
-    
+
     // Broadcast all simplex vertices
     for (int vtx = 0; vtx < s.nvrtx; vtx++) {
       for (int t = 0; t < 3; ++t) {
@@ -1398,13 +1397,13 @@ __global__ void compute_minimum_distance_warp_parallel(
         norm2Wmax = tesnorm;
       }
     }
-    
+
     // Check exit condition - all threads compute so end loop at same spot
     norm2_v = norm2(v);
     if ((norm2_v <= (eps_tot * eps_tot * norm2Wmax))) {
       continue_iteration = false;
     }
-    
+
     __syncwarp(half_warp_mask);
   }
 
@@ -1413,7 +1412,7 @@ __global__ void compute_minimum_distance_warp_parallel(
     //     "\n * * * * * * * * * * * * MAXIMUM ITERATION NUMBER REACHED!!!  "
     //     " * * * * * * * * * * * * * * \n");
   }
-
+  
   // Compute witnesses and final distance on first thread only
   if (half_lane_idx == 0) {
     compute_witnesses(&bd1, &bd2, &s);
@@ -1423,7 +1422,705 @@ __global__ void compute_minimum_distance_warp_parallel(
   }
 }
 
+//*******************************************************************************************
+// WarpParallel EPA Implementation
+//*******************************************************************************************
 
+// Entry point to EPA implementation. 1 Warp per collision.
 
+// Maximum number of faces in the EPA polytope
+#define MAX_EPA_FACES 128
+
+// Face structure for EPA polytope
+// Each face is a triangle with 3 vertex indices
+typedef struct {
+  int v[3];           // Vertex indices in the polytope
+  int v_idx[3][2];    // Original vertex indices from original polytopes for witness computation [vertex][body]
+  gkFloat normal[3];  // Face normal (pointing outward from origin)
+  gkFloat distance;   // Distance from origin to face plane
+  bool valid;         // Whether this face is still valid (not removed)
+} EPAFace;
+
+// Polytope structure for EPA
+typedef struct {
+  gkFloat vertices[MAX_EPA_FACES + 4][3];  // Vertex coordinates in the Minkowski difference
+  int vertex_indices[MAX_EPA_FACES + 4][2]; // Original vertex indices [vertex][body]
+  int num_vertices;
+  EPAFace faces[MAX_EPA_FACES];
+  int num_faces;
+} EPAPolytope;
+
+// Compute face normal and distance of face from origin
+__device__ inline static void compute_face_normal_distance(EPAPolytope* poly, int face_idx) {
+  EPAFace* face = &poly->faces[face_idx];
+  if (!face->valid) return;
+  
+  gkFloat* v0 = poly->vertices[face->v[0]];
+  gkFloat* v1 = poly->vertices[face->v[1]];
+  gkFloat* v2 = poly->vertices[face->v[2]];
+  
+  // Compute edge vectors
+  gkFloat e0[3], e1[3];
+  for (int i = 0; i < 3; i++) {
+    e0[i] = v1[i] - v0[i];
+    e1[i] = v2[i] - v0[i];
+  }
+  
+  // Compute normal
+  crossProduct(e0, e1, face->normal);
+  gkFloat norm = gkSqrt(norm2(face->normal));
+  if (norm > gkEpsilon) {
+    for (int i = 0; i < 3; i++) {
+      face->normal[i] /= norm;
+    }
+    
+    // Ensure normal points away from origin (toward exterior)
+    gkFloat dot = dotProduct(face->normal, v0);
+    if (dot < 0) {
+      for (int i = 0; i < 3; i++) {
+        face->normal[i] = -face->normal[i];
+      }
+      dot = -dot;
+    }
+    face->distance = dot;
+  } else {
+    // Degenerate face
+    face->valid = false;
+    face->distance = -1.0f;
+  }
+}
+
+// Find the face closest to the origin using parallel reduction
+__device__ inline static int find_closest_face(EPAPolytope* poly, int warp_lane_idx, unsigned int warp_mask) {
+  int closest_face = -1;
+  gkFloat min_distance = 1e10f;
+  
+  // Each thread checks a subset of faces
+  const int faces_per_thread = (poly->num_faces + 31) / 32;
+  const int start_face = warp_lane_idx * faces_per_thread;
+  const int end_face = (start_face + faces_per_thread < poly->num_faces) ? 
+                       (start_face + faces_per_thread) : poly->num_faces;
+  
+  // Find local closest face
+  for (int i = start_face; i < end_face; i++) {
+    if (poly->faces[i].valid && poly->faces[i].distance >= 0) {
+      if (poly->faces[i].distance < min_distance) {
+        min_distance = poly->faces[i].distance;
+        closest_face = i;
+      }
+    }
+  }
+  
+  // Parallel reduction to find global closest face across warp
+  for (int offset = 16; offset > 0; offset /= 2) {
+    gkFloat other_dist = __shfl_down_sync(warp_mask, min_distance, offset);
+    int other_face = __shfl_down_sync(warp_mask, closest_face, offset);
+    
+    if (other_dist < min_distance && other_face >= 0) {
+      min_distance = other_dist;
+      closest_face = other_face;
+    }
+  }
+  
+  // Broadcast results to all threads
+  closest_face = __shfl_sync(warp_mask, closest_face, 0);
+  return closest_face;
+}
+
+// Check if a face is visible from a point (point is on positive side of face) Needed to determine which faces to restructure when vertex is added
+__device__ inline static bool is_face_visible(EPAPolytope* poly, int face_idx, const gkFloat* point) {
+  EPAFace* face = &poly->faces[face_idx];
+  if (!face->valid) return false;
+  
+  gkFloat* v0 = poly->vertices[face->v[0]];
+  gkFloat diff[3];
+  for (int i = 0; i < 3; i++) {
+    diff[i] = point[i] - v0[i];
+  }
+  
+  return dotProduct(face->normal, diff) > gkEpsilon;
+}
+
+// Parallel support function for EPA basicallly GJK one but only care about minkowski difference point
+__device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope* body2,
+    const gkFloat* direction, gkFloat* result, int* result_idx, 
+    int warp_lane_idx, unsigned int warp_mask) {
+  
+  // Each thread searches a subset of points
+  const int max_points = (body1->numpoints > body2->numpoints) ? 
+                         body1->numpoints : body2->numpoints;
+  const int points_per_thread = (max_points + 31) / 32;
+  const int start_idx = warp_lane_idx * points_per_thread;
+  const int end_idx = (start_idx + points_per_thread < max_points) ? 
+                      (start_idx + points_per_thread) : max_points;
+  
+  gkFloat local_max1 = -1e10f;
+  gkFloat local_max2 = -1e10f;
+  int local_best1 = -1;
+  int local_best2 = -1;
+  gkFloat vrt[3];
+  
+  // Search body1
+  for (int i = start_idx; i < body1->numpoints && i < end_idx; i++) {
+    for (int j = 0; j < 3; j++) {
+      vrt[j] = getCoord(body1, i, j);
+    }
+    gkFloat s = dotProduct(vrt, direction);
+    if (s > local_max1) {
+      local_max1 = s;
+      local_best1 = i;
+    }
+  }
+  
+  // Search body2 opposite direction
+  gkFloat neg_dir[3] = {-direction[0], -direction[1], -direction[2]};
+  for (int i = start_idx; i < body2->numpoints && i < end_idx; i++) {
+    for (int j = 0; j < 3; j++) {
+      vrt[j] = getCoord(body2, i, j);
+    }
+    gkFloat s = dotProduct(vrt, neg_dir);
+    if (s > local_max2) {
+      local_max2 = s;
+      local_best2 = i;
+    }
+  }
+  
+  // Parallel reduction for body1
+  for (int offset = 16; offset > 0; offset /= 2) {
+    gkFloat other_max = __shfl_down_sync(warp_mask, local_max1, offset);
+    int other_best = __shfl_down_sync(warp_mask, local_best1, offset);
+    if (other_max > local_max1) {
+      local_max1 = other_max;
+      local_best1 = other_best;
+    }
+  }
+  
+  // Parallel reduction for body2
+  for (int offset = 16; offset > 0; offset /= 2) {
+    gkFloat other_max = __shfl_down_sync(warp_mask, local_max2, offset);
+    int other_best = __shfl_down_sync(warp_mask, local_best2, offset);
+    if (other_max > local_max2) {
+      local_max2 = other_max;
+      local_best2 = other_best;
+    }
+  }
+  
+  // Broadcast results from thread 0
+  local_best1 = __shfl_sync(warp_mask, local_best1, 0);
+  local_best2 = __shfl_sync(warp_mask, local_best2, 0);
+  
+  // Compute Minkowski difference point
+  if (warp_lane_idx == 0 && local_best1 >= 0 && local_best2 >= 0) {
+    gkFloat p1[3], p2[3];
+    for (int i = 0; i < 3; i++) {
+      p1[i] = getCoord(body1, local_best1, i);
+      p2[i] = getCoord(body2, local_best2, i);
+      result[i] = p1[i] - p2[i];
+    }
+    result_idx[0] = local_best1;
+    result_idx[1] = local_best2;
+  }
+  
+  // Broadcast result to all threads
+  result[0] = __shfl_sync(warp_mask, result[0], 0);
+  result[1] = __shfl_sync(warp_mask, result[1], 0);
+  result[2] = __shfl_sync(warp_mask, result[2], 0);
+  result_idx[0] = __shfl_sync(warp_mask, result_idx[0], 0);
+  result_idx[1] = __shfl_sync(warp_mask, result_idx[1], 0);
+}
+
+// Initialize EPA polytope from GJK simplex (should be a tetrahedron)
+__device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex) {
+  // Clear all faces first
+  for (int i = 0; i < MAX_EPA_FACES; ++i) {
+    poly->faces[i].valid = false;
+  }
+  
+  // Copy vertices from simplex
+  poly->num_vertices = 4;
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 3; j++) {
+      poly->vertices[i][j] = simplex->vrtx[i][j];
+    }
+    poly->vertex_indices[i][0] = simplex->vrtx_idx[i][0];
+    poly->vertex_indices[i][1] = simplex->vrtx_idx[i][1];
+  }
+  
+  // Create 4 faces of tetrahedron (winding order matters for normal direction)
+  // Face 0: vertices 0, 1, 2
+  poly->faces[0].v[0] = 0;
+  poly->faces[0].v[1] = 1;
+  poly->faces[0].v[2] = 2;
+  poly->faces[0].v_idx[0][0] = simplex->vrtx_idx[0][0];
+  poly->faces[0].v_idx[0][1] = simplex->vrtx_idx[0][1];
+  poly->faces[0].v_idx[1][0] = simplex->vrtx_idx[1][0];
+  poly->faces[0].v_idx[1][1] = simplex->vrtx_idx[1][1];
+  poly->faces[0].v_idx[2][0] = simplex->vrtx_idx[2][0];
+  poly->faces[0].v_idx[2][1] = simplex->vrtx_idx[2][1];
+  poly->faces[0].valid = true;
+  
+  // Face 1: vertices 0, 1, 3
+  poly->faces[1].v[0] = 0;
+  poly->faces[1].v[1] = 1;
+  poly->faces[1].v[2] = 3;
+  poly->faces[1].v_idx[0][0] = simplex->vrtx_idx[0][0];
+  poly->faces[1].v_idx[0][1] = simplex->vrtx_idx[0][1];
+  poly->faces[1].v_idx[1][0] = simplex->vrtx_idx[1][0];
+  poly->faces[1].v_idx[1][1] = simplex->vrtx_idx[1][1];
+  poly->faces[1].v_idx[2][0] = simplex->vrtx_idx[3][0];
+  poly->faces[1].v_idx[2][1] = simplex->vrtx_idx[3][1];
+  poly->faces[1].valid = true;
+  
+  // Face 2: vertices 0, 2, 3
+  poly->faces[2].v[0] = 0;
+  poly->faces[2].v[1] = 2;
+  poly->faces[2].v[2] = 3;
+  poly->faces[2].v_idx[0][0] = simplex->vrtx_idx[0][0];
+  poly->faces[2].v_idx[0][1] = simplex->vrtx_idx[0][1];
+  poly->faces[2].v_idx[1][0] = simplex->vrtx_idx[2][0];
+  poly->faces[2].v_idx[1][1] = simplex->vrtx_idx[2][1];
+  poly->faces[2].v_idx[2][0] = simplex->vrtx_idx[3][0];
+  poly->faces[2].v_idx[2][1] = simplex->vrtx_idx[3][1];
+  poly->faces[2].valid = true;
+  
+  // Face 3: vertices 1, 2, 3
+  poly->faces[3].v[0] = 1;
+  poly->faces[3].v[1] = 2;
+  poly->faces[3].v[2] = 3;
+  poly->faces[3].v_idx[0][0] = simplex->vrtx_idx[1][0];
+  poly->faces[3].v_idx[0][1] = simplex->vrtx_idx[1][1];
+  poly->faces[3].v_idx[1][0] = simplex->vrtx_idx[2][0];
+  poly->faces[3].v_idx[1][1] = simplex->vrtx_idx[2][1];
+  poly->faces[3].v_idx[2][0] = simplex->vrtx_idx[3][0];
+  poly->faces[3].v_idx[2][1] = simplex->vrtx_idx[3][1];
+  poly->faces[3].valid = true;
+  
+  poly->num_faces = 4;
+}
+
+// ENTRY POINT TO EPA CALL
+// Main EPA kernel - one warp per collision
+__global__ void compute_epa_warp_parallel(
+  gkPolytope* polytopes1,
+  gkPolytope* polytopes2,
+  gkSimplex* simplices,
+  gkFloat* distances,
+  gkFloat* witness1,
+  gkFloat* witness2,
+  int n) {
+  
+  // Calculate which collision this warp handles
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  int warp_idx = index / 32;
+  
+  if (warp_idx >= n) {
+    return;
+  }
+  
+  // Get thread index within warp (0-31)
+  int warp_lane_idx = threadIdx.x % 32;
+  unsigned int warp_mask = 0xFFFFFFFF;
+  
+  // Copy polytopes to local memory
+  gkPolytope bd1_local = polytopes1[warp_idx];
+  gkPolytope bd2_local = polytopes2[warp_idx];
+  gkPolytope* bd1 = &bd1_local;
+  gkPolytope* bd2 = &bd2_local;
+  gkSimplex simplex = simplices[warp_idx];
+  
+  // Check if GJK detected collision (simplex should have 4 vertices) - TODO: NEED TO MAKE MORE ROBUST TO DEGENERATE CASES
+  if (simplex.nvrtx != 4) {
+    // No collision or not a proper tetrahedron - use GJK distance
+    if (warp_lane_idx == 0) {
+      // Witness points already computed by GJK: todo: witness points seem to be off in testing right now
+      for (int i = 0; i < 3; i++) {
+        witness1[warp_idx * 3 + i] = simplex.witnesses[0][i];
+        witness2[warp_idx * 3 + i] = simplex.witnesses[1][i];
+      }
+    }
+    return;
+  }
+
+  // Initialize EPA polytope from simplex
+  EPAPolytope poly;
+  if (warp_lane_idx == 0) {
+    init_epa_polytope(&poly, &simplex);
+  }
+  
+  __syncwarp(warp_mask);
+  
+  // Broadcast polytope initialization to all threads
+  poly.num_vertices = __shfl_sync(warp_mask, poly.num_vertices, 0);
+  poly.num_faces = __shfl_sync(warp_mask, poly.num_faces, 0);
+  
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 3; j++) {
+      poly.vertices[i][j] = __shfl_sync(warp_mask, poly.vertices[i][j], 0);
+    }
+    poly.vertex_indices[i][0] = __shfl_sync(warp_mask, poly.vertex_indices[i][0], 0);
+    poly.vertex_indices[i][1] = __shfl_sync(warp_mask, poly.vertex_indices[i][1], 0);
+  }
+  
+  for (int f = 0; f < 4; f++) {
+    for (int v = 0; v < 3; v++) {
+      poly.faces[f].v[v] = __shfl_sync(warp_mask, poly.faces[f].v[v], 0);
+      poly.faces[f].v_idx[v][0] = __shfl_sync(warp_mask, poly.faces[f].v_idx[v][0], 0);
+      poly.faces[f].v_idx[v][1] = __shfl_sync(warp_mask, poly.faces[f].v_idx[v][1], 0);
+    }
+    poly.faces[f].valid = __shfl_sync(warp_mask, poly.faces[f].valid ? 1 : 0, 0) != 0;
+  }
+  
+  // EPA iteration parameters
+  const int max_iterations = 64;
+  const gkFloat tolerance = eps_tot22;
+  int iteration = 0;
+  
+  // Main EPA loop
+  while (iteration < max_iterations && poly.num_faces < MAX_EPA_FACES) {
+    iteration++;
+    
+    // Compute face normals and distances
+    int closest_face = -1;
+    gkFloat closest_distance = 1e10f;
+    gkFloat dir_x = 0, dir_y = 0, dir_z = 0;
+    
+    // Use only one thread for now (num faces is low so multiple and then shuffling seemed to take longer if not done smartly)
+    if (warp_lane_idx == 0) {
+      // Recompute normals & distances for all valid faces
+      for (int i = 0; i < poly.num_faces; ++i) {
+        if (!poly.faces[i].valid) continue;
+        compute_face_normal_distance(&poly, i);
+      }
+      
+      // closest-face search
+      for (int i = 0; i < poly.num_faces; ++i) {
+        if (!poly.faces[i].valid) continue;
+        if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < closest_distance) {
+          closest_distance = poly.faces[i].distance;
+          closest_face = i;
+        }
+      }
+      
+      if (closest_face >= 0) {
+        dir_x = poly.faces[closest_face].normal[0];
+        dir_y = poly.faces[closest_face].normal[1];
+        dir_z = poly.faces[closest_face].normal[2];
+      }
+    }
+    
+    // Broadcast to whole warp for support_epa_parallel
+    closest_face = __shfl_sync(warp_mask, closest_face, 0);
+    closest_distance = __shfl_sync(warp_mask, closest_distance, 0);
+    dir_x = __shfl_sync(warp_mask, dir_x, 0);
+    dir_y = __shfl_sync(warp_mask, dir_y, 0);
+    dir_z = __shfl_sync(warp_mask, dir_z, 0);
+    
+    if (closest_face < 0 || closest_face >= poly.num_faces) {
+      break;
+    }
+    
+    gkFloat direction[3] = {dir_x, dir_y, dir_z};
+    EPAFace* closest = &poly.faces[closest_face];
+    
+    // Get support point in direction of closest face normal
+    gkFloat new_vertex[3];
+    int new_vertex_idx[2];
+    support_epa_parallel(bd1, bd2, direction, new_vertex, new_vertex_idx,
+                        warp_lane_idx, warp_mask);
+    
+    __syncwarp(warp_mask);
+    
+    // Check termination condition: if distance to new vertex along normal is not more than tolerance further than closest face
+    gkFloat dist_to_new = dir_x * new_vertex[0] + dir_y * new_vertex[1] + dir_z * new_vertex[2];
+    gkFloat improvement = dist_to_new - closest_distance;
+    
+    if (improvement < tolerance) {
+      // Converged, compute witness points with bary coords
+      if (warp_lane_idx == 0) {
+        // Project origin onto closest face
+        gkFloat* v0 = poly.vertices[closest->v[0]];
+        gkFloat* v1 = poly.vertices[closest->v[1]];
+        gkFloat* v2 = poly.vertices[closest->v[2]];
+        
+        gkFloat e0[3], e1[3], po[3];
+        for (int i = 0; i < 3; i++) {
+          e0[i] = v1[i] - v0[i];
+          e1[i] = v2[i] - v0[i];
+          po[i] = -v0[i];
+        }
+        
+        // Compute barycentric coordinates
+        gkFloat T00 = dotProduct(e0, e0);
+        gkFloat T01 = dotProduct(e0, e1);
+        gkFloat T11 = dotProduct(e1, e1);
+        gkFloat det = T00 * T11 - T01 * T01;
+        
+        if (det > gkEpsilon) {
+          gkFloat b0 = dotProduct(e0, po);
+          gkFloat b1 = dotProduct(e1, po);
+          gkFloat I00 = T11 / det;
+          gkFloat I01 = -T01 / det;
+          gkFloat I11 = T00 / det;
+          gkFloat a1 = I00 * b0 + I01 * b1;
+          gkFloat a2 = I01 * b0 + I11 * b1;
+          gkFloat a0 = 1.0f - a1 - a2;
+          
+          // Clamp barycentric coordinates
+          if (a0 < 0) { a0 = 0; a1 = 1 - a2; }
+          if (a1 < 0) { a1 = 0; a0 = 1 - a2; }
+          if (a2 < 0) { a2 = 0; a0 = 1 - a1; }
+          gkFloat sum = a0 + a1 + a2;
+          if (sum > gkEpsilon) {
+            a0 /= sum; a1 /= sum; a2 /= sum;
+          }
+          
+          // Compute witness points
+          int idx0[2] = {closest->v_idx[0][0], closest->v_idx[0][1]};
+          int idx1[2] = {closest->v_idx[1][0], closest->v_idx[1][1]};
+          int idx2[2] = {closest->v_idx[2][0], closest->v_idx[2][1]};
+          
+          for (int i = 0; i < 3; i++) {
+            witness1[warp_idx * 3 + i] = 
+              getCoord(bd1, idx0[0], i) * a0 +
+              getCoord(bd1, idx1[0], i) * a1 +
+              getCoord(bd1, idx2[0], i) * a2;
+            witness2[warp_idx * 3 + i] = 
+              getCoord(bd2, idx0[1], i) * a0 +
+              getCoord(bd2, idx1[1], i) * a1 +
+              getCoord(bd2, idx2[1], i) * a2;
+          }
+        }
+        
+        distances[warp_idx] = -closest_distance;
+      }
+      break;
+    }
+    
+    // Add new vertex to polytope
+    int new_vertex_id = poly.num_vertices;
+    if (warp_lane_idx == 0) {
+      for (int i = 0; i < 3; i++) {
+        poly.vertices[new_vertex_id][i] = new_vertex[i];
+      }
+      poly.vertex_indices[new_vertex_id][0] = new_vertex_idx[0];
+      poly.vertex_indices[new_vertex_id][1] = new_vertex_idx[1];
+      poly.num_vertices++;
+    }
+    
+    __syncwarp(warp_mask);
+    
+    // Broadcast new vertex
+    new_vertex_id = __shfl_sync(warp_mask, new_vertex_id, 0);
+    for (int i = 0; i < 3; i++) {
+      poly.vertices[new_vertex_id][i] = __shfl_sync(warp_mask, poly.vertices[new_vertex_id][i], 0);
+    }
+    poly.vertex_indices[new_vertex_id][0] = __shfl_sync(warp_mask, poly.vertex_indices[new_vertex_id][0], 0);
+    poly.vertex_indices[new_vertex_id][1] = __shfl_sync(warp_mask, poly.vertex_indices[new_vertex_id][1], 0);
+    poly.num_vertices = __shfl_sync(warp_mask, poly.num_vertices, 0);
+    
+    // Find visible faces (faces that can see the new vertex)
+    if (warp_lane_idx == 0) {
+      for (int i = 0; i < poly.num_faces; i++) {
+        if (poly.faces[i].valid && is_face_visible(&poly, i, new_vertex)) {
+          poly.faces[i].valid = false;
+        }
+      }
+    }
+    __syncwarp(warp_mask);
+    
+    // Find horizon edges (edges shared by exactly one invalid face and one valid face)
+    // Only create new faces from horizon edges
+    // Maybe some way to leverage multiple threads in warp to speed this up
+    if (warp_lane_idx == 0) {
+      // Structure to store edge information
+      struct EdgeInfo {
+        int v1, v2;  // Vertex indices in polytope
+        int v_idx1[2], v_idx2[2];  // Original vertex indices for witness computation
+        bool valid;  // Whether this edge is still valid (not duplicated)
+      };
+      
+      EdgeInfo edges[MAX_EPA_FACES * 3];
+      int num_edges = 0;
+      
+      // First pass: collect all edges from invalid faces
+      for (int f = 0; f < poly.num_faces; f++) {
+        if (!poly.faces[f].valid) {
+          // Edge 0-1
+          edges[num_edges].v1 = poly.faces[f].v[0];
+          edges[num_edges].v2 = poly.faces[f].v[1];
+          edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[0][0];
+          edges[num_edges].v_idx1[1] = poly.faces[f].v_idx[0][1];
+          edges[num_edges].v_idx2[0] = poly.faces[f].v_idx[1][0];
+          edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[1][1];
+          edges[num_edges].valid = true;
+          num_edges++;
+          
+          // Edge 1-2
+          edges[num_edges].v1 = poly.faces[f].v[1];
+          edges[num_edges].v2 = poly.faces[f].v[2];
+          edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[1][0];
+          edges[num_edges].v_idx1[1] = poly.faces[f].v_idx[1][1];
+          edges[num_edges].v_idx2[0] = poly.faces[f].v_idx[2][0];
+          edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[2][1];
+          edges[num_edges].valid = true;
+          num_edges++;
+          
+          // Edge 2-0
+          edges[num_edges].v1 = poly.faces[f].v[2];
+          edges[num_edges].v2 = poly.faces[f].v[0];
+          edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[2][0];
+          edges[num_edges].v_idx1[1] = poly.faces[f].v_idx[2][1];
+          edges[num_edges].v_idx2[0] = poly.faces[f].v_idx[0][0];
+          edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[0][1];
+          edges[num_edges].valid = true;
+          num_edges++;
+        }
+      }
+      
+      // Second pass: mark duplicate edges as invalid
+      // An edge (v1, v2) is the same as (v2, v1)
+      for (int i = 0; i < num_edges; i++) {
+        if (!edges[i].valid) continue;
+        
+        // Check if this edge appears again later
+        for (int j = i + 1; j < num_edges; j++) {
+          if (!edges[j].valid) continue;
+          
+          if ((edges[i].v1 == edges[j].v1 && edges[i].v2 == edges[j].v2) ||
+              (edges[i].v1 == edges[j].v2 && edges[i].v2 == edges[j].v1)) {
+            edges[i].valid = false;
+            edges[j].valid = false;
+          }
+        }
+      }
+      
+      // create new faces from remaining unique edges
+      int new_face_idx = 0;
+      
+      // Find first available face slot
+      for (int i = 0; i < MAX_EPA_FACES; i++) {
+        if (!poly.faces[i].valid) {
+          new_face_idx = i;
+          break;
+        }
+      }
+      
+      for (int i = 0; i < num_edges && new_face_idx < MAX_EPA_FACES; i++) {
+        if (edges[i].valid) {
+          poly.faces[new_face_idx].v[0] = edges[i].v1;
+          poly.faces[new_face_idx].v[1] = edges[i].v2;
+          poly.faces[new_face_idx].v[2] = new_vertex_id;
+          poly.faces[new_face_idx].v_idx[0][0] = edges[i].v_idx1[0];
+          poly.faces[new_face_idx].v_idx[0][1] = edges[i].v_idx1[1];
+          poly.faces[new_face_idx].v_idx[1][0] = edges[i].v_idx2[0];
+          poly.faces[new_face_idx].v_idx[1][1] = edges[i].v_idx2[1];
+          poly.faces[new_face_idx].v_idx[2][0] = new_vertex_idx[0];
+          poly.faces[new_face_idx].v_idx[2][1] = new_vertex_idx[1];
+          poly.faces[new_face_idx].valid = true;
+          new_face_idx++;
+        }
+      }
+      
+      // Update face count
+      int valid_count = 0;
+      for (int i = 0; i < MAX_EPA_FACES; i++) {
+        if (poly.faces[i].valid) valid_count++;
+      }
+      poly.num_faces = valid_count;
+    }
+    
+    __syncwarp(warp_mask);
+    
+    // Broadcast updated face count and new faces
+    poly.num_faces = __shfl_sync(warp_mask, poly.num_faces, 0);
+    for (int i = 0; i < MAX_EPA_FACES; i++) {
+      poly.faces[i].valid = __shfl_sync(warp_mask, poly.faces[i].valid ? 1 : 0, 0) != 0;
+      if (poly.faces[i].valid) {
+        for (int v = 0; v < 3; v++) {
+          poly.faces[i].v[v] = __shfl_sync(warp_mask, poly.faces[i].v[v], 0);
+          poly.faces[i].v_idx[v][0] = __shfl_sync(warp_mask, poly.faces[i].v_idx[v][0], 0);
+          poly.faces[i].v_idx[v][1] = __shfl_sync(warp_mask, poly.faces[i].v_idx[v][1], 0);
+        }
+      }
+    }
+  }
+  
+  // If we exited due to max iterations, recompute closest face and use it
+  if (iteration >= max_iterations && warp_lane_idx == 0) {
+    // Recompute normals & distances for all valid faces
+    for (int i = 0; i < poly.num_faces; ++i) {
+      if (!poly.faces[i].valid) continue;
+      compute_face_normal_distance(&poly, i);
+    }
+    
+    // Scalar closest-face search
+    int closest_face = -1;
+    gkFloat closest_distance = 1e10f;
+    for (int i = 0; i < poly.num_faces; ++i) {
+      if (!poly.faces[i].valid) continue;
+      if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < closest_distance) {
+        closest_distance = poly.faces[i].distance;
+        closest_face = i;
+      }
+    }
+    
+    if (closest_face >= 0 && closest_face < poly.num_faces && poly.faces[closest_face].valid) {
+      EPAFace* closest = &poly.faces[closest_face];
+      
+      // Compute witness points using barycentric coordinates (same as above)
+      gkFloat* v0 = poly.vertices[closest->v[0]];
+      gkFloat* v1 = poly.vertices[closest->v[1]];
+      gkFloat* v2 = poly.vertices[closest->v[2]];
+      
+      gkFloat e0[3], e1[3], po[3];
+      for (int i = 0; i < 3; i++) {
+        e0[i] = v1[i] - v0[i];
+        e1[i] = v2[i] - v0[i];
+        po[i] = -v0[i];
+      }
+      
+      gkFloat T00 = dotProduct(e0, e0);
+      gkFloat T01 = dotProduct(e0, e1);
+      gkFloat T11 = dotProduct(e1, e1);
+      gkFloat det = T00 * T11 - T01 * T01;
+      
+      if (det > gkEpsilon) {
+        gkFloat b0 = dotProduct(e0, po);
+        gkFloat b1 = dotProduct(e1, po);
+        gkFloat I00 = T11 / det;
+        gkFloat I01 = -T01 / det;
+        gkFloat I11 = T00 / det;
+        gkFloat a1 = I00 * b0 + I01 * b1;
+        gkFloat a2 = I01 * b0 + I11 * b1;
+        gkFloat a0 = 1.0f - a1 - a2;
+        
+        if (a0 < 0) { a0 = 0; a1 = 1 - a2; }
+        if (a1 < 0) { a1 = 0; a0 = 1 - a2; }
+        if (a2 < 0) { a2 = 0; a0 = 1 - a1; }
+        gkFloat sum = a0 + a1 + a2;
+        if (sum > gkEpsilon) {
+          a0 /= sum; a1 /= sum; a2 /= sum;
+        }
+        
+        int idx0[2] = {closest->v_idx[0][0], closest->v_idx[0][1]};
+        int idx1[2] = {closest->v_idx[1][0], closest->v_idx[1][1]};
+        int idx2[2] = {closest->v_idx[2][0], closest->v_idx[2][1]};
+        
+        for (int i = 0; i < 3; i++) {
+          witness1[warp_idx * 3 + i] = 
+            getCoord(bd1, idx0[0], i) * a0 +
+            getCoord(bd1, idx1[0], i) * a1 +
+            getCoord(bd1, idx2[0], i) * a2;
+          witness2[warp_idx * 3 + i] = 
+            getCoord(bd2, idx0[1], i) * a0 +
+            getCoord(bd2, idx1[1], i) * a1 +
+            getCoord(bd2, idx2[1], i) * a2;
+        }
+      }
+      
+      distances[warp_idx] = -closest_distance;
+    }
+  }
+}
 
 

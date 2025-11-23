@@ -357,5 +357,10 @@ main() {
 
   GJK::GPU::testing(polytopeCounts, sizeof(polytopeCounts) / sizeof(polytopeCounts[0]), vertexCounts, sizeof(vertexCounts) / sizeof(vertexCounts[0]), outputFile.c_str());
 #endif
+
+
+  printf("\n");
+  GJK::GPU::EPATesting();
+
   return (0);
 }
