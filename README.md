@@ -3,6 +3,14 @@
 
 CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
 
+## Introduction
+
+We aim to create an efficient and high quality open implementations of the GJK and EPA collision detection algorithms in CUDA, leveraging the GPU to achieve significant speedup over existing CPU implementations on high numbers of colliding polytopes. We also provide a physics simulation using OpenGL and Raylib for visualization to demonstrate our updated algorithms in action.
+
+**GJK (Gilbert-Johnson-Keerthi)** is a fast iterative algorithm for computing the minimum distance between two convex polytopes in 3D space. It works by iteratively building a simplex (a point, line segment, triangle, or tetrahedron) within the Minkowski difference of the two polytopes, converging toward the closest point to the origin. GJK is widely used in collision detection, robotics, and physics simulation because it's efficient, numerically stable, and works with any convex shape.
+
+**EPA (Expanding Polytope Algorithm)** is a complementary algorithm that computes penetration depth and witness points when two polytopes are overlapping. While GJK can detect collisions (distance = 0), EPA is needed to determine how deeply objects penetrate each other and where the contact points are, both of which are critical for collision response in physics engines.
+
 ## CPU Baseline Implementation
 
 The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the common flattened memory layout:
@@ -33,7 +41,7 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
 
 6. **Code Structure**: GPU wrapper in `GJK::GPU` namespace with built-in CUDA timing support
 
-7. **Warp Parallel Implementation** Added warpParallelGJK.cu and warpParallelGJK.h which use 16 threads per polytope-polytope collision. Currently main speedup over normal GPU implementation is from parallelising the support function calls.
+7. **Warp Parallel Implementation** Added warpParallelGJK.cu and warpParallelGJK.h which use 16 threads per polytope-polytope collision. Currently main speedup over normal GPU implementation is from parallelising the support function calls and the GJK sub-distance algorithm (S1D/S2D/S3D) across warp lanes.
 
 7. **Warp Parallel EPA Implementation** Implemented `compute_epa_warp_parallel` kernel using one warp (32 threads) per collision.
 
@@ -52,12 +60,6 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
   - Horizon edge detection optimized with single-pass edge collection and duplicate removal
 - **Synchronization**: Lane 0 (first thread) maintains authoritative polytope state; other threads assist with parallel support calls
 - **Convergence**: Iterates until penetration depth improvement is below tolerance or max iterations (64) reached
-
-### Current Limitations / Known Issues
-- **Degenerate Cases**: Handling of edge cases (e.g., simplices with < 4 vertices from GJK) needs more robust error handling
-- **Witness Points**: Witness point doesn't always seem to be correct. Possibly an error in the GJk implementation too.
-- **Performance**: Horizon reconstruction currently runs sequentially on lane 0; potential for further parallelization
-- **Testing**: Basic test cases implemented; comprehensive validation against reference implementations still in progress
 
 ### API
 The EPA functionality is accessible through `GJK::GPU::computeGJKAndEPA()` which:

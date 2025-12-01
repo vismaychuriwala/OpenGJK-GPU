@@ -635,6 +635,476 @@ __device__ inline static void S3D(gkSimplex* s, gkFloat* v) {
   }
 }
 
+// Warp-parallel variants of the distance sub-algorithm pieces.
+// These use a small number of lanes in the half-warp to evaluate
+// independent predicates (hff1 / hff3) in parallel
+
+__device__ inline static void S1D_warp_parallel(
+  gkSimplex* s,
+  gkFloat* v,
+  int half_lane_idx) {
+  // There is only a single hff1 test in S1D, so we can just execute previous alg on lead lane
+  if (half_lane_idx == 0) {
+    S1D(s, v);
+  }
+}
+
+__device__ inline static void S2D_warp_parallel(
+  gkSimplex* s,
+  gkFloat* v,
+  int half_lane_idx,
+  unsigned int half_warp_mask,
+  int half_warp_base_thread_idx) {
+
+  const gkFloat* s1p = s->vrtx[2];
+  const gkFloat* s2p = s->vrtx[1];
+  const gkFloat* s3p = s->vrtx[0];
+
+  // do hff1 and hff2 in parallel using two lanes in the half-warp.
+  int hff1f[2] = {0, 0};
+  const gkFloat* hff1_pts[2] = {s2p, s3p};
+
+  if (half_lane_idx < 2) {
+    hff1f[half_lane_idx] = hff1(s1p, hff1_pts[half_lane_idx]);
+  }
+
+  int hff2f[2] = {0, 0};
+  const gkFloat* hff2_q[2] = {s2p, s3p};
+  const gkFloat* hff2_r[2] = {s3p, s2p};
+
+  if (half_lane_idx < 2) {
+    hff2f[half_lane_idx] = !hff2(s1p, hff2_q[half_lane_idx], hff2_r[half_lane_idx]);
+  }
+
+  // Broadcast results from the lanes that computed them.
+  const int lane0 = half_warp_base_thread_idx + 0;
+  const int lane1 = half_warp_base_thread_idx + 1;
+  int hff1f_s12 = __shfl_sync(half_warp_mask, hff1f[0], lane0);
+  int hff1f_s13 = __shfl_sync(half_warp_mask, hff1f[1], lane1);
+  int hff2f_23 = __shfl_sync(half_warp_mask, hff2f[0], lane0);
+  int hff2f_32 = __shfl_sync(half_warp_mask, hff2f[1], lane1);
+
+  // Only the lead lane runs if-else logic to determine region
+  if (half_lane_idx != 0) {
+    return;
+  }
+
+  if (hff1f_s12) {
+    if (hff2f_23) {
+      if (hff1f_s13) {
+        if (hff2f_32) {
+          projectOnPlane(s1p, s2p, s3p, v);  // Update s, no need to update c
+          return;                            // Return V{1,2,3}
+        }
+        else {
+          projectOnLine(s1p, s3p, v);  // Update v
+          S2Dregion13();               // Update s
+          return;                      // Return V{1,3}
+        }
+      }
+      else {
+        projectOnPlane(s1p, s2p, s3p, v);  // Update s, no need to update c
+        return;                            // Return V{1,2,3}
+      }
+    }
+    else {
+      projectOnLine(s1p, s2p, v);  // Update v
+      S2Dregion12();               // Update s
+      return;                      // Return V{1,2}
+    }
+  }
+  else if (hff1f_s13) {
+    const int hff2f_32 = !hff2(s1p, s3p, s2p);
+    if (hff2f_32) {
+      projectOnPlane(s1p, s2p, s3p, v);  // Update s, no need to update v
+      return;                            // Return V{1,2,3}
+    }
+    else {
+      projectOnLine(s1p, s3p, v);  // Update v
+      S2Dregion13();               // Update s
+      return;                      // Return V{1,3}
+    }
+  }
+  else {
+    S2Dregion1();  // Update s and v
+    return;        // Return V{1}
+  }
+}
+
+__device__ inline static void S3D_warp_parallel(
+  gkSimplex* s,
+  gkFloat* v,
+  int half_lane_idx,
+  unsigned int half_warp_mask,
+  int half_warp_base_thread_idx) {
+
+  gkFloat s1[3], s2[3], s3[3], s4[3], s1s2[3], s1s3[3], s1s4[3];
+  gkFloat si[3], sj[3], sk[3];
+  int s1_idx[2], s2_idx[2], s3_idx[2];
+  int si_idx[2], sj_idx[2], sk_idx[2];
+  int testLineThree, testLineFour, testPlaneTwo, testPlaneThree, testPlaneFour,
+    dotTotal;
+  int i, j, k, t;
+
+  getvrtxidx(s1, s1_idx, 3);
+  getvrtxidx(s2, s2_idx, 2);
+  getvrtxidx(s3, s3_idx, 1);
+  getvrtx(s4, 0);
+  calculateEdgeVector(s1s2, s2);
+  calculateEdgeVector(s1s3, s3);
+  calculateEdgeVector(s1s4, s4);
+
+  // Parallel evaluation of the thff1 and hff3 predicaes
+  int hff1_s[3] = {0, 0, 0};
+  int hff3_s[3] = {0, 0, 0};
+
+  const gkFloat* hff1_pts[3] = {s2, s3, s4};
+  const gkFloat* hff3_q[3]   = {s3, s4, s2};  // second argument
+  const gkFloat* hff3_r[3]   = {s4, s2, s3};  // third argument
+
+  if (half_lane_idx < 3) {
+    hff1_s[half_lane_idx] = hff1(s1, hff1_pts[half_lane_idx]);
+    hff3_s[half_lane_idx] = hff3(s1, hff3_q[half_lane_idx], hff3_r[half_lane_idx]);
+  }
+
+  int hff1_s12 = 0, hff1_s13 = 0, hff1_s14 = 0;
+  int hff3_134 = 0, hff3_142 = 0, hff3_123 = 0;
+
+  const int lane0 = half_warp_base_thread_idx + 0;
+  const int lane1 = half_warp_base_thread_idx + 1;
+  const int lane2 = half_warp_base_thread_idx + 2;
+
+  // Gather each lane's result on all threads.
+  hff1_s12 = __shfl_sync(half_warp_mask, hff1_s[0], lane0);
+  hff1_s13 = __shfl_sync(half_warp_mask, hff1_s[1], lane1);
+  hff1_s14 = __shfl_sync(half_warp_mask, hff1_s[2], lane2);
+  hff3_134 = __shfl_sync(half_warp_mask, hff3_s[0], lane0);
+  hff3_142 = __shfl_sync(half_warp_mask, hff3_s[1], lane1);
+  hff3_123 = __shfl_sync(half_warp_mask, hff3_s[2], lane2);
+
+  // Only the lead lane executes the rest of if-else logic to determine region
+  if (half_lane_idx != 0) {
+    return;
+  }
+
+  int hff1_tests[3];
+  hff1_tests[2] = hff1_s12;
+  hff1_tests[1] = hff1_s13;
+  hff1_tests[0] = hff1_s14;
+  testLineThree = hff1_s13;
+  testLineFour = hff1_s14;
+
+  dotTotal = hff1_s12 + testLineThree + testLineFour;
+  if (dotTotal == 0) { /* case 0.0 -------------------------------------- */
+    S3Dregion1();
+    return;
+  }
+
+  const gkFloat det134 = determinant(s1s3, s1s4, s1s2);
+  const int sss = (det134 <= 0);
+
+  testPlaneTwo = hff3_134 - sss;
+  testPlaneTwo = testPlaneTwo * testPlaneTwo;
+  testPlaneThree = hff3_142 - sss;
+  testPlaneThree = testPlaneThree * testPlaneThree;
+  testPlaneFour = hff3_123 - sss;
+  testPlaneFour = testPlaneFour * testPlaneFour;
+
+  switch (testPlaneTwo + testPlaneThree + testPlaneFour) {
+  case 3:
+    S3Dregion1234();
+    break;
+
+  case 2:
+    // Only one facing the oring
+    // 1,i,j, are the indices of the points on the triangle and remove k from
+    // simplex
+    s->nvrtx = 3;
+    if (!testPlaneTwo) {  // k = 2;   removes s2
+      for (i = 0; i < 3; i++) {
+        s->vrtx[2][i] = s->vrtx[3][i];
+      }
+      for (i = 0; i < 2; i++) {
+        s->vrtx_idx[2][i] = s->vrtx_idx[3][i];
+      }
+    }
+    else if (!testPlaneThree) {  // k = 1; // removes s3
+      for (i = 0; i < 3; i++) {
+        s->vrtx[1][i] = s2[i];
+        s->vrtx[2][i] = s->vrtx[3][i];
+      }
+      for (i = 0; i < 2; i++) {
+        s->vrtx_idx[1][i] = s2_idx[i];
+        s->vrtx_idx[2][i] = s->vrtx_idx[3][i];
+      }
+    }
+    else if (!testPlaneFour) {  // k = 0; // removes s4  and no need to
+      // reorder
+      for (i = 0; i < 3; i++) {
+        s->vrtx[0][i] = s3[i];
+        s->vrtx[1][i] = s2[i];
+        s->vrtx[2][i] = s->vrtx[3][i];
+      }
+      for (i = 0; i < 2; i++) {
+        s->vrtx_idx[0][i] = s3_idx[i];
+        s->vrtx_idx[1][i] = s2_idx[i];
+        s->vrtx_idx[2][i] = s->vrtx_idx[3][i];
+      }
+    }
+    // Call S2D
+    S2D(s, v);
+    break;
+  case 1:
+    // Two triangles face the origins:
+    //    The only positive hff3 is for triangle 1,i,j, therefore k must be in
+    //    the solution as it supports the the point of minimum norm.
+
+    // 1,i,j, are the indices of the points on the triangle and remove k from
+    // simplex
+    s->nvrtx = 3;
+    if (testPlaneTwo) {
+      k = 2;  // s2
+      i = 1;
+      j = 0;
+    }
+    else if (testPlaneThree) {
+      k = 1;  // s3
+      i = 0;
+      j = 2;
+    }
+    else {
+      k = 0;  // s4
+      i = 2;
+      j = 1;
+    }
+
+    getvrtxidx(si, si_idx, i);
+    getvrtxidx(sj, sj_idx, j);
+    getvrtxidx(sk, sk_idx, k);
+
+    if (dotTotal == 1) {
+      if (hff1_tests[k]) {
+        if (!hff2(s1, sk, si)) {
+          select_1ik();
+          projectOnPlane(s1, si, sk, v);
+        }
+        else if (!hff2(s1, sk, sj)) {
+          select_1jk();
+          projectOnPlane(s1, sj, sk, v);
+        }
+        else {
+          select_1k();  // select region 1i
+          projectOnLine(s1, sk, v);
+        }
+      }
+      else if (hff1_tests[i]) {
+        if (!hff2(s1, si, sk)) {
+          select_1ik();
+          projectOnPlane(s1, si, sk, v);
+        }
+        else {
+          select_1i();  // select region 1i
+          projectOnLine(s1, si, v);
+        }
+      }
+      else {
+        if (!hff2(s1, sj, sk)) {
+          select_1jk();
+          projectOnPlane(s1, sj, sk, v);
+        }
+        else {
+          select_1j();  // select region 1i
+          projectOnLine(s1, sj, v);
+        }
+      }
+    }
+    else if (dotTotal == 2) {
+      // Two edges have positive hff1, meaning that for two edges the origin's
+      // project fall on the segement.
+      //  Certainly the edge 1,k supports the the point of minimum norm, and
+      //  so hff1_1k is positive
+
+      if (hff1_tests[i]) {
+        if (!hff2(s1, sk, si)) {
+          if (!hff2(s1, si, sk)) {
+            select_1ik();  // select region 1ik
+            projectOnPlane(s1, si, sk, v);
+          }
+          else {
+            select_1k();  // select region 1k
+            projectOnLine(s1, sk, v);
+          }
+        }
+        else {
+          if (!hff2(s1, sk, sj)) {
+            select_1jk();  // select region 1jk
+            projectOnPlane(s1, sj, sk, v);
+          }
+          else {
+            select_1k();  // select region 1k
+            projectOnLine(s1, sk, v);
+          }
+        }
+      }
+      else if (hff1_tests[j]) {  //  there is no other choice
+        if (!hff2(s1, sk, sj)) {
+          if (!hff2(s1, sj, sk)) {
+            select_1jk();  // select region 1jk
+            projectOnPlane(s1, sj, sk, v);
+          }
+          else {
+            select_1j();  // select region 1j
+            projectOnLine(s1, sj, v);
+          }
+        }
+        else {
+          if (!hff2(s1, sk, si)) {
+            select_1ik();  // select region 1ik
+            projectOnPlane(s1, si, sk, v);
+          }
+          else {
+            select_1k();  // select region 1k
+            projectOnLine(s1, sk, v);
+          }
+        }
+      }
+      else {
+        // ERROR;
+      }
+
+    }
+    else if (dotTotal == 3) {
+      // MM : ALL THIS HYPHOTESIS IS FALSE
+      // sk is s.t. hff3 for sk < 0. So, sk must support the origin because
+      // there are 2 triangles facing the origin.
+
+      int hff2_ik = hff2(s1, si, sk);
+      int hff2_jk = hff2(s1, sj, sk);
+      int hff2_ki = hff2(s1, sk, si);
+      int hff2_kj = hff2(s1, sk, sj);
+
+      if (hff2_ki == 0 && hff2_kj == 0) {
+        //   mexPrintf("\n\n UNEXPECTED VALUES!!! \n\n");
+      }
+      if (hff2_ki == 1 && hff2_kj == 1) {
+        select_1k();
+        projectOnLine(s1, sk, v);
+      }
+      else if (hff2_ki) {
+        // discard i
+        if (hff2_jk) {
+          // discard k
+          select_1j();
+          projectOnLine(s1, sj, v);
+        }
+        else {
+          select_1jk();
+          projectOnPlane(s1, sk, sj, v);
+        }
+      }
+      else {
+        // discard j
+        if (hff2_ik) {
+          // discard k
+          select_1i();
+          projectOnLine(s1, si, v);
+        }
+        else {
+          select_1ik();
+          projectOnPlane(s1, sk, si, v);
+        }
+      }
+    }
+    break;
+
+  case 0:
+    // The origin is outside all 3 triangles
+    if (dotTotal == 1) {
+      // Here si is set such that hff(s1,si) > 0
+      if (testLineThree) {
+        k = 2;
+        i = 1;  // s3
+        j = 0;
+      }
+      else if (testLineFour) {
+        k = 1;  // s3
+        i = 0;
+        j = 2;
+      }
+      else {
+        k = 0;
+        i = 2;  // s2
+        j = 1;
+      }
+      getvrtxidx(si, si_idx, i);
+      getvrtxidx(sj, sj_idx, j);
+      getvrtxidx(sk, sk_idx, k);
+
+      if (!hff2(s1, si, sj)) {
+        select_1ij();
+        projectOnPlane(s1, si, sj, v);
+      }
+      else if (!hff2(s1, si, sk)) {
+        select_1ik();
+        projectOnPlane(s1, si, sk, v);
+      }
+      else {
+        select_1i();
+        projectOnLine(s1, si, v);
+      }
+    }
+    else if (dotTotal == 2) {
+      // Here si is set such that hff(s1,si) < 0
+      s->nvrtx = 3;
+      if (!testLineThree) {
+        k = 2;
+        i = 1;  // s3
+        j = 0;
+      }
+      else if (!testLineFour) {
+        k = 1;
+        i = 0;  // s4
+        j = 2;
+      }
+      else {
+        k = 0;
+        i = 2;  // s2
+        j = 1;
+      }
+      getvrtxidx(si, si_idx, i);
+      getvrtxidx(sj, sj_idx, j);
+      getvrtxidx(sk, sk_idx, k);
+
+      if (!hff2(s1, sj, sk)) {
+        if (!hff2(s1, sk, sj)) {
+          select_1jk();  // select region 1jk
+          projectOnPlane(s1, sj, sk, v);
+        }
+        else if (!hff2(s1, sk, si)) {
+          select_1ik();
+          projectOnPlane(s1, sk, si, v);
+        }
+        else {
+          select_1k();
+          projectOnLine(s1, sk, v);
+        }
+      }
+      else if (!hff2(s1, sj, si)) {
+        select_1ij();
+        projectOnPlane(s1, si, sj, v);
+      }
+      else {
+        select_1j();
+        projectOnLine(s1, sj, v);
+      }
+    }
+    break;
+  default: {
+    //   mexPrintf("\nERROR:\tunhandled");
+  }
+  }
+}
+
 __device__ inline static void support(gkPolytope* body,
   const gkFloat* v) {
   gkFloat s, maxs;
@@ -676,6 +1146,59 @@ __device__ inline static void subalgorithm(gkSimplex* s, gkFloat* v) {
   default: {
     //   mexPrintf("\nERROR:\t invalid simplex\n");
   }
+  }
+}
+
+// Warp-parallel wrapper for the distance sub-algorithm.
+// Uses the warp-parallel S1D/S2D/S3D which evaluate the
+// independent predicates (hff1/hff3) on a few lanes in parallel
+__device__ inline static void subalgorithm_warp_parallel(
+  gkSimplex* s,
+  gkFloat* v,
+  int half_lane_idx,
+  unsigned int half_warp_mask,
+  int half_warp_base_thread_idx) {
+
+  __syncwarp(half_warp_mask);
+
+  switch (s->nvrtx) {
+  case 4:
+    S3D_warp_parallel(s, v, half_lane_idx, half_warp_mask,
+      half_warp_base_thread_idx);
+    break;
+  case 3:
+    S2D_warp_parallel(s, v, half_lane_idx, half_warp_mask,
+      half_warp_base_thread_idx);
+    break;
+  case 2:
+    S1D_warp_parallel(s, v, half_lane_idx);
+    break;
+  default: {
+    //   mexPrintf("\nERROR:\t invalid simplex\n");
+  }
+  }
+
+  // Ensure subalgorithm has finished before broadcasting results.
+  __syncwarp(half_warp_mask);
+
+  // Broadcast updated search direction.
+  v[0] = __shfl_sync(half_warp_mask, v[0], half_warp_base_thread_idx);
+  v[1] = __shfl_sync(half_warp_mask, v[1], half_warp_base_thread_idx);
+  v[2] = __shfl_sync(half_warp_mask, v[2], half_warp_base_thread_idx);
+
+  // Broadcast simplex data
+  s->nvrtx =
+    __shfl_sync(half_warp_mask, s->nvrtx, half_warp_base_thread_idx);
+
+  for (int vtx = 0; vtx < s->nvrtx; ++vtx) {
+    for (int t = 0; t < 3; ++t) {
+      s->vrtx[vtx][t] =
+        __shfl_sync(half_warp_mask, s->vrtx[vtx][t], half_warp_base_thread_idx);
+    }
+    s->vrtx_idx[vtx][0] =
+      __shfl_sync(half_warp_mask, s->vrtx_idx[vtx][0], half_warp_base_thread_idx);
+    s->vrtx_idx[vtx][1] =
+      __shfl_sync(half_warp_mask, s->vrtx_idx[vtx][1], half_warp_base_thread_idx);
   }
 }
 
@@ -1368,26 +1891,9 @@ __global__ void compute_minimum_distance_warp_parallel(
 
     __syncwarp(half_warp_mask);
 
-    /* Invoke distance sub-algorithm */
-    // This runs on thread 0 for now. TODO: look into parallelizing subalgorithm more/ alternative subalgorithms (Johnson's, Signed Volumes, HFF)
-    if (half_lane_idx == 0) {
-      subalgorithm(&s, v);
-    }
-
-    // Broadcast updated v and simplex state
-    v[0] = __shfl_sync(half_warp_mask, v[0], half_warp_base_thread_idx);
-    v[1] = __shfl_sync(half_warp_mask, v[1], half_warp_base_thread_idx);
-    v[2] = __shfl_sync(half_warp_mask, v[2], half_warp_base_thread_idx);
-    s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
-
-    // Broadcast all simplex vertices
-    for (int vtx = 0; vtx < s.nvrtx; vtx++) {
-      for (int t = 0; t < 3; ++t) {
-        s.vrtx[vtx][t] = __shfl_sync(half_warp_mask, s.vrtx[vtx][t], half_warp_base_thread_idx);
-      }
-      s.vrtx_idx[vtx][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[vtx][0], half_warp_base_thread_idx);
-      s.vrtx_idx[vtx][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[vtx][1], half_warp_base_thread_idx);
-    }
+    /* Invoke distance sub-algorithm (warp-parallel wrapper).*/
+    subalgorithm_warp_parallel(&s, v, half_lane_idx, half_warp_mask,
+      half_warp_base_thread_idx);
 
     /* Test */
     // All threads compute the same value since s.vrtx is the same on all threads (broadcast earlier)
@@ -1727,10 +2233,11 @@ __global__ void compute_epa_warp_parallel(
   gkPolytope* bd1 = &bd1_local;
   gkPolytope* bd2 = &bd2_local;
   gkSimplex simplex = simplices[warp_idx];
-  
-  // Check if GJK detected collision (simplex should have 4 vertices) - TODO: NEED TO MAKE MORE ROBUST TO DEGENERATE CASES
-  if (simplex.nvrtx != 4) {
-    // No collision or not a proper tetrahedron - use GJK distance
+  gkFloat distance = distances[warp_idx];
+
+  // if distance isn't 0 didn't detect collision - skip EPA
+  if (distance > gkEpsilon) {
+    return;
     if (warp_lane_idx == 0) {
       // Witness points already computed by GJK: todo: witness points seem to be off in testing right now
       for (int i = 0; i < 3; i++) {
@@ -1738,9 +2245,240 @@ __global__ void compute_epa_warp_parallel(
         witness2[warp_idx * 3 + i] = simplex.witnesses[1][i];
       }
     }
-    return;
+  }
+  
+  // If GJK returned a degenerate simplex, rebuild it properly for EPA
+  if (simplex.nvrtx != 4) {
+    // Need to get it up to 4 vertices
+    if (simplex.nvrtx == 1) {
+      // Grow simplex from a single point: fire a support in some direction.
+      // We use current simplex point for new direction for the
+      // support; if this does not produce a new point, treat penetration as 0.
+      gkFloat dir[3];
+      gkFloat new_vertex[3];
+      int new_vertex_idx[2];
+      const gkFloat eps_sq = gkEpsilon * gkEpsilon;
+      bool terminate_epa = false;
+
+      if (warp_lane_idx == 0) {
+        dir[0] = simplex.vrtx[0][0];
+        dir[1] = simplex.vrtx[0][1];
+        dir[2] = simplex.vrtx[0][2];
+      }
+
+      // Broadcast direction from lane 0 to whole warp.
+      dir[0] = __shfl_sync(warp_mask, dir[0], 0);
+      dir[1] = __shfl_sync(warp_mask, dir[1], 0);
+      dir[2] = __shfl_sync(warp_mask, dir[2], 0);
+
+      // Parallel EPA support in that direction.
+      support_epa_parallel(bd1, bd2, dir, new_vertex, new_vertex_idx,
+        warp_lane_idx, warp_mask);
+
+      __syncwarp(warp_mask);
+
+      if (warp_lane_idx == 0) {
+        // Check if this is a new point relative to the existing simplex vertex.
+        bool is_new = true;
+        gkFloat dx = new_vertex[0] - simplex.vrtx[0][0];
+        gkFloat dy = new_vertex[1] - simplex.vrtx[0][1];
+        gkFloat dz = new_vertex[2] - simplex.vrtx[0][2];
+        gkFloat d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < eps_sq) {
+          is_new = false;
+        }
+
+        if (is_new) {
+          int idx = simplex.nvrtx;
+          for (int c = 0; c < 3; ++c) {
+            simplex.vrtx[idx][c] = new_vertex[c];
+          }
+          simplex.vrtx_idx[idx][0] = new_vertex_idx[0];
+          simplex.vrtx_idx[idx][1] = new_vertex_idx[1];
+          simplex.nvrtx = 2;
+        }
+        else {
+          // No new support point means penetration depth effectively zero.
+          distances[warp_idx] = 0.0f;
+          for (int c = 0; c < 3; ++c) {
+            gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
+            gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
+            witness1[warp_idx * 3 + c] = p1;
+            witness2[warp_idx * 3 + c] = p2;
+          }
+          terminate_epa = true;
+        }
+      }
+
+      int term_flag = __shfl_sync(warp_mask, terminate_epa ? 1 : 0, 0);
+      if (term_flag) {
+        return;
+      }
+    }
+    if (simplex.nvrtx == 2) {
+      // Grow simplex from an edge: fire a support in a direction perpendicular
+      // to the edge. If this does not produce a new point, treat penetration as 0.
+      gkFloat dir[3];
+      gkFloat new_vertex[3];
+      int new_vertex_idx[2];
+      const gkFloat eps_sq = gkEpsilon * gkEpsilon;
+      bool terminate_epa = false;
+
+      if (warp_lane_idx == 0) {
+        gkFloat p0[3], p1[3], edge[3];
+        for (int c = 0; c < 3; ++c) {
+          p0[c] = simplex.vrtx[0][c];
+          p1[c] = simplex.vrtx[1][c];
+          edge[c] = p1[c] - p0[c];
+        }
+
+        // Build a perpindicular
+        gkFloat axis[3] = {1.0f, 0.0f, 0.0f};
+        gkFloat edge_norm = gkSqrt(edge[0] * edge[0] + edge[1] * edge[1] + edge[2] * edge[2]);
+        if (edge_norm > gkEpsilon && fabs(edge[0]) > 0.9f * edge_norm) {
+          axis[0] = 0.0f; axis[1] = 1.0f; axis[2] = 0.0f;
+        }
+
+        // dir = edge x axis
+        crossProduct(edge, axis, dir);
+        gkFloat nrm2 = norm2(dir);
+        if (nrm2 < gkEpsilon) {
+          // Fallback axis
+          axis[0] = 0.0f; axis[1] = 0.0f; axis[2] = 1.0f;
+          crossProduct(edge, axis, dir);
+        }
+      }
+
+      // Broadcast
+      dir[0] = __shfl_sync(warp_mask, dir[0], 0);
+      dir[1] = __shfl_sync(warp_mask, dir[1], 0);
+      dir[2] = __shfl_sync(warp_mask, dir[2], 0);
+
+      // Parallel EPA support in that direction.
+      support_epa_parallel(bd1, bd2, dir, new_vertex, new_vertex_idx,
+        warp_lane_idx, warp_mask);
+
+      __syncwarp(warp_mask);
+
+      if (warp_lane_idx == 0) {
+        // Check if this is a new point relative to both existing simplex vertices.
+        bool is_new = true;
+        for (int vtx = 0; vtx < simplex.nvrtx; ++vtx) {
+          gkFloat dx = new_vertex[0] - simplex.vrtx[vtx][0];
+          gkFloat dy = new_vertex[1] - simplex.vrtx[vtx][1];
+          gkFloat dz = new_vertex[2] - simplex.vrtx[vtx][2];
+          gkFloat d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < eps_sq) {
+            is_new = false;
+            break;
+          }
+        }
+
+        if (is_new) {
+          int idx = simplex.nvrtx;
+          for (int c = 0; c < 3; ++c) {
+            simplex.vrtx[idx][c] = new_vertex[c];
+          }
+          simplex.vrtx_idx[idx][0] = new_vertex_idx[0];
+          simplex.vrtx_idx[idx][1] = new_vertex_idx[1];
+          simplex.nvrtx = 3;
+        }
+        else {
+          // No new support point means penetration depth effectively zero.
+          distances[warp_idx] = 0.0f;
+          for (int c = 0; c < 3; ++c) {
+            gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
+            gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
+            witness1[warp_idx * 3 + c] = p1;
+            witness2[warp_idx * 3 + c] = p2;
+          }
+          terminate_epa = true;
+        }
+      }
+
+      int term_flag = __shfl_sync(warp_mask, terminate_epa ? 1 : 0, 0);
+      if (term_flag) {
+        return;
+      }
+    }
+    if (simplex.nvrtx == 3) {
+      // Grow simplex from a triangle: fire a support in the direction of the
+      // triangle normal. If this does not produce a new point, treat penetration as 0.
+      gkFloat dir[3];
+      gkFloat new_vertex[3];
+      int new_vertex_idx[2];
+      const gkFloat eps_sq = gkEpsilon * gkEpsilon;
+      bool terminate_epa = false;
+
+      if (warp_lane_idx == 0) {
+        gkFloat p0[3], p1[3], p2[3];
+        gkFloat e0[3], e1[3];
+        for (int c = 0; c < 3; ++c) {
+          p0[c] = simplex.vrtx[0][c];
+          p1[c] = simplex.vrtx[1][c];
+          p2[c] = simplex.vrtx[2][c];
+          e0[c] = p1[c] - p0[c];
+          e1[c] = p2[c] - p0[c];
+        }
+        // dir = e0 x e1 (normal to the triangle)
+        crossProduct(e0, e1, dir);
+      }
+
+      // Broadcast
+      dir[0] = __shfl_sync(warp_mask, dir[0], 0);
+      dir[1] = __shfl_sync(warp_mask, dir[1], 0);
+      dir[2] = __shfl_sync(warp_mask, dir[2], 0);
+
+      // Parallel EPA support in that direction.
+      support_epa_parallel(bd1, bd2, dir, new_vertex, new_vertex_idx,
+        warp_lane_idx, warp_mask);
+
+      __syncwarp(warp_mask);
+
+      if (warp_lane_idx == 0) {
+        // Check if this is a new point relative to all three existing simplex vertices.
+        bool is_new = true;
+        for (int vtx = 0; vtx < simplex.nvrtx; ++vtx) {
+          gkFloat dx = new_vertex[0] - simplex.vrtx[vtx][0];
+          gkFloat dy = new_vertex[1] - simplex.vrtx[vtx][1];
+          gkFloat dz = new_vertex[2] - simplex.vrtx[vtx][2];
+          gkFloat d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < eps_sq) {
+            is_new = false;
+            break;
+          }
+        }
+
+        if (is_new) {
+          int idx = simplex.nvrtx;
+          for (int c = 0; c < 3; ++c) {
+            simplex.vrtx[idx][c] = new_vertex[c];
+          }
+          simplex.vrtx_idx[idx][0] = new_vertex_idx[0];
+          simplex.vrtx_idx[idx][1] = new_vertex_idx[1];
+          simplex.nvrtx = 4;
+        }
+        else {
+          // No new support point meanspenetration depth effectively zero.
+          distances[warp_idx] = 0.0f;
+          for (int c = 0; c < 3; ++c) {
+            gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
+            gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
+            witness1[warp_idx * 3 + c] = p1;
+            witness2[warp_idx * 3 + c] = p2;
+          }
+          terminate_epa = true;
+        }
+      }
+
+      int term_flag = __shfl_sync(warp_mask, terminate_epa ? 1 : 0, 0);
+      if (term_flag) {
+        return;
+      }
+    }
   }
 
+  // On to actual EPA alg with a valid tetrahedron simplex
   // Initialize EPA polytope from simplex
   EPAPolytope poly;
   if (warp_lane_idx == 0) {
