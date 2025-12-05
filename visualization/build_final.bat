@@ -7,20 +7,43 @@ set RAYLIB_LIB=C:\raylib\lib\raylib.lib
 set WIN_LIBS=opengl32.lib gdi32.lib winmm.lib user32.lib kernel32.lib advapi32.lib shell32.lib
 set CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0
 
-echo Step 1: Checking for CUDA files...
-dir *.cu*
+echo Step 1: Checking for CUDA integration file...
+dir integrate_final_gjk.cu
 
-echo Step 2: Compiling GPU-only integration bridge...
-nvcc -arch=sm_89 -c integrate_final_gjk.cu -o gpu_gjk_bridge.obj -I"%CUDA_PATH%\include" -I"..\GJK\gpu" -I"..\GJK" -I"."
+echo.
+echo Step 2: Compiling GPU integration bridge (integrate_final_gjk.cu)...
+nvcc -arch=sm_89 -c integrate_final_gjk.cu -o gpu_gjk_bridge.obj ^
+    -I"%CUDA_PATH%\include" -I"..\GJK\gpu" -I"..\GJK" -I"."
 
 if %errorlevel% neq 0 (
     echo.
-    echo Trying alternative CUDA file...
-    nvcc -arch=sm_89 -c gpu_gjk_bridge.cu -o gpu_gjk_bridge.obj -I"%CUDA_PATH%\include" -I"..\GJK\gpu" -I"..\GJK" -I"."
+    echo Fallback: trying gpu_gjk_bridge.cu instead...
+    nvcc -arch=sm_89 -c gpu_gjk_bridge.cu -o gpu_gjk_bridge.obj ^
+        -I"%CUDA_PATH%\include" -I"..\GJK\gpu" -I"..\GJK" -I"."
 )
 
+echo.
+echo Step 2b: Compiling WarpParallelGJK kernel...
+nvcc -arch=sm_89 -c ..\GJK\gpu\warpParallelGJK.cu -o warpParallelGJK.obj ^
+    -I"%CUDA_PATH%\include" -I"..\GJK\gpu" -I"..\GJK" -I"."
+
+if %errorlevel% neq 0 (
+    echo.
+    echo ========================================
+    echo Failed to compile warpParallelGJK.cu ❌
+    echo Make sure it exists at ..\GJK\gpu\warpParallelGJK.cu
+    echo ========================================
+    echo.
+    pause
+    exit /b 1
+)
+
+echo.
 echo Step 3: Building final executable...
-cl /MD /DUSE_CUDA %RAYLIB_INCLUDE% -I"%CUDA_PATH%\include" /Fe:gjk_visualizer_gpu_only.exe main.c gjk_integration.c gpu_gjk_bridge.obj %RAYLIB_LIB% %WIN_LIBS% "%CUDA_PATH%\lib\x64\cudart.lib"
+cl /MD /DUSE_CUDA %RAYLIB_INCLUDE% -I"%CUDA_PATH%\include" -I"..\GJK\cpu" ^
+    /Fe:gjk_visualizer_gpu_only.exe ^
+    main.c gjk_integration.c ..\GJK\cpu\openGJK.c gpu_gjk_bridge.obj warpParallelGJK.obj ^
+    %RAYLIB_LIB% %WIN_LIBS% "%CUDA_PATH%\lib\x64\cudart.lib"
 
 if %errorlevel% equ 0 (
     echo.

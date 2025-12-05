@@ -3,12 +3,14 @@
 #include <math.h>
 #include <stdio.h>
 #include <float.h>
+#include <string.h>
 
-// Improved GJK implementation
-typedef struct {
-    Vector3f points[4];
-    int count;
-} Simplex;
+// OpenGJK CPU implementation
+#include "../GJK/cpu/openGJK.h"
+
+// =========================
+// Basic vector utilities
+// =========================
 
 static float dot(Vector3f a, Vector3f b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
@@ -38,158 +40,126 @@ static Vector3f tripleProduct(Vector3f a, Vector3f b, Vector3f c) {
     return cross(a, cross(b, c));
 }
 
-// Support function for Minkowski difference
-static Vector3f support(const GJK_Shape* shapeA, const GJK_Shape* shapeB, Vector3f direction) {
-    // Find furthest point in direction for shapeA
-    float maxDotA = -FLT_MAX;
-    Vector3f bestA = {0};
-    
-    for (int i = 0; i < shapeA->num_vertices; i++) {
-        Vector3f world_vertex = {
-            shapeA->vertices[i].x + shapeA->position.x,
-            shapeA->vertices[i].y + shapeA->position.y,
-            shapeA->vertices[i].z + shapeA->position.z
-        };
-        float dotProduct = dot(world_vertex, direction);
-        if (dotProduct > maxDotA) {
-            maxDotA = dotProduct;
-            bestA = world_vertex;
-        }
+// =========================
+// Simplex type (kept for possible debug uses, but not used by OpenGJK path)
+// =========================
+
+typedef struct {
+    Vector3f points[4];
+    int count;
+} Simplex;
+
+// =========================
+// OpenGJK bridge helpers
+// =========================
+
+// Convert our GJK_Shape into OpenGJK's gkPolytope in world space
+static int build_polytope_from_shape(const GJK_Shape* shape, gkPolytope* poly) {
+    if (!shape || shape->num_vertices <= 0 || !shape->vertices) {
+        return 0;
     }
-    
-    // Find furthest point in opposite direction for shapeB
-    float maxDotB = -FLT_MAX;
-    Vector3f bestB = {0};
-    Vector3f negDirection = negate(direction);
-    
-    for (int i = 0; i < shapeB->num_vertices; i++) {
-        Vector3f world_vertex = {
-            shapeB->vertices[i].x + shapeB->position.x,
-            shapeB->vertices[i].y + shapeB->position.y,
-            shapeB->vertices[i].z + shapeB->position.z
-        };
-        float dotProduct = dot(world_vertex, negDirection);
-        if (dotProduct > maxDotB) {
-            maxDotB = dotProduct;
-            bestB = world_vertex;
-        }
+
+    memset(poly, 0, sizeof(gkPolytope));
+
+    poly->numpoints = shape->num_vertices;
+    poly->coord = (gkFloat*)malloc(sizeof(gkFloat) * poly->numpoints * 3);
+    if (!poly->coord) {
+        return 0;
     }
-    
-    // Return Minkowski difference
-    return subtract(bestA, bestB);
+
+    for (int i = 0; i < poly->numpoints; ++i) {
+        gkFloat x = (gkFloat)(shape->vertices[i].x + shape->position.x);
+        gkFloat y = (gkFloat)(shape->vertices[i].y + shape->position.y);
+        gkFloat z = (gkFloat)(shape->vertices[i].z + shape->position.z);
+
+        poly->coord[3 * i + 0] = x;
+        poly->coord[3 * i + 1] = y;
+        poly->coord[3 * i + 2] = z;
+    }
+
+    // Initialize support point to first vertex
+    poly->s[0] = poly->coord[0];
+    poly->s[1] = poly->coord[1];
+    poly->s[2] = poly->coord[2];
+    poly->s_idx = 0;
+
+    return 1;
 }
 
-// Check if simplex contains origin and update direction
-static int simplexContainsOrigin(Simplex* s, Vector3f* direction) {
-    Vector3f a = s->points[s->count - 1];
-    Vector3f ao = negate(a);
-    
-    if (s->count == 3) {
-        // Triangle case
-        Vector3f b = s->points[2];
-        Vector3f c = s->points[1];
-        Vector3f ab = subtract(b, a);
-        Vector3f ac = subtract(c, a);
-        
-        Vector3f abPerp = tripleProduct(ac, ab, ab);
-        Vector3f acPerp = tripleProduct(ab, ac, ac);
-        
-        if (dot(abPerp, ao) > 0) {
-            // Origin is outside AB, remove C
-            s->points[1] = s->points[2];
-            s->count = 2;
-            *direction = abPerp;
-        } else if (dot(acPerp, ao) > 0) {
-            // Origin is outside AC, remove B
-            s->points[2] = s->points[1];
-            s->points[1] = s->points[0];
-            s->count = 2;
-            *direction = acPerp;
-        } else {
-            // Origin is inside triangle, we have collision
-            return 1;
-        }
-    } else if (s->count == 2) {
-        // Line case
-        Vector3f b = s->points[0];
-        Vector3f ab = subtract(b, a);
-        
-        if (dot(ab, ao) > 0) {
-            // Origin is outside AB in AB direction
-            *direction = tripleProduct(ab, ao, ab);
-        } else {
-            // Origin is outside AB in A direction
-            s->points[0] = s->points[1];
-            s->count = 1;
-            *direction = ao;
-        }
+// =========================
+// CPU OpenGJK wrappers
+// =========================
+
+// This is what main.c was trying to call
+bool openGJK_collision_cpu(const GJK_Shape* shapeA, const GJK_Shape* shapeB) {
+    if (!shapeA || !shapeB) return false;
+
+    gkPolytope pa, pb;
+    if (!build_polytope_from_shape(shapeA, &pa)) return false;
+    if (!build_polytope_from_shape(shapeB, &pb)) {
+        free(pa.coord);
+        return false;
     }
-    
-    return 0;
+
+    gkSimplex simplex;
+    memset(&simplex, 0, sizeof(gkSimplex));
+
+    gkFloat dist = compute_minimum_distance(pa, pb, &simplex);
+
+    free(pa.coord);
+    free(pb.coord);
+
+    const gkFloat eps = (gkFloat)1e-6;
+    return dist <= eps;
 }
 
-// Real GJK collision detection
+bool openGJK_distance_cpu(const GJK_Shape* shapeA, const GJK_Shape* shapeB, float* distance_out) {
+    if (!shapeA || !shapeB) return false;
+
+    gkPolytope pa, pb;
+    if (!build_polytope_from_shape(shapeA, &pa)) return false;
+    if (!build_polytope_from_shape(shapeB, &pb)) {
+        free(pa.coord);
+        return false;
+    }
+
+    gkSimplex simplex;
+    memset(&simplex, 0, sizeof(gkSimplex));
+
+    gkFloat dist = compute_minimum_distance(pa, pb, &simplex);
+
+    free(pa.coord);
+    free(pb.coord);
+
+    if (distance_out) {
+        *distance_out = (float)dist;
+    }
+
+    const gkFloat eps = (gkFloat)1e-6;
+    return dist <= eps;
+}
+
+// Keep old names as thin wrappers so any existing usage still works
 bool gjk_collision_check(const GJK_Shape* shapeA, const GJK_Shape* shapeB) {
-    Simplex simplex;
-    simplex.count = 0;
-    
-    // Initial direction
-    Vector3f direction = {1, 0, 0};
-    
-    // First support point
-    simplex.points[simplex.count++] = support(shapeA, shapeB, direction);
-    
-    // Negate direction for next search
-    direction = negate(simplex.points[0]);
-    
-    int maxIterations = 32;
-    for (int i = 0; i < maxIterations; i++) {
-        // Get new support point in current direction
-        Vector3f newPoint = support(shapeA, shapeB, direction);
-        
-        // If we didn't move past origin, no collision
-        if (dot(newPoint, direction) <= 0) {
-            return false;
-        }
-        
-        // Add new point to simplex
-        simplex.points[simplex.count++] = newPoint;
-        
-        // Check if simplex contains origin
-        if (simplexContainsOrigin(&simplex, &direction)) {
-            return true;
-        }
-        
-        // Prevent infinite loop
-        if (simplex.count > 3) {
-            break;
-        }
-    }
-    
-    return false;
+    return openGJK_collision_cpu(shapeA, shapeB);
 }
 
 bool gjk_distance_check(const GJK_Shape* shapeA, const GJK_Shape* shapeB, float* distance) {
-    bool collision = gjk_collision_check(shapeA, shapeB);
-    
-    // Calculate center-to-center distance for display
-    float dx = shapeA->position.x - shapeB->position.x;
-    float dy = shapeA->position.y - shapeB->position.y;
-    float dz = shapeA->position.z - shapeB->position.z;
-    *distance = sqrt(dx * dx + dy * dy + dz * dz);
-    
-    return collision;
+    return openGJK_distance_cpu(shapeA, shapeB, distance);
 }
 
-// Shape creation functions (keep these the same)
+// =========================
+// Shape helpers 
+// =========================
+
 GJK_Shape create_cube_shape(Vector3f position, float size) {
     GJK_Shape shape;
     shape.position = position;
     shape.num_vertices = 8;
     shape.vertices = (Vector3f*)malloc(sizeof(Vector3f) * 8);
-    
+
     float half = size / 2.0f;
-    
+
     shape.vertices[0] = (Vector3f){ -half, -half, -half };
     shape.vertices[1] = (Vector3f){  half, -half, -half };
     shape.vertices[2] = (Vector3f){  half,  half, -half };
@@ -198,7 +168,7 @@ GJK_Shape create_cube_shape(Vector3f position, float size) {
     shape.vertices[5] = (Vector3f){  half, -half,  half };
     shape.vertices[6] = (Vector3f){  half,  half,  half };
     shape.vertices[7] = (Vector3f){ -half,  half,  half };
-    
+
     return shape;
 }
 
@@ -211,4 +181,7 @@ void free_shape(GJK_Shape* shape) {
 
 void draw_gjk_debug_info(const GJK_Shape* shapeA, const GJK_Shape* shapeB, bool collision) {
     // Placeholder for future debug visualization
+    (void)shapeA;
+    (void)shapeB;
+    (void)collision;
 }

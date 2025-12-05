@@ -253,7 +253,7 @@ int main(void) {
 #endif
             // CPU collision detection
             start = clock();
-            collision = gjk_collision_check(&gjk_sphere1, &gjk_sphere2);
+            collision = openGJK_collision_cpu(&gjk_sphere1, &gjk_sphere2);
             end = clock();
             cpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
 #ifdef USE_CUDA
