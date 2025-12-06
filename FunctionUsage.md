@@ -74,6 +74,16 @@ GJK::GPU::computeGJKAndEPA(n, &polytope1, &polytope2, simplices, distances,
 //   * For polytope2's normal, use: -contact_normals[i*3 + 0/1/2]
 ```
 
+### Implementation Details
+
+For more information on the underlying CUDA kernel implementations:
+
+- **Host Wrapper Functions**: See `computeDistancesWarpParallel()` and `computeGJKAndEPA()` in [`examples/gpu/example.cu`](examples/gpu/example.cu) for memory management, kernel launch configuration, and host-device data transfer.
+
+- **CUDA Kernels**: The actual GPU kernels `compute_minimum_distance_warp_parallel` and `compute_epa_warp_parallel` are defined in [`GJK/gpu/warpParallelGJK.cu`](GJK/gpu/warpParallelGJK.cu). These kernels implement the warp-parallel GJK and EPA algorithms respectively.
+
+
+
 ### Example: Single Collision Check
 
 ```cpp
