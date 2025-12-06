@@ -28,9 +28,10 @@ __global__ void compute_minimum_distance_warp_parallel(gkPolytope* polytypes1, g
  * @param distances Output array for penetration depths (or distances if no collision)
  * @param witness1 Output array for witness points on first polytope (3 floats per collision)
  * @param witness2 Output array for witness points on second polytope (3 floats per collision)
+ * @param contact_normals Output array for contact normals (3 floats per collision, points from polytope1 to polytope2)
  * @param n Number of polytope pairs to process
  */
 __global__ void compute_epa_warp_parallel(gkPolytope* polytopes1, gkPolytope* polytopes2,
-  gkSimplex* simplices, gkFloat* distances, gkFloat* witness1, gkFloat* witness2, int n);
+  gkSimplex* simplices, gkFloat* distances, gkFloat* witness1, gkFloat* witness2, gkFloat* contact_normals, int n);
 
 #endif  // WARPPARALLELOPENGJK_H__

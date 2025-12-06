@@ -2305,6 +2305,7 @@ __global__ void compute_epa_warp_parallel(
   gkFloat* distances,
   gkFloat* witness1,
   gkFloat* witness2,
+  gkFloat* contact_normals,
   int n) {
 
   // Calculate which collision this warp handles
@@ -2334,6 +2335,24 @@ __global__ void compute_epa_warp_parallel(
       for (int i = 0; i < 3; i++) {
         witness1[warp_idx * 3 + i] = simplex.witnesses[0][i];
         witness2[warp_idx * 3 + i] = simplex.witnesses[1][i];
+      }
+      // Compute contact normal from witness1 to witness2 (for non-colliding case)
+      gkFloat w1_to_w2[3];
+      gkFloat norm = 0.0f;
+      for (int i = 0; i < 3; i++) {
+        w1_to_w2[i] = witness2[warp_idx * 3 + i] - witness1[warp_idx * 3 + i];
+        norm += w1_to_w2[i] * w1_to_w2[i];
+      }
+      norm = gkSqrt(norm);
+      if (norm > gkEpsilon) {
+        for (int i = 0; i < 3; i++) {
+          contact_normals[warp_idx * 3 + i] = w1_to_w2[i] / norm;
+        }
+      } else {
+        // Default normal if witnesses are too close
+        contact_normals[warp_idx * 3 + 0] = 1.0f;
+        contact_normals[warp_idx * 3 + 1] = 0.0f;
+        contact_normals[warp_idx * 3 + 2] = 0.0f;
       }
     }
     return;
@@ -2397,6 +2416,23 @@ __global__ void compute_epa_warp_parallel(
             gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
             witness1[warp_idx * 3 + c] = p1;
             witness2[warp_idx * 3 + c] = p2;
+          }
+          // Compute contact normal from witness1 to witness2
+          gkFloat w1_to_w2[3];
+          gkFloat norm = 0.0f;
+          for (int c = 0; c < 3; ++c) {
+            w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+            norm += w1_to_w2[c] * w1_to_w2[c];
+          }
+          norm = gkSqrt(norm);
+          if (norm > gkEpsilon) {
+            for (int c = 0; c < 3; ++c) {
+              contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+            }
+          } else {
+            contact_normals[warp_idx * 3 + 0] = 1.0f;
+            contact_normals[warp_idx * 3 + 1] = 0.0f;
+            contact_normals[warp_idx * 3 + 2] = 0.0f;
           }
           terminate_epa = true;
         }
@@ -2493,6 +2529,23 @@ __global__ void compute_epa_warp_parallel(
             gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
             witness1[warp_idx * 3 + c] = p1;
             witness2[warp_idx * 3 + c] = p2;
+          }
+          // Compute contact normal from witness1 to witness2
+          gkFloat w1_to_w2[3];
+          gkFloat norm = 0.0f;
+          for (int c = 0; c < 3; ++c) {
+            w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+            norm += w1_to_w2[c] * w1_to_w2[c];
+          }
+          norm = gkSqrt(norm);
+          if (norm > gkEpsilon) {
+            for (int c = 0; c < 3; ++c) {
+              contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+            }
+          } else {
+            contact_normals[warp_idx * 3 + 0] = 1.0f;
+            contact_normals[warp_idx * 3 + 1] = 0.0f;
+            contact_normals[warp_idx * 3 + 2] = 0.0f;
           }
           terminate_epa = true;
         }
@@ -2620,6 +2673,23 @@ __global__ void compute_epa_warp_parallel(
               witness1[warp_idx * 3 + c] = p1;
               witness2[warp_idx * 3 + c] = p2;
             }
+            // Compute contact normal from witness1 to witness2
+            gkFloat w1_to_w2[3];
+            gkFloat norm = 0.0f;
+            for (int c = 0; c < 3; ++c) {
+              w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+              norm += w1_to_w2[c] * w1_to_w2[c];
+            }
+            norm = gkSqrt(norm);
+            if (norm > gkEpsilon) {
+              for (int c = 0; c < 3; ++c) {
+                contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+              }
+            } else {
+              contact_normals[warp_idx * 3 + 0] = 1.0f;
+              contact_normals[warp_idx * 3 + 1] = 0.0f;
+              contact_normals[warp_idx * 3 + 2] = 0.0f;
+            }
             terminate_epa = true;
           }
         }
@@ -2644,6 +2714,23 @@ __global__ void compute_epa_warp_parallel(
     if (simplex.nvrtx != 4) {
       if (warp_lane_idx == 0) {
         distances[warp_idx] = 0.0f;
+        // Compute contact normal from witness points if available
+        gkFloat w1_to_w2[3];
+        gkFloat norm = 0.0f;
+        for (int c = 0; c < 3; ++c) {
+          w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+          norm += w1_to_w2[c] * w1_to_w2[c];
+        }
+        norm = gkSqrt(norm);
+        if (norm > gkEpsilon) {
+          for (int c = 0; c < 3; ++c) {
+            contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+          }
+        } else {
+          contact_normals[warp_idx * 3 + 0] = 1.0f;
+          contact_normals[warp_idx * 3 + 1] = 0.0f;
+          contact_normals[warp_idx * 3 + 2] = 0.0f;
+        }
       }
       return;
     }
@@ -2776,6 +2863,11 @@ __global__ void compute_epa_warp_parallel(
 
         // Penetration depth is negative distance (objects overlap)
         distances[warp_idx] = -closest_distance;
+        
+        // Store contact normal (points from polytope1 to polytope2)
+        for (int i = 0; i < 3; i++) {
+          contact_normals[warp_idx * 3 + i] = closest->normal[i];
+        }
       }
       break;
     }
@@ -2823,6 +2915,11 @@ __global__ void compute_epa_warp_parallel(
         }
 
         distances[warp_idx] = -closest_distance;
+        
+        // Store contact normal (points from polytope1 to polytope2)
+        for (int i = 0; i < 3; i++) {
+          contact_normals[warp_idx * 3 + i] = closest->normal[i];
+        }
       }
       break;
     }
@@ -3064,6 +3161,11 @@ __global__ void compute_epa_warp_parallel(
       }
 
       distances[warp_idx] = -closest_distance;
+      
+      // Store contact normal (points from polytope1 to polytope2)
+      for (int i = 0; i < 3; i++) {
+        contact_normals[warp_idx * 3 + i] = closest->normal[i];
+      }
     }
   }
 }
