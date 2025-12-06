@@ -661,16 +661,16 @@ __device__ inline static void S2D_warp_parallel(
   const gkFloat* s3p = s->vrtx[0];
 
   // do hff1 and hff2 in parallel using two lanes in the half-warp.
-  int hff1f[2] = {0, 0};
-  const gkFloat* hff1_pts[2] = {s2p, s3p};
+  int hff1f[2] = { 0, 0 };
+  const gkFloat* hff1_pts[2] = { s2p, s3p };
 
   if (half_lane_idx < 2) {
     hff1f[half_lane_idx] = hff1(s1p, hff1_pts[half_lane_idx]);
   }
 
-  int hff2f[2] = {0, 0};
-  const gkFloat* hff2_q[2] = {s2p, s3p};
-  const gkFloat* hff2_r[2] = {s3p, s2p};
+  int hff2f[2] = { 0, 0 };
+  const gkFloat* hff2_q[2] = { s2p, s3p };
+  const gkFloat* hff2_r[2] = { s3p, s2p };
 
   if (half_lane_idx < 2) {
     hff2f[half_lane_idx] = !hff2(s1p, hff2_q[half_lane_idx], hff2_r[half_lane_idx]);
@@ -755,12 +755,12 @@ __device__ inline static void S3D_warp_parallel(
   calculateEdgeVector(s1s4, s4);
 
   // Parallel evaluation of the thff1 and hff3 predicaes
-  int hff1_s[3] = {0, 0, 0};
-  int hff3_s[3] = {0, 0, 0};
+  int hff1_s[3] = { 0, 0, 0 };
+  int hff3_s[3] = { 0, 0, 0 };
 
-  const gkFloat* hff1_pts[3] = {s2, s3, s4};
-  const gkFloat* hff3_q[3]   = {s3, s4, s2};  // second argument
-  const gkFloat* hff3_r[3]   = {s4, s2, s3};  // third argument
+  const gkFloat* hff1_pts[3] = { s2, s3, s4 };
+  const gkFloat* hff3_q[3] = { s3, s4, s2 };  // second argument
+  const gkFloat* hff3_r[3] = { s4, s2, s3 };  // third argument
 
   if (half_lane_idx < 3) {
     hff1_s[half_lane_idx] = hff1(s1, hff1_pts[half_lane_idx]);
@@ -1918,7 +1918,7 @@ __global__ void compute_minimum_distance_warp_parallel(
     //     "\n * * * * * * * * * * * * MAXIMUM ITERATION NUMBER REACHED!!!  "
     //     " * * * * * * * * * * * * * * \n");
   }
-  
+
   // Compute witnesses and final distance on first thread only
   if (half_lane_idx == 0) {
     compute_witnesses(&bd1, &bd2, &s);
@@ -1936,6 +1936,8 @@ __global__ void compute_minimum_distance_warp_parallel(
 
 // Maximum number of faces in the EPA polytope
 #define MAX_EPA_FACES 128
+#define MAX_EPA_VERTICES (MAX_EPA_FACES + 4)
+
 
 // Face structure for EPA polytope
 // Each face is a triangle with 3 vertex indices
@@ -1953,119 +1955,98 @@ typedef struct {
   int vertex_indices[MAX_EPA_FACES + 4][2]; // Original vertex indices [vertex][body]
   int num_vertices;
   EPAFace faces[MAX_EPA_FACES];
-  int num_faces;
+  int max_face_index; // Highest face index in use (for iteration bounds)
 } EPAPolytope;
 
 // Compute face normal and distance of face from origin
-__device__ inline static void compute_face_normal_distance(EPAPolytope* poly, int face_idx) {
+__device__ inline static void compute_face_normal_distance(EPAPolytope* poly, int face_idx, const gkFloat* centroid) {
   EPAFace* face = &poly->faces[face_idx];
   if (!face->valid) return;
-  
+
   gkFloat* v0 = poly->vertices[face->v[0]];
   gkFloat* v1 = poly->vertices[face->v[1]];
   gkFloat* v2 = poly->vertices[face->v[2]];
-  
+
   // Compute edge vectors
   gkFloat e0[3], e1[3];
   for (int i = 0; i < 3; i++) {
     e0[i] = v1[i] - v0[i];
     e1[i] = v2[i] - v0[i];
   }
-  
+
   // Compute normal
   crossProduct(e0, e1, face->normal);
-  gkFloat norm = gkSqrt(norm2(face->normal));
-  if (norm > gkEpsilon) {
+  gkFloat norm_sq = norm2(face->normal);
+
+  if (norm_sq > gkEpsilon * gkEpsilon) {
+    gkFloat norm = gkSqrt(norm_sq);
     for (int i = 0; i < 3; i++) {
       face->normal[i] /= norm;
     }
-    
-    // Ensure normal points away from origin (toward exterior)
-    gkFloat dot = dotProduct(face->normal, v0);
-    if (dot < 0) {
+
+    // Ensure normal points away from centroid (outward from polytope interior)
+    gkFloat to_centroid[3];
+    for (int i = 0; i < 3; i++) {
+      to_centroid[i] = centroid[i] - v0[i];
+    }
+
+    // If normal points toward centroid flip it
+    if (dotProduct(face->normal, to_centroid) > 0) {
       for (int i = 0; i < 3; i++) {
         face->normal[i] = -face->normal[i];
       }
-      dot = -dot;
     }
-    face->distance = dot;
-  } else {
+
+    face->distance = dotProduct(face->normal, v0);
+
+    if (face->distance < 0) {
+      // Flip normal and distance
+      for (int i = 0; i < 3; i++) {
+        face->normal[i] = -face->normal[i];
+      }
+      face->distance = -face->distance;
+    }
+  }
+  else {
     // Degenerate face
     face->valid = false;
-    face->distance = -1.0f;
+    face->distance = 1e10f;
   }
-}
-
-// Find the face closest to the origin using parallel reduction
-__device__ inline static int find_closest_face(EPAPolytope* poly, int warp_lane_idx, unsigned int warp_mask) {
-  int closest_face = -1;
-  gkFloat min_distance = 1e10f;
-  
-  // Each thread checks a subset of faces
-  const int faces_per_thread = (poly->num_faces + 31) / 32;
-  const int start_face = warp_lane_idx * faces_per_thread;
-  const int end_face = (start_face + faces_per_thread < poly->num_faces) ? 
-                       (start_face + faces_per_thread) : poly->num_faces;
-  
-  // Find local closest face
-  for (int i = start_face; i < end_face; i++) {
-    if (poly->faces[i].valid && poly->faces[i].distance >= 0) {
-      if (poly->faces[i].distance < min_distance) {
-        min_distance = poly->faces[i].distance;
-        closest_face = i;
-      }
-    }
-  }
-  
-  // Parallel reduction to find global closest face across warp
-  for (int offset = 16; offset > 0; offset /= 2) {
-    gkFloat other_dist = __shfl_down_sync(warp_mask, min_distance, offset);
-    int other_face = __shfl_down_sync(warp_mask, closest_face, offset);
-    
-    if (other_dist < min_distance && other_face >= 0) {
-      min_distance = other_dist;
-      closest_face = other_face;
-    }
-  }
-  
-  // Broadcast results to all threads
-  closest_face = __shfl_sync(warp_mask, closest_face, 0);
-  return closest_face;
 }
 
 // Check if a face is visible from a point (point is on positive side of face) Needed to determine which faces to restructure when vertex is added
 __device__ inline static bool is_face_visible(EPAPolytope* poly, int face_idx, const gkFloat* point) {
   EPAFace* face = &poly->faces[face_idx];
   if (!face->valid) return false;
-  
+
   gkFloat* v0 = poly->vertices[face->v[0]];
   gkFloat diff[3];
   for (int i = 0; i < 3; i++) {
     diff[i] = point[i] - v0[i];
   }
-  
+
   return dotProduct(face->normal, diff) > gkEpsilon;
 }
 
 // Parallel support function for EPA basicallly GJK one but only care about minkowski difference point
 __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope* body2,
-    const gkFloat* direction, gkFloat* result, int* result_idx, 
-    int warp_lane_idx, unsigned int warp_mask) {
-  
+  const gkFloat* direction, gkFloat* result, int* result_idx,
+  int warp_lane_idx, unsigned int warp_mask) {
+
   // Each thread searches a subset of points
-  const int max_points = (body1->numpoints > body2->numpoints) ? 
-                         body1->numpoints : body2->numpoints;
+  const int max_points = (body1->numpoints > body2->numpoints) ?
+    body1->numpoints : body2->numpoints;
   const int points_per_thread = (max_points + 31) / 32;
   const int start_idx = warp_lane_idx * points_per_thread;
-  const int end_idx = (start_idx + points_per_thread < max_points) ? 
-                      (start_idx + points_per_thread) : max_points;
-  
+  const int end_idx = (start_idx + points_per_thread < max_points) ?
+    (start_idx + points_per_thread) : max_points;
+
   gkFloat local_max1 = -1e10f;
   gkFloat local_max2 = -1e10f;
   int local_best1 = -1;
   int local_best2 = -1;
   gkFloat vrt[3];
-  
+
   // Search body1
   for (int i = start_idx; i < body1->numpoints && i < end_idx; i++) {
     for (int j = 0; j < 3; j++) {
@@ -2077,9 +2058,9 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
       local_best1 = i;
     }
   }
-  
+
   // Search body2 opposite direction
-  gkFloat neg_dir[3] = {-direction[0], -direction[1], -direction[2]};
+  gkFloat neg_dir[3] = { -direction[0], -direction[1], -direction[2] };
   for (int i = start_idx; i < body2->numpoints && i < end_idx; i++) {
     for (int j = 0; j < 3; j++) {
       vrt[j] = getCoord(body2, i, j);
@@ -2090,7 +2071,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
       local_best2 = i;
     }
   }
-  
+
   // Parallel reduction for body1
   for (int offset = 16; offset > 0; offset /= 2) {
     gkFloat other_max = __shfl_down_sync(warp_mask, local_max1, offset);
@@ -2100,7 +2081,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
       local_best1 = other_best;
     }
   }
-  
+
   // Parallel reduction for body2
   for (int offset = 16; offset > 0; offset /= 2) {
     gkFloat other_max = __shfl_down_sync(warp_mask, local_max2, offset);
@@ -2110,11 +2091,11 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
       local_best2 = other_best;
     }
   }
-  
+
   // Broadcast results from thread 0
   local_best1 = __shfl_sync(warp_mask, local_best1, 0);
   local_best2 = __shfl_sync(warp_mask, local_best2, 0);
-  
+
   // Compute Minkowski difference point
   if (warp_lane_idx == 0 && local_best1 >= 0 && local_best2 >= 0) {
     gkFloat p1[3], p2[3];
@@ -2126,7 +2107,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
     result_idx[0] = local_best1;
     result_idx[1] = local_best2;
   }
-  
+
   // Broadcast result to all threads
   result[0] = __shfl_sync(warp_mask, result[0], 0);
   result[1] = __shfl_sync(warp_mask, result[1], 0);
@@ -2136,12 +2117,13 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
 }
 
 // Initialize EPA polytope from GJK simplex (should be a tetrahedron)
-__device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex) {
+__device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex, gkFloat* centroid) {
   // Clear all faces first
   for (int i = 0; i < MAX_EPA_FACES; ++i) {
     poly->faces[i].valid = false;
+    poly->faces[i].distance = 1e10f;
   }
-  
+
   // Copy vertices from simplex
   poly->num_vertices = 4;
   for (int i = 0; i < 4; i++) {
@@ -2151,58 +2133,168 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
     poly->vertex_indices[i][0] = simplex->vrtx_idx[i][0];
     poly->vertex_indices[i][1] = simplex->vrtx_idx[i][1];
   }
-  
-  // Create 4 faces of tetrahedron (winding order matters for normal direction)
+
+  // Compute centroid of the tetrahedron
+  centroid[0] = centroid[1] = centroid[2] = 0.0f;
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 3; j++) {
+      centroid[j] += poly->vertices[i][j];
+    }
+  }
+  for (int j = 0; j < 3; j++) {
+    centroid[j] /= 4.0f;
+  }
+
+  // Create 4 faces of tetrahedron
+  // set up the faces and then fix winding based on normal direction
   // Face 0: vertices 0, 1, 2
   poly->faces[0].v[0] = 0;
   poly->faces[0].v[1] = 1;
   poly->faces[0].v[2] = 2;
-  poly->faces[0].v_idx[0][0] = simplex->vrtx_idx[0][0];
-  poly->faces[0].v_idx[0][1] = simplex->vrtx_idx[0][1];
-  poly->faces[0].v_idx[1][0] = simplex->vrtx_idx[1][0];
-  poly->faces[0].v_idx[1][1] = simplex->vrtx_idx[1][1];
-  poly->faces[0].v_idx[2][0] = simplex->vrtx_idx[2][0];
-  poly->faces[0].v_idx[2][1] = simplex->vrtx_idx[2][1];
   poly->faces[0].valid = true;
-  
-  // Face 1: vertices 0, 1, 3
+
+  // Face 1: vertices 0, 3, 1
   poly->faces[1].v[0] = 0;
-  poly->faces[1].v[1] = 1;
-  poly->faces[1].v[2] = 3;
-  poly->faces[1].v_idx[0][0] = simplex->vrtx_idx[0][0];
-  poly->faces[1].v_idx[0][1] = simplex->vrtx_idx[0][1];
-  poly->faces[1].v_idx[1][0] = simplex->vrtx_idx[1][0];
-  poly->faces[1].v_idx[1][1] = simplex->vrtx_idx[1][1];
-  poly->faces[1].v_idx[2][0] = simplex->vrtx_idx[3][0];
-  poly->faces[1].v_idx[2][1] = simplex->vrtx_idx[3][1];
+  poly->faces[1].v[1] = 3;
+  poly->faces[1].v[2] = 1;
   poly->faces[1].valid = true;
-  
+
   // Face 2: vertices 0, 2, 3
   poly->faces[2].v[0] = 0;
   poly->faces[2].v[1] = 2;
   poly->faces[2].v[2] = 3;
-  poly->faces[2].v_idx[0][0] = simplex->vrtx_idx[0][0];
-  poly->faces[2].v_idx[0][1] = simplex->vrtx_idx[0][1];
-  poly->faces[2].v_idx[1][0] = simplex->vrtx_idx[2][0];
-  poly->faces[2].v_idx[1][1] = simplex->vrtx_idx[2][1];
-  poly->faces[2].v_idx[2][0] = simplex->vrtx_idx[3][0];
-  poly->faces[2].v_idx[2][1] = simplex->vrtx_idx[3][1];
   poly->faces[2].valid = true;
-  
-  // Face 3: vertices 1, 2, 3
+
+  // Face 3: vertices 1, 3, 2
   poly->faces[3].v[0] = 1;
-  poly->faces[3].v[1] = 2;
-  poly->faces[3].v[2] = 3;
-  poly->faces[3].v_idx[0][0] = simplex->vrtx_idx[1][0];
-  poly->faces[3].v_idx[0][1] = simplex->vrtx_idx[1][1];
-  poly->faces[3].v_idx[1][0] = simplex->vrtx_idx[2][0];
-  poly->faces[3].v_idx[1][1] = simplex->vrtx_idx[2][1];
-  poly->faces[3].v_idx[2][0] = simplex->vrtx_idx[3][0];
-  poly->faces[3].v_idx[2][1] = simplex->vrtx_idx[3][1];
+  poly->faces[3].v[1] = 3;
+  poly->faces[3].v[2] = 2;
   poly->faces[3].valid = true;
-  
-  poly->num_faces = 4;
+
+  // Copy vertex indices for witness point computation
+  for (int f = 0; f < 4; f++) {
+    for (int v = 0; v < 3; v++) {
+      int vi = poly->faces[f].v[v];
+      poly->faces[f].v_idx[v][0] = simplex->vrtx_idx[vi][0];
+      poly->faces[f].v_idx[v][1] = simplex->vrtx_idx[vi][1];
+    }
+  }
+
+  // Compute normals and fix winding
+  for (int f = 0; f < 4; f++) {
+    gkFloat* v0 = poly->vertices[poly->faces[f].v[0]];
+    gkFloat* v1 = poly->vertices[poly->faces[f].v[1]];
+    gkFloat* v2 = poly->vertices[poly->faces[f].v[2]];
+
+    gkFloat e0[3], e1[3], normal[3];
+    for (int i = 0; i < 3; i++) {
+      e0[i] = v1[i] - v0[i];
+      e1[i] = v2[i] - v0[i];
+    }
+    crossProduct(e0, e1, normal);
+
+    // Vector from face to centroid
+    gkFloat to_centroid[3];
+    for (int i = 0; i < 3; i++) {
+      to_centroid[i] = centroid[i] - v0[i];
+    }
+
+    // If normal points toward centroid need to flip the winding
+    if (dotProduct(normal, to_centroid) > 0) {
+      int tmp = poly->faces[f].v[1];
+      poly->faces[f].v[1] = poly->faces[f].v[2];
+      poly->faces[f].v[2] = tmp;
+
+      int tmp_idx0 = poly->faces[f].v_idx[1][0];
+      int tmp_idx1 = poly->faces[f].v_idx[1][1];
+      poly->faces[f].v_idx[1][0] = poly->faces[f].v_idx[2][0];
+      poly->faces[f].v_idx[1][1] = poly->faces[f].v_idx[2][1];
+      poly->faces[f].v_idx[2][0] = tmp_idx0;
+      poly->faces[f].v_idx[2][1] = tmp_idx1;
+    }
+  }
+
+  poly->max_face_index = 4;
 }
+
+// barycentric coordinate compute closest point on triangle to origin
+__device__ inline static void compute_barycentric_origin(
+  const gkFloat* v0, const gkFloat* v1, const gkFloat* v2,
+  gkFloat* a0, gkFloat* a1, gkFloat* a2) {
+
+  // Compute vectors
+  gkFloat e0[3], e1[3], v0_neg[3];
+  for (int i = 0; i < 3; i++) {
+    e0[i] = v1[i] - v0[i];
+    e1[i] = v2[i] - v0[i];
+    v0_neg[i] = -v0[i];
+  }
+
+  // Compute dot products for barycentric coords
+  gkFloat d00 = dotProduct(e0, e0);
+  gkFloat d01 = dotProduct(e0, e1);
+  gkFloat d11 = dotProduct(e1, e1);
+  gkFloat d20 = dotProduct(v0_neg, e0);
+  gkFloat d21 = dotProduct(v0_neg, e1);
+
+  gkFloat denom = d00 * d11 - d01 * d01;
+
+  if (fabs(denom) < gkEpsilon) {
+    // Degenerate
+    *a0 = *a1 = *a2 = 1.0f / 3.0f;
+    return;
+  }
+
+  gkFloat inv_denom = 1.0f / denom;
+  gkFloat u = (d11 * d20 - d01 * d21) * inv_denom;
+  gkFloat v = (d00 * d21 - d01 * d20) * inv_denom;
+  gkFloat w = 1.0f - u - v;
+
+  // Clamp to triangle
+  if (w < 0) {
+    // Origin projects outside edge v1-v2
+    // Project onto edge v1-v2
+    gkFloat e12[3], v1_neg[3];
+    for (int i = 0; i < 3; i++) {
+      e12[i] = v2[i] - v1[i];
+      v1_neg[i] = -v1[i];
+    }
+    gkFloat t = dotProduct(v1_neg, e12) / dotProduct(e12, e12);
+    t = fmax(0.0f, fmin(1.0f, t));
+    *a0 = 0;
+    *a1 = 1.0f - t;
+    *a2 = t;
+  }
+  else if (u < 0) {
+    // Origin projects outside edge v0-v2
+    gkFloat t = dotProduct(v0_neg, e1) / dotProduct(e1, e1);
+    t = fmax(0.0f, fmin(1.0f, t));
+    *a0 = 1.0f - t;
+    *a1 = 0;
+    *a2 = t;
+  }
+  else if (v < 0) {
+    // Origin projects outside edge v0-v1
+    gkFloat t = dotProduct(v0_neg, e0) / dotProduct(e0, e0);
+    t = fmax(0.0f, fmin(1.0f, t));
+    *a0 = 1.0f - t;
+    *a1 = t;
+    *a2 = 0;
+  }
+  else {
+    // Inside triangle
+    *a0 = w;
+    *a1 = u;
+    *a2 = v;
+  }
+}
+
+// Structure for horizon edge collection
+typedef struct {
+  int v1, v2;  // Vertex indices in polytope
+  int v_idx1[2], v_idx2[2];  // Original vertex indices for witness computation
+  bool valid;
+} EPAEdge;
 
 // ENTRY POINT TO EPA CALL
 // Main EPA kernel - one warp per collision
@@ -2213,20 +2305,21 @@ __global__ void compute_epa_warp_parallel(
   gkFloat* distances,
   gkFloat* witness1,
   gkFloat* witness2,
+  gkFloat* contact_normals,
   int n) {
-  
+
   // Calculate which collision this warp handles
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
   int warp_idx = index / 32;
-  
+
   if (warp_idx >= n) {
     return;
   }
-  
+
   // Get thread index within warp (0-31)
   int warp_lane_idx = threadIdx.x % 32;
   unsigned int warp_mask = 0xFFFFFFFF;
-  
+
   // Copy polytopes to local memory
   gkPolytope bd1_local = polytopes1[warp_idx];
   gkPolytope bd2_local = polytopes2[warp_idx];
@@ -2237,16 +2330,34 @@ __global__ void compute_epa_warp_parallel(
 
   // if distance isn't 0 didn't detect collision - skip EPA
   if (distance > gkEpsilon) {
-    return;
     if (warp_lane_idx == 0) {
       // Witness points already computed by GJK: todo: witness points seem to be off in testing right now
       for (int i = 0; i < 3; i++) {
         witness1[warp_idx * 3 + i] = simplex.witnesses[0][i];
         witness2[warp_idx * 3 + i] = simplex.witnesses[1][i];
       }
+      // Compute contact normal from witness1 to witness2 (for non-colliding case)
+      gkFloat w1_to_w2[3];
+      gkFloat norm = 0.0f;
+      for (int i = 0; i < 3; i++) {
+        w1_to_w2[i] = witness2[warp_idx * 3 + i] - witness1[warp_idx * 3 + i];
+        norm += w1_to_w2[i] * w1_to_w2[i];
+      }
+      norm = gkSqrt(norm);
+      if (norm > gkEpsilon) {
+        for (int i = 0; i < 3; i++) {
+          contact_normals[warp_idx * 3 + i] = w1_to_w2[i] / norm;
+        }
+      } else {
+        // Default normal if witnesses are too close
+        contact_normals[warp_idx * 3 + 0] = 1.0f;
+        contact_normals[warp_idx * 3 + 1] = 0.0f;
+        contact_normals[warp_idx * 3 + 2] = 0.0f;
+      }
     }
+    return;
   }
-  
+
   // If GJK returned a degenerate simplex, rebuild it properly for EPA
   if (simplex.nvrtx != 4) {
     // Need to get it up to 4 vertices
@@ -2306,6 +2417,23 @@ __global__ void compute_epa_warp_parallel(
             witness1[warp_idx * 3 + c] = p1;
             witness2[warp_idx * 3 + c] = p2;
           }
+          // Compute contact normal from witness1 to witness2
+          gkFloat w1_to_w2[3];
+          gkFloat norm = 0.0f;
+          for (int c = 0; c < 3; ++c) {
+            w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+            norm += w1_to_w2[c] * w1_to_w2[c];
+          }
+          norm = gkSqrt(norm);
+          if (norm > gkEpsilon) {
+            for (int c = 0; c < 3; ++c) {
+              contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+            }
+          } else {
+            contact_normals[warp_idx * 3 + 0] = 1.0f;
+            contact_normals[warp_idx * 3 + 1] = 0.0f;
+            contact_normals[warp_idx * 3 + 2] = 0.0f;
+          }
           terminate_epa = true;
         }
       }
@@ -2313,6 +2441,16 @@ __global__ void compute_epa_warp_parallel(
       int term_flag = __shfl_sync(warp_mask, terminate_epa ? 1 : 0, 0);
       if (term_flag) {
         return;
+      }
+
+      // Broadcast updated simplex
+      simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
+      for (int v = 0; v < simplex.nvrtx; v++) {
+        for (int c = 0; c < 3; c++) {
+          simplex.vrtx[v][c] = __shfl_sync(warp_mask, simplex.vrtx[v][c], 0);
+        }
+        simplex.vrtx_idx[v][0] = __shfl_sync(warp_mask, simplex.vrtx_idx[v][0], 0);
+        simplex.vrtx_idx[v][1] = __shfl_sync(warp_mask, simplex.vrtx_idx[v][1], 0);
       }
     }
     if (simplex.nvrtx == 2) {
@@ -2333,7 +2471,7 @@ __global__ void compute_epa_warp_parallel(
         }
 
         // Build a perpindicular
-        gkFloat axis[3] = {1.0f, 0.0f, 0.0f};
+        gkFloat axis[3] = { 1.0f, 0.0f, 0.0f };
         gkFloat edge_norm = gkSqrt(edge[0] * edge[0] + edge[1] * edge[1] + edge[2] * edge[2]);
         if (edge_norm > gkEpsilon && fabs(edge[0]) > 0.9f * edge_norm) {
           axis[0] = 0.0f; axis[1] = 1.0f; axis[2] = 0.0f;
@@ -2392,6 +2530,23 @@ __global__ void compute_epa_warp_parallel(
             witness1[warp_idx * 3 + c] = p1;
             witness2[warp_idx * 3 + c] = p2;
           }
+          // Compute contact normal from witness1 to witness2
+          gkFloat w1_to_w2[3];
+          gkFloat norm = 0.0f;
+          for (int c = 0; c < 3; ++c) {
+            w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+            norm += w1_to_w2[c] * w1_to_w2[c];
+          }
+          norm = gkSqrt(norm);
+          if (norm > gkEpsilon) {
+            for (int c = 0; c < 3; ++c) {
+              contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+            }
+          } else {
+            contact_normals[warp_idx * 3 + 0] = 1.0f;
+            contact_normals[warp_idx * 3 + 1] = 0.0f;
+            contact_normals[warp_idx * 3 + 2] = 0.0f;
+          }
           terminate_epa = true;
         }
       }
@@ -2399,6 +2554,16 @@ __global__ void compute_epa_warp_parallel(
       int term_flag = __shfl_sync(warp_mask, terminate_epa ? 1 : 0, 0);
       if (term_flag) {
         return;
+      }
+
+      // Broadcast updated simplex
+      simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
+      for (int v = 0; v < simplex.nvrtx; v++) {
+        for (int c = 0; c < 3; c++) {
+          simplex.vrtx[v][c] = __shfl_sync(warp_mask, simplex.vrtx[v][c], 0);
+        }
+        simplex.vrtx_idx[v][0] = __shfl_sync(warp_mask, simplex.vrtx_idx[v][0], 0);
+        simplex.vrtx_idx[v][1] = __shfl_sync(warp_mask, simplex.vrtx_idx[v][1], 0);
       }
     }
     if (simplex.nvrtx == 3) {
@@ -2459,38 +2624,135 @@ __global__ void compute_epa_warp_parallel(
           simplex.nvrtx = 4;
         }
         else {
-          // No new support point meanspenetration depth effectively zero.
-          distances[warp_idx] = 0.0f;
-          for (int c = 0; c < 3; ++c) {
-            gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
-            gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
-            witness1[warp_idx * 3 + c] = p1;
-            witness2[warp_idx * 3 + c] = p2;
-          }
-          terminate_epa = true;
+          // Try opposite direction
+          dir[0] = -dir[0];
+          dir[1] = -dir[1];
+          dir[2] = -dir[2];
         }
       }
 
-      int term_flag = __shfl_sync(warp_mask, terminate_epa ? 1 : 0, 0);
-      if (term_flag) {
-        return;
+      // If first direction didn't work, try opposite
+      int curr_nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
+      if (curr_nvrtx == 3) {
+        dir[0] = __shfl_sync(warp_mask, dir[0], 0);
+        dir[1] = __shfl_sync(warp_mask, dir[1], 0);
+        dir[2] = __shfl_sync(warp_mask, dir[2], 0);
+
+        support_epa_parallel(bd1, bd2, dir, new_vertex, new_vertex_idx,
+          warp_lane_idx, warp_mask);
+
+        __syncwarp(warp_mask);
+
+        if (warp_lane_idx == 0) {
+          bool is_new = true;
+          for (int vtx = 0; vtx < simplex.nvrtx; ++vtx) {
+            gkFloat dx = new_vertex[0] - simplex.vrtx[vtx][0];
+            gkFloat dy = new_vertex[1] - simplex.vrtx[vtx][1];
+            gkFloat dz = new_vertex[2] - simplex.vrtx[vtx][2];
+            gkFloat d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < eps_sq) {
+              is_new = false;
+              break;
+            }
+          }
+
+          if (is_new) {
+            int idx = simplex.nvrtx;
+            for (int c = 0; c < 3; ++c) {
+              simplex.vrtx[idx][c] = new_vertex[c];
+            }
+            simplex.vrtx_idx[idx][0] = new_vertex_idx[0];
+            simplex.vrtx_idx[idx][1] = new_vertex_idx[1];
+            simplex.nvrtx = 4;
+          }
+          else {
+            distances[warp_idx] = 0.0f;
+            for (int c = 0; c < 3; ++c) {
+              gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
+              gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
+              witness1[warp_idx * 3 + c] = p1;
+              witness2[warp_idx * 3 + c] = p2;
+            }
+            // Compute contact normal from witness1 to witness2
+            gkFloat w1_to_w2[3];
+            gkFloat norm = 0.0f;
+            for (int c = 0; c < 3; ++c) {
+              w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+              norm += w1_to_w2[c] * w1_to_w2[c];
+            }
+            norm = gkSqrt(norm);
+            if (norm > gkEpsilon) {
+              for (int c = 0; c < 3; ++c) {
+                contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+              }
+            } else {
+              contact_normals[warp_idx * 3 + 0] = 1.0f;
+              contact_normals[warp_idx * 3 + 1] = 0.0f;
+              contact_normals[warp_idx * 3 + 2] = 0.0f;
+            }
+            terminate_epa = true;
+          }
+        }
+        int term_flag = __shfl_sync(warp_mask, terminate_epa ? 1 : 0, 0);
+        if (term_flag) {
+          return;
+        }
       }
+
+      // Broadcast updated simplex
+      simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
+      for (int v = 0; v < simplex.nvrtx; v++) {
+        for (int c = 0; c < 3; c++) {
+          simplex.vrtx[v][c] = __shfl_sync(warp_mask, simplex.vrtx[v][c], 0);
+        }
+        simplex.vrtx_idx[v][0] = __shfl_sync(warp_mask, simplex.vrtx_idx[v][0], 0);
+        simplex.vrtx_idx[v][1] = __shfl_sync(warp_mask, simplex.vrtx_idx[v][1], 0);
+      }
+    }
+
+    // If we still don't have 4 vertices, abort
+    if (simplex.nvrtx != 4) {
+      if (warp_lane_idx == 0) {
+        distances[warp_idx] = 0.0f;
+        // Compute contact normal from witness points if available
+        gkFloat w1_to_w2[3];
+        gkFloat norm = 0.0f;
+        for (int c = 0; c < 3; ++c) {
+          w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+          norm += w1_to_w2[c] * w1_to_w2[c];
+        }
+        norm = gkSqrt(norm);
+        if (norm > gkEpsilon) {
+          for (int c = 0; c < 3; ++c) {
+            contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
+          }
+        } else {
+          contact_normals[warp_idx * 3 + 0] = 1.0f;
+          contact_normals[warp_idx * 3 + 1] = 0.0f;
+          contact_normals[warp_idx * 3 + 2] = 0.0f;
+        }
+      }
+      return;
     }
   }
 
   // On to actual EPA alg with a valid tetrahedron simplex
   // Initialize EPA polytope from simplex
   EPAPolytope poly;
+  gkFloat centroid[3];
   if (warp_lane_idx == 0) {
-    init_epa_polytope(&poly, &simplex);
+    init_epa_polytope(&poly, &simplex, centroid);
   }
-  
+
   __syncwarp(warp_mask);
-  
+
   // Broadcast polytope initialization to all threads
   poly.num_vertices = __shfl_sync(warp_mask, poly.num_vertices, 0);
-  poly.num_faces = __shfl_sync(warp_mask, poly.num_faces, 0);
-  
+  poly.max_face_index = __shfl_sync(warp_mask, poly.max_face_index, 0);
+  centroid[0] = __shfl_sync(warp_mask, centroid[0], 0);
+  centroid[1] = __shfl_sync(warp_mask, centroid[1], 0);
+  centroid[2] = __shfl_sync(warp_mask, centroid[2], 0);
+
   for (int i = 0; i < 4; i++) {
     for (int j = 0; j < 3; j++) {
       poly.vertices[i][j] = __shfl_sync(warp_mask, poly.vertices[i][j], 0);
@@ -2498,7 +2760,7 @@ __global__ void compute_epa_warp_parallel(
     poly.vertex_indices[i][0] = __shfl_sync(warp_mask, poly.vertex_indices[i][0], 0);
     poly.vertex_indices[i][1] = __shfl_sync(warp_mask, poly.vertex_indices[i][1], 0);
   }
-  
+
   for (int f = 0; f < 4; f++) {
     for (int v = 0; v < 3; v++) {
       poly.faces[f].v[v] = __shfl_sync(warp_mask, poly.faces[f].v[v], 0);
@@ -2507,146 +2769,181 @@ __global__ void compute_epa_warp_parallel(
     }
     poly.faces[f].valid = __shfl_sync(warp_mask, poly.faces[f].valid ? 1 : 0, 0) != 0;
   }
-  
+
   // EPA iteration parameters
   const int max_iterations = 64;
   const gkFloat tolerance = eps_tot22;
   int iteration = 0;
-  
+
   // Main EPA loop
-  while (iteration < max_iterations && poly.num_faces < MAX_EPA_FACES) {
+  while (iteration < max_iterations && poly.num_vertices < MAX_EPA_VERTICES - 1) {
     iteration++;
-    
+
     // Compute face normals and distances
     int closest_face = -1;
     gkFloat closest_distance = 1e10f;
     gkFloat dir_x = 0, dir_y = 0, dir_z = 0;
-    
+
     // Use only one thread for now (num faces is low so multiple and then shuffling seemed to take longer if not done smartly)
     if (warp_lane_idx == 0) {
       // Recompute normals & distances for all valid faces
-      for (int i = 0; i < poly.num_faces; ++i) {
+      for (int i = 0; i < poly.max_face_index; ++i) {
         if (!poly.faces[i].valid) continue;
-        compute_face_normal_distance(&poly, i);
+        compute_face_normal_distance(&poly, i, centroid);
       }
-      
+
       // closest-face search
-      for (int i = 0; i < poly.num_faces; ++i) {
+      for (int i = 0; i < poly.max_face_index; ++i) {
         if (!poly.faces[i].valid) continue;
         if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < closest_distance) {
           closest_distance = poly.faces[i].distance;
           closest_face = i;
         }
       }
-      
+
       if (closest_face >= 0) {
         dir_x = poly.faces[closest_face].normal[0];
         dir_y = poly.faces[closest_face].normal[1];
         dir_z = poly.faces[closest_face].normal[2];
       }
     }
-    
+
     // Broadcast to whole warp for support_epa_parallel
     closest_face = __shfl_sync(warp_mask, closest_face, 0);
     closest_distance = __shfl_sync(warp_mask, closest_distance, 0);
     dir_x = __shfl_sync(warp_mask, dir_x, 0);
     dir_y = __shfl_sync(warp_mask, dir_y, 0);
     dir_z = __shfl_sync(warp_mask, dir_z, 0);
-    
-    if (closest_face < 0 || closest_face >= poly.num_faces) {
+
+    if (closest_face < 0) {
       break;
     }
-    
-    gkFloat direction[3] = {dir_x, dir_y, dir_z};
+
+    gkFloat direction[3] = { dir_x, dir_y, dir_z };
     EPAFace* closest = &poly.faces[closest_face];
-    
+
     // Get support point in direction of closest face normal
     gkFloat new_vertex[3];
     int new_vertex_idx[2];
     support_epa_parallel(bd1, bd2, direction, new_vertex, new_vertex_idx,
-                        warp_lane_idx, warp_mask);
-    
+      warp_lane_idx, warp_mask);
+
     __syncwarp(warp_mask);
-    
+
     // Check termination condition: if distance to new vertex along normal is not more than tolerance further than closest face
     gkFloat dist_to_new = dir_x * new_vertex[0] + dir_y * new_vertex[1] + dir_z * new_vertex[2];
     gkFloat improvement = dist_to_new - closest_distance;
-    
+
     if (improvement < tolerance) {
       // Converged, compute witness points with bary coords
       if (warp_lane_idx == 0) {
-        // Project origin onto closest face
         gkFloat* v0 = poly.vertices[closest->v[0]];
         gkFloat* v1 = poly.vertices[closest->v[1]];
         gkFloat* v2 = poly.vertices[closest->v[2]];
-        
-        gkFloat e0[3], e1[3], po[3];
+
+        // bary computation
+        gkFloat a0, a1, a2;
+        compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
+
+        // Compute witness points using barycentric coords
+        int idx0[2] = { closest->v_idx[0][0], closest->v_idx[0][1] };
+        int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
+        int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
+
         for (int i = 0; i < 3; i++) {
-          e0[i] = v1[i] - v0[i];
-          e1[i] = v2[i] - v0[i];
-          po[i] = -v0[i];
+          witness1[warp_idx * 3 + i] =
+            getCoord(bd1, idx0[0], i) * a0 +
+            getCoord(bd1, idx1[0], i) * a1 +
+            getCoord(bd1, idx2[0], i) * a2;
+          witness2[warp_idx * 3 + i] =
+            getCoord(bd2, idx0[1], i) * a0 +
+            getCoord(bd2, idx1[1], i) * a1 +
+            getCoord(bd2, idx2[1], i) * a2;
         }
-        
-        // Compute barycentric coordinates
-        gkFloat T00 = dotProduct(e0, e0);
-        gkFloat T01 = dotProduct(e0, e1);
-        gkFloat T11 = dotProduct(e1, e1);
-        gkFloat det = T00 * T11 - T01 * T01;
-        
-        if (det > gkEpsilon) {
-          gkFloat b0 = dotProduct(e0, po);
-          gkFloat b1 = dotProduct(e1, po);
-          gkFloat I00 = T11 / det;
-          gkFloat I01 = -T01 / det;
-          gkFloat I11 = T00 / det;
-          gkFloat a1 = I00 * b0 + I01 * b1;
-          gkFloat a2 = I01 * b0 + I11 * b1;
-          gkFloat a0 = 1.0f - a1 - a2;
-          
-          // Clamp barycentric coordinates
-          if (a0 < 0) { a0 = 0; a1 = 1 - a2; }
-          if (a1 < 0) { a1 = 0; a0 = 1 - a2; }
-          if (a2 < 0) { a2 = 0; a0 = 1 - a1; }
-          gkFloat sum = a0 + a1 + a2;
-          if (sum > gkEpsilon) {
-            a0 /= sum; a1 /= sum; a2 /= sum;
-          }
-          
-          // Compute witness points
-          int idx0[2] = {closest->v_idx[0][0], closest->v_idx[0][1]};
-          int idx1[2] = {closest->v_idx[1][0], closest->v_idx[1][1]};
-          int idx2[2] = {closest->v_idx[2][0], closest->v_idx[2][1]};
-          
-          for (int i = 0; i < 3; i++) {
-            witness1[warp_idx * 3 + i] = 
-              getCoord(bd1, idx0[0], i) * a0 +
-              getCoord(bd1, idx1[0], i) * a1 +
-              getCoord(bd1, idx2[0], i) * a2;
-            witness2[warp_idx * 3 + i] = 
-              getCoord(bd2, idx0[1], i) * a0 +
-              getCoord(bd2, idx1[1], i) * a1 +
-              getCoord(bd2, idx2[1], i) * a2;
-          }
-        }
-        
+
+        // Penetration depth is negative distance (objects overlap)
         distances[warp_idx] = -closest_distance;
+        
+        // Store contact normal (points from polytope1 to polytope2)
+        for (int i = 0; i < 3; i++) {
+          contact_normals[warp_idx * 3 + i] = closest->normal[i];
+        }
       }
       break;
     }
-    
-    // Add new vertex to polytope
-    int new_vertex_id = poly.num_vertices;
+
+    /// Check if new vertex is duplicate
+    bool is_duplicate = false;
     if (warp_lane_idx == 0) {
+      const gkFloat eps_sq = gkEpsilon * gkEpsilon;
+      for (int i = 0; i < poly.num_vertices; i++) {
+        gkFloat dx = new_vertex[0] - poly.vertices[i][0];
+        gkFloat dy = new_vertex[1] - poly.vertices[i][1];
+        gkFloat dz = new_vertex[2] - poly.vertices[i][2];
+        if (dx * dx + dy * dy + dz * dz < eps_sq) {
+          is_duplicate = true;
+          break;
+        }
+      }
+    }
+
+    is_duplicate = __shfl_sync(warp_mask, is_duplicate ? 1 : 0, 0) != 0;
+
+    if (is_duplicate) {
+      // Can't make progress, use current best
+      if (warp_lane_idx == 0) {
+        gkFloat* v0 = poly.vertices[closest->v[0]];
+        gkFloat* v1 = poly.vertices[closest->v[1]];
+        gkFloat* v2 = poly.vertices[closest->v[2]];
+
+        gkFloat a0, a1, a2;
+        compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
+
+        int idx0[2] = { closest->v_idx[0][0], closest->v_idx[0][1] };
+        int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
+        int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
+
+        for (int i = 0; i < 3; i++) {
+          witness1[warp_idx * 3 + i] =
+            getCoord(bd1, idx0[0], i) * a0 +
+            getCoord(bd1, idx1[0], i) * a1 +
+            getCoord(bd1, idx2[0], i) * a2;
+          witness2[warp_idx * 3 + i] =
+            getCoord(bd2, idx0[1], i) * a0 +
+            getCoord(bd2, idx1[1], i) * a1 +
+            getCoord(bd2, idx2[1], i) * a2;
+        }
+
+        distances[warp_idx] = -closest_distance;
+        
+        // Store contact normal (points from polytope1 to polytope2)
+        for (int i = 0; i < 3; i++) {
+          contact_normals[warp_idx * 3 + i] = closest->normal[i];
+        }
+      }
+      break;
+    }
+
+    // Add new vertex to polytope
+    int new_vertex_id = -1;
+    if (warp_lane_idx == 0) {
+      new_vertex_id = poly.num_vertices;
       for (int i = 0; i < 3; i++) {
         poly.vertices[new_vertex_id][i] = new_vertex[i];
       }
       poly.vertex_indices[new_vertex_id][0] = new_vertex_idx[0];
       poly.vertex_indices[new_vertex_id][1] = new_vertex_idx[1];
       poly.num_vertices++;
+
+      // Update centroid incrementally
+      gkFloat n = (gkFloat)poly.num_vertices;
+      for (int i = 0; i < 3; i++) {
+        centroid[i] = centroid[i] * (n - 1.0f) / n + new_vertex[i] / n;
+      }
     }
-    
+
     __syncwarp(warp_mask);
-    
+
     // Broadcast new vertex
     new_vertex_id = __shfl_sync(warp_mask, new_vertex_id, 0);
     for (int i = 0; i < 3; i++) {
@@ -2655,35 +2952,34 @@ __global__ void compute_epa_warp_parallel(
     poly.vertex_indices[new_vertex_id][0] = __shfl_sync(warp_mask, poly.vertex_indices[new_vertex_id][0], 0);
     poly.vertex_indices[new_vertex_id][1] = __shfl_sync(warp_mask, poly.vertex_indices[new_vertex_id][1], 0);
     poly.num_vertices = __shfl_sync(warp_mask, poly.num_vertices, 0);
-    
-    // Find visible faces (faces that can see the new vertex)
-    if (warp_lane_idx == 0) {
-      for (int i = 0; i < poly.num_faces; i++) {
-        if (poly.faces[i].valid && is_face_visible(&poly, i, new_vertex)) {
-          poly.faces[i].valid = false;
-        }
-      }
-    }
-    __syncwarp(warp_mask);
-    
+    centroid[0] = __shfl_sync(warp_mask, centroid[0], 0);
+    centroid[1] = __shfl_sync(warp_mask, centroid[1], 0);
+    centroid[2] = __shfl_sync(warp_mask, centroid[2], 0);
+
     // Find horizon edges (edges shared by exactly one invalid face and one valid face)
     // Only create new faces from horizon edges
     // Maybe some way to leverage multiple threads in warp to speed this up
     if (warp_lane_idx == 0) {
-      // Structure to store edge information
-      struct EdgeInfo {
-        int v1, v2;  // Vertex indices in polytope
-        int v_idx1[2], v_idx2[2];  // Original vertex indices for witness computation
-        bool valid;  // Whether this edge is still valid (not duplicated)
-      };
-      
-      EdgeInfo edges[MAX_EPA_FACES * 3];
+      // Mark visible faces
+      for (int i = 0; i < poly.max_face_index; i++) {
+        if (poly.faces[i].valid && is_face_visible(&poly, i, new_vertex)) {
+          poly.faces[i].valid = false;
+        }
+      }
+
+      // Collect horizon edges from invalid faces
+      EPAEdge edges[MAX_EPA_FACES * 3];
       int num_edges = 0;
-      
-      // First pass: collect all edges from invalid faces
-      for (int f = 0; f < poly.num_faces; f++) {
-        if (!poly.faces[f].valid) {
-          // Edge 0-1
+
+      for (int f = 0; f < poly.max_face_index; f++) {
+        if (poly.faces[f].valid) continue;  // Skip valid faces
+
+        // face was just invalidated so collect edges
+        // But only if face was actually valid before this iteration
+        // We need to check if it has valid vertex indices
+
+        // Edge 0-1
+        if (num_edges < MAX_EPA_FACES * 3) {
           edges[num_edges].v1 = poly.faces[f].v[0];
           edges[num_edges].v2 = poly.faces[f].v[1];
           edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[0][0];
@@ -2692,8 +2988,10 @@ __global__ void compute_epa_warp_parallel(
           edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[1][1];
           edges[num_edges].valid = true;
           num_edges++;
-          
-          // Edge 1-2
+        }
+
+        // Edge 1-2
+        if (num_edges < MAX_EPA_FACES * 3) {
           edges[num_edges].v1 = poly.faces[f].v[1];
           edges[num_edges].v2 = poly.faces[f].v[2];
           edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[1][0];
@@ -2702,8 +3000,10 @@ __global__ void compute_epa_warp_parallel(
           edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[2][1];
           edges[num_edges].valid = true;
           num_edges++;
-          
-          // Edge 2-0
+        }
+
+        // Edge 2-0
+        if (num_edges < MAX_EPA_FACES * 3) {
           edges[num_edges].v1 = poly.faces[f].v[2];
           edges[num_edges].v2 = poly.faces[f].v[0];
           edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[2][0];
@@ -2714,64 +3014,98 @@ __global__ void compute_epa_warp_parallel(
           num_edges++;
         }
       }
-      
-      // Second pass: mark duplicate edges as invalid
-      // An edge (v1, v2) is the same as (v2, v1)
+
+      // Remove duplicate edges (edges shared by two removed faces)
       for (int i = 0; i < num_edges; i++) {
         if (!edges[i].valid) continue;
-        
-        // Check if this edge appears again later
+
         for (int j = i + 1; j < num_edges; j++) {
           if (!edges[j].valid) continue;
-          
+
+          // Check if same edge (either direction)
           if ((edges[i].v1 == edges[j].v1 && edges[i].v2 == edges[j].v2) ||
-              (edges[i].v1 == edges[j].v2 && edges[i].v2 == edges[j].v1)) {
+            (edges[i].v1 == edges[j].v2 && edges[i].v2 == edges[j].v1)) {
             edges[i].valid = false;
             edges[j].valid = false;
           }
         }
       }
-      
-      // create new faces from remaining unique edges
-      int new_face_idx = 0;
-      
-      // Find first available face slot
-      for (int i = 0; i < MAX_EPA_FACES; i++) {
-        if (!poly.faces[i].valid) {
-          new_face_idx = i;
-          break;
+
+      // Create new faces from horizon edges
+      for (int i = 0; i < num_edges; i++) {
+        if (!edges[i].valid) continue;
+
+        // Find next available face slot
+        int new_face_idx = -1;
+        for (int j = 0; j < MAX_EPA_FACES; j++) {
+          if (!poly.faces[j].valid) {
+            new_face_idx = j;
+            break;
+          }
+        }
+
+        if (new_face_idx < 0 || new_face_idx >= MAX_EPA_FACES) break;
+
+        // Create new face: edge horizon vertices + new vertex
+        poly.faces[new_face_idx].v[0] = edges[i].v1;
+        poly.faces[new_face_idx].v[1] = edges[i].v2;
+        poly.faces[new_face_idx].v[2] = new_vertex_id;
+
+        poly.faces[new_face_idx].v_idx[0][0] = edges[i].v_idx1[0];
+        poly.faces[new_face_idx].v_idx[0][1] = edges[i].v_idx1[1];
+        poly.faces[new_face_idx].v_idx[1][0] = edges[i].v_idx2[0];
+        poly.faces[new_face_idx].v_idx[1][1] = edges[i].v_idx2[1];
+        poly.faces[new_face_idx].v_idx[2][0] = new_vertex_idx[0];
+        poly.faces[new_face_idx].v_idx[2][1] = new_vertex_idx[1];
+
+        poly.faces[new_face_idx].valid = true;
+
+        // Check winding and fix if necessary
+        gkFloat* fv0 = poly.vertices[poly.faces[new_face_idx].v[0]];
+        gkFloat* fv1 = poly.vertices[poly.faces[new_face_idx].v[1]];
+        gkFloat* fv2 = poly.vertices[poly.faces[new_face_idx].v[2]];
+
+        gkFloat fe0[3], fe1[3], fnormal[3];
+        for (int c = 0; c < 3; c++) {
+          fe0[c] = fv1[c] - fv0[c];
+          fe1[c] = fv2[c] - fv0[c];
+        }
+        crossProduct(fe0, fe1, fnormal);
+
+        // Vector from face to centroid
+        gkFloat to_cent[3];
+        for (int c = 0; c < 3; c++) {
+          to_cent[c] = centroid[c] - fv0[c];
+        }
+
+        // If normal points toward centroid flip winding
+        if (dotProduct(fnormal, to_cent) > 0) {
+          // Swap v[1] and v[2]
+          int tmp_v = poly.faces[new_face_idx].v[1];
+          poly.faces[new_face_idx].v[1] = poly.faces[new_face_idx].v[2];
+          poly.faces[new_face_idx].v[2] = tmp_v;
+
+          int tmp_idx0 = poly.faces[new_face_idx].v_idx[1][0];
+          int tmp_idx1 = poly.faces[new_face_idx].v_idx[1][1];
+          poly.faces[new_face_idx].v_idx[1][0] = poly.faces[new_face_idx].v_idx[2][0];
+          poly.faces[new_face_idx].v_idx[1][1] = poly.faces[new_face_idx].v_idx[2][1];
+          poly.faces[new_face_idx].v_idx[2][0] = tmp_idx0;
+          poly.faces[new_face_idx].v_idx[2][1] = tmp_idx1;
+        }
+
+        // Update max face index
+        if (new_face_idx >= poly.max_face_index) {
+          poly.max_face_index = new_face_idx + 1;
         }
       }
-      
-      for (int i = 0; i < num_edges && new_face_idx < MAX_EPA_FACES; i++) {
-        if (edges[i].valid) {
-          poly.faces[new_face_idx].v[0] = edges[i].v1;
-          poly.faces[new_face_idx].v[1] = edges[i].v2;
-          poly.faces[new_face_idx].v[2] = new_vertex_id;
-          poly.faces[new_face_idx].v_idx[0][0] = edges[i].v_idx1[0];
-          poly.faces[new_face_idx].v_idx[0][1] = edges[i].v_idx1[1];
-          poly.faces[new_face_idx].v_idx[1][0] = edges[i].v_idx2[0];
-          poly.faces[new_face_idx].v_idx[1][1] = edges[i].v_idx2[1];
-          poly.faces[new_face_idx].v_idx[2][0] = new_vertex_idx[0];
-          poly.faces[new_face_idx].v_idx[2][1] = new_vertex_idx[1];
-          poly.faces[new_face_idx].valid = true;
-          new_face_idx++;
-        }
-      }
-      
-      // Update face count
-      int valid_count = 0;
-      for (int i = 0; i < MAX_EPA_FACES; i++) {
-        if (poly.faces[i].valid) valid_count++;
-      }
-      poly.num_faces = valid_count;
     }
-    
+
     __syncwarp(warp_mask);
-    
-    // Broadcast updated face count and new faces
-    poly.num_faces = __shfl_sync(warp_mask, poly.num_faces, 0);
-    for (int i = 0; i < MAX_EPA_FACES; i++) {
+
+    // Broadcast updated polytope state
+    poly.max_face_index = __shfl_sync(warp_mask, poly.max_face_index, 0);
+
+    for (int i = 0; i < poly.max_face_index; i++) {
       poly.faces[i].valid = __shfl_sync(warp_mask, poly.faces[i].valid ? 1 : 0, 0) != 0;
       if (poly.faces[i].valid) {
         for (int v = 0; v < 3; v++) {
@@ -2782,83 +3116,59 @@ __global__ void compute_epa_warp_parallel(
       }
     }
   }
-  
+
   // If we exited due to max iterations, recompute closest face and use it
   if (iteration >= max_iterations && warp_lane_idx == 0) {
-    // Recompute normals & distances for all valid faces
-    for (int i = 0; i < poly.num_faces; ++i) {
+    // Find closest face and compute result
+    for (int i = 0; i < poly.max_face_index; ++i) {
       if (!poly.faces[i].valid) continue;
-      compute_face_normal_distance(&poly, i);
+      compute_face_normal_distance(&poly, i, centroid);
     }
-    
-    // Scalar closest-face search
+
     int closest_face = -1;
     gkFloat closest_distance = 1e10f;
-    for (int i = 0; i < poly.num_faces; ++i) {
+    for (int i = 0; i < poly.max_face_index; ++i) {
       if (!poly.faces[i].valid) continue;
       if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < closest_distance) {
         closest_distance = poly.faces[i].distance;
         closest_face = i;
       }
     }
-    
-    if (closest_face >= 0 && closest_face < poly.num_faces && poly.faces[closest_face].valid) {
+
+    if (closest_face >= 0 && poly.faces[closest_face].valid) {
       EPAFace* closest = &poly.faces[closest_face];
-      
-      // Compute witness points using barycentric coordinates (same as above)
+
       gkFloat* v0 = poly.vertices[closest->v[0]];
       gkFloat* v1 = poly.vertices[closest->v[1]];
       gkFloat* v2 = poly.vertices[closest->v[2]];
-      
-      gkFloat e0[3], e1[3], po[3];
+
+      gkFloat a0, a1, a2;
+      compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
+
+      int idx0[2] = { closest->v_idx[0][0], closest->v_idx[0][1] };
+      int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
+      int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
+
       for (int i = 0; i < 3; i++) {
-        e0[i] = v1[i] - v0[i];
-        e1[i] = v2[i] - v0[i];
-        po[i] = -v0[i];
+        witness1[warp_idx * 3 + i] =
+          getCoord(bd1, idx0[0], i) * a0 +
+          getCoord(bd1, idx1[0], i) * a1 +
+          getCoord(bd1, idx2[0], i) * a2;
+        witness2[warp_idx * 3 + i] =
+          getCoord(bd2, idx0[1], i) * a0 +
+          getCoord(bd2, idx1[1], i) * a1 +
+          getCoord(bd2, idx2[1], i) * a2;
       }
-      
-      gkFloat T00 = dotProduct(e0, e0);
-      gkFloat T01 = dotProduct(e0, e1);
-      gkFloat T11 = dotProduct(e1, e1);
-      gkFloat det = T00 * T11 - T01 * T01;
-      
-      if (det > gkEpsilon) {
-        gkFloat b0 = dotProduct(e0, po);
-        gkFloat b1 = dotProduct(e1, po);
-        gkFloat I00 = T11 / det;
-        gkFloat I01 = -T01 / det;
-        gkFloat I11 = T00 / det;
-        gkFloat a1 = I00 * b0 + I01 * b1;
-        gkFloat a2 = I01 * b0 + I11 * b1;
-        gkFloat a0 = 1.0f - a1 - a2;
-        
-        if (a0 < 0) { a0 = 0; a1 = 1 - a2; }
-        if (a1 < 0) { a1 = 0; a0 = 1 - a2; }
-        if (a2 < 0) { a2 = 0; a0 = 1 - a1; }
-        gkFloat sum = a0 + a1 + a2;
-        if (sum > gkEpsilon) {
-          a0 /= sum; a1 /= sum; a2 /= sum;
-        }
-        
-        int idx0[2] = {closest->v_idx[0][0], closest->v_idx[0][1]};
-        int idx1[2] = {closest->v_idx[1][0], closest->v_idx[1][1]};
-        int idx2[2] = {closest->v_idx[2][0], closest->v_idx[2][1]};
-        
-        for (int i = 0; i < 3; i++) {
-          witness1[warp_idx * 3 + i] = 
-            getCoord(bd1, idx0[0], i) * a0 +
-            getCoord(bd1, idx1[0], i) * a1 +
-            getCoord(bd1, idx2[0], i) * a2;
-          witness2[warp_idx * 3 + i] = 
-            getCoord(bd2, idx0[1], i) * a0 +
-            getCoord(bd2, idx1[1], i) * a1 +
-            getCoord(bd2, idx2[1], i) * a2;
-        }
-      }
-      
+
       distances[warp_idx] = -closest_distance;
+      
+      // Store contact normal (points from polytope1 to polytope2)
+      for (int i = 0; i < 3; i++) {
+        contact_normals[warp_idx * 3 + i] = closest->normal[i];
+      }
     }
   }
 }
+
 
 
