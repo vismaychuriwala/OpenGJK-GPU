@@ -1,8 +1,9 @@
 *This repo is currently a work in progress.*
 # OpenGJK-GPU
 
-CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
+CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK) and the EPA algorithm.
 
+Contributors: [Marcus Hedlund](https://github.com/mhedlund7), [Vismay Churiwala](https://vismaychuriwala.com/), [Cindy Wei](https://www.linkedin.com/in/cindy-wei-7ba778227/?utm_source=share&utm_campaign=share_via&utm_content=profile&utm_medium=ios_app)
 ## Introduction
 
 We aim to create an efficient and high quality open implementations of the GJK and EPA collision detection algorithms in CUDA, leveraging the GPU to achieve significant speedup over existing CPU implementations on high numbers of colliding polytopes. We also provide a physics simulation using OpenGL and Raylib for visualization to demonstrate our updated algorithms in action.
@@ -303,5 +304,10 @@ The validation automatically compares the first 100 distance computations betwee
   * CUDA Toolkit: 13.0
   * Driver Version: 581.80
 
-## Use OpenGJK-GPU in Your Project
+### Deliverables
 
+*[Project Proposal](https://docs.google.com/document/d/14fZ2E0YpqXE-DzvDsl6Hdc9iFCNBl_NMRxxjJE2w3jY/edit?usp=sharing)
+*[Milestone 1](https://docs.google.com/presentation/d/1WPj8Xt3JGV5DWIja9NVG7UvrkLtkmIimTGchkGf9aNI/edit?usp=sharing)
+*[Milestone 2](https://docs.google.com/presentation/d/159heWqZZO2uYQWvfda83ui7vZ1OU14n4bIfr-fYUg88/edit?usp=sharing)
+*[Milestone 3](https://docs.google.com/presentation/d/1I9fcP2MQteWr0Ev3IUGg4ZLAJAGmjjiiVTp2Livz6tw/edit?usp=sharing)
+*[Final Presentation](https://docs.google.com/presentation/d/1fWIkM41XUq6gc-5EAmZyqX3KbV449bzZ/edit?usp=sharing&ouid=110712747235989636284&rtpof=true&sd=true)
