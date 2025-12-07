@@ -1,5 +1,5 @@
 @echo off
-echo Building Simple GPU-Only WarpParallelGJK Version...
+echo Building Simple GPU-Only Version...
 echo.
 
 set RAYLIB_INCLUDE=/IC:\raylib\include
@@ -36,15 +36,15 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo Step 2b: Compiling WarpParallelGJK kernel...
-nvcc -allow-unsupported-compiler -arch=%GPU_ARCH% -c ..\GJK\gpu\warpParallelGJK.cu -o warpParallelGJK.obj ^
+echo Step 2b: Compiling GPU_GJK kernel...
+nvcc -allow-unsupported-compiler -arch=%GPU_ARCH% -c ..\GJK\gpu\openGJK.cu -o openGJK_gpu.obj ^
     -I"%CUDA_PATH%\include" -I"..\GJK\gpu" -I"..\GJK" -I"."
 
 if %errorlevel% neq 0 (
     echo.
     echo ========================================
-    echo Failed to compile warpParallelGJK.cu ❌
-    echo Make sure it exists at ..\GJK\gpu\warpParallelGJK.cu
+    echo Failed to compile openGJK.cu
+    echo Make sure it exists at ..\GJK\gpu\openGJK.cu
     echo ========================================
     echo.
     pause
@@ -55,20 +55,20 @@ echo.
 echo Step 3: Building final executable...
 cl /MD /DUSE_CUDA %RAYLIB_INCLUDE% -I"%CUDA_PATH%\include" -I"..\GJK\cpu" ^
     /Fe:gjk_visualizer_gpu_only.exe ^
-    main.c gjk_integration.c ..\GJK\cpu\openGJK.c gpu_gjk_bridge.obj warpParallelGJK.obj ^
+    main.c gjk_integration.c ..\GJK\cpu\openGJK.c gpu_gjk_bridge.obj openGJK_gpu.obj ^
     %RAYLIB_LIB% %WIN_LIBS% "%CUDA_PATH%\lib\x64\cudart.lib"
 
 if %errorlevel% equ 0 (
     echo.
     echo ========================================
-    echo GPU-ONLY BUILD SUCCESSFUL! 🎉
+    echo GPU-ONLY BUILD SUCCESSFUL!
     echo ========================================
     echo Run with: gjk_visualizer_gpu_only.exe
     echo.
 ) else (
     echo.
     echo ========================================
-    echo BUILD FAILED! ❌
+    echo BUILD FAILED!
     echo ========================================
     echo Check for errors above
     echo.

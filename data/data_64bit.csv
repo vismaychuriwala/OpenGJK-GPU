@@ -1,4 +1,4 @@
-Polytopes,Vertices,Regular_GPU_ms,Warp_Parallel_GPU_ms,CPU_ms
+Polytopes,Vertices,GPU_ms,CPU_ms
 1000,50,0.6196,0.7372,0.9604
 1000,100,0.9577,0.4720,1.5835
 1000,500,4.2110,1.3527,6.5109

@@ -1,7 +1,7 @@
 // integrate_final_gjk.cu - GPU-owned physics simulation
 #include "gpu_gjk_interface.h"
 #include "sim_config.h"
-#include "../GJK/gpu/warpParallelGJK.h"
+#include "../GJK/gpu/openGJK.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <math.h>
@@ -442,7 +442,7 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
     const int threadsPerBlock = threadsPerCollision * collisionsPerBlock;  // 32
     int gjkBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
 
-    compute_minimum_distance_warp_parallel<<<gjkBlocks, threadsPerBlock>>>(
+    compute_minimum_distance<<<gjkBlocks, threadsPerBlock>>>(
         context->buffer_pool->d_polytopes1,  // First polytopes [num_pairs]
         context->buffer_pool->d_polytopes2,  // Second polytopes [num_pairs]
         context->buffer_pool->d_simplices,

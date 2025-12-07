@@ -1,13 +1,11 @@
 set(headers
     "gpu/openGJK.h"
-    "gpu/warpParallelGJK.h"
     "cpu/openGJK.h"
     "common.h"
     )
 
 set(sources
     "gpu/openGJK.cu"
-    "gpu/warpParallelGJK.cu"
     "cpu/openGJK.c"
     )
 

@@ -41,16 +41,14 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
 
 6. **Code Structure**: GPU wrapper in `GJK::GPU` namespace with built-in CUDA timing support
 
-7. **Warp Parallel Implementation** Added warpParallelGJK.cu and warpParallelGJK.h which use 16 threads per polytope-polytope collision. Currently main speedup over normal GPU implementation is from parallelising the support function calls and the GJK sub-distance algorithm (S1D/S2D/S3D) across warp lanes.
-
-7. **Warp Parallel EPA Implementation** Implemented `compute_epa_warp_parallel` kernel using one warp (32 threads) per collision.
+7. **Warp-Parallel Implementation**: All GPU kernels use warp-parallel execution with 16 threads per collision (GJK) and 32 threads per collision (EPA). Main speedup comes from parallelizing support function calls and GJK sub-distance algorithms (S1D/S2D/S3D) across warp lanes using `__shfl_sync()` operations.
 
 ## EPA (Expanding Polytope Algorithm) Implementation
 
 ### Current Status
-- **Warp-Parallel EPA**: Implemented `compute_epa_warp_parallel` kernel using one warp (32 threads) per collision
+- **Warp-Parallel EPA**: Implemented using one warp (32 threads) per collision
 - **Integration**: EPA is called automatically after GJK when a collision is detected (returned distance is 0.00)
-- **Functionality**: Computes penetration depth and witness points for overlapping polytopes
+- **Functionality**: Computes penetration depth, witness points, and contact normals for overlapping polytopes
 
 ### Key Implementation Details
 - **Polytope Structure**: Uses `EPAPolytope` with up to 128 faces and dynamic vertex expansion
@@ -62,11 +60,37 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
 - **Convergence**: Iterates until penetration depth improvement is below tolerance or max iterations (64) reached
 
 ### API
+```cuda
+// GJK only - compute minimum distance between polytopes
+__global__ void compute_minimum_distance(
+    gkPolytope* polytypes1,
+    gkPolytope* polytypes2,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    int n);
+
+// EPA - compute penetration depth and witness points for colliding polytopes
+__global__ void compute_epa(
+    gkPolytope* polytopes1,
+    gkPolytope* polytopes2,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    gkFloat* witness1,
+    gkFloat* witness2,
+    gkFloat* contact_normals,
+    int n);
+```
+
 The EPA functionality is accessible through `GJK::GPU::computeGJKAndEPA()` which:
 1. Runs GJK to detect collisions
 2. Automatically calls EPA for colliding polytopes (simplex with 4 vertices)
-3. Returns penetration depths (negative values) and witness points for collisions
+3. Returns penetration depths (negative values), witness points, and contact normals for collisions
 4. Returns separation distances (positive values) for non-colliding polytopes
+
+**Thread Configuration:**
+- GJK: 16 threads per collision (half-warp parallelism)
+- EPA: 32 threads per collision (full-warp parallelism)
+- Recommended block size: 256 threads (handles 16 GJK collisions or 8 EPA collisions per block)
 
 
 
@@ -84,17 +108,90 @@ Note: Linear y-axis plots compress lower timing values, making comparisons diffi
 |![](images/polytopes_vs_time_64bit_loglog.png)|![](images/vertices_vs_time_64bit_loglog.png)|
 |![](images/polytopes_vs_time_both_loglog.png)|![](images/vertices_vs_time_both_loglog.png)|
 
-Notice how the GPU-versions, especially the warp-parallel version are consistently faster for nearly all of our testing. The differences get larger as the number of vertices/polytopes get larger. The warp-parallel GJK consistently outperforms all other algorithms. Also, note the considerable differences in the timings for 64-bit precision, especially for the GPU algorithms.
+The GPU implementation using warp-parallel execution is consistently faster across all test cases. Performance gains increase with the number of vertices/polytopes. Note the considerable performance differences for 64-bit precision, particularly for GPU algorithms.
 ## Diagrams
 
 
 |![](images/GPUGJKBlockDiagram.png)|
 |:--:|
-| *Warp Parallel GPU Implementation Block Diagram* |
+| *GPU Implementation Block Diagram* |
+
+## Usage
+
+### Basic GJK (Distance Computation)
+
+```cpp
+#include "GJK/gpu/openGJK.h"
+
+// Prepare polytope data
+gkPolytope polytope1, polytope2;
+polytope1.numpoints = numVertices1;
+polytope1.coord = vertexArray1;  // Flattened: [x0, y0, z0, x1, y1, z1, ...]
+polytope2.numpoints = numVertices2;
+polytope2.coord = vertexArray2;
+
+// Allocate and initialize
+gkSimplex* simplices = new gkSimplex[n];
+gkFloat* distances = new gkFloat[n];
+for (int i = 0; i < n; i++) simplices[i].nvrtx = 0;
+
+// Use wrapper function (handles GPU memory management)
+GJK::GPU::computeDistances(n, &polytope1, &polytope2, simplices, distances);
+
+// Results: distances[i] = minimum distance (0.0 = collision)
+```
+
+### GJK + EPA (Penetration Depth & Contact Points)
+
+```cpp
+#include "GJK/gpu/openGJK.h"
+
+// Allocate result arrays
+gkFloat* witness1 = new gkFloat[n * 3];  // Contact points on polytope1
+gkFloat* witness2 = new gkFloat[n * 3];  // Contact points on polytope2
+gkFloat* contact_normals = new gkFloat[n * 3];  // Contact normals (optional)
+
+// Run GJK + EPA
+GJK::GPU::computeGJKAndEPA(n, &polytope1, &polytope2, simplices, distances,
+                            witness1, witness2, contact_normals);
+
+// Results:
+// - distances[i] > 0: separation distance
+// - distances[i] < 0: penetration depth (magnitude)
+// - witness1/2[i*3 to i*3+2]: contact points (x, y, z)
+// - contact_normals[i*3 to i*3+2]: normal from polytope1 to polytope2
+```
+
+### Direct Kernel Usage
+
+```cpp
+#include "GJK/gpu/openGJK.h"
+
+// Allocate device memory
+gkPolytope *d_polytopes1, *d_polytopes2;
+gkSimplex *d_simplices;
+gkFloat *d_distances;
+// ... allocate and copy data ...
+
+// Launch GJK kernel (16 threads per collision)
+const int THREADS_PER_COLLISION = 16;
+int blockSize = 256;  // 16 collisions per block
+int numBlocks = (n + 15) / 16;
+compute_minimum_distance<<<numBlocks, blockSize>>>(
+    d_polytopes1, d_polytopes2, d_simplices, d_distances, n);
+
+// Launch EPA kernel (32 threads per collision)
+const int THREADS_PER_COLLISION_EPA = 32;
+blockSize = 256;  // 8 collisions per block
+numBlocks = (n + 7) / 8;
+compute_epa<<<numBlocks, blockSize>>>(
+    d_polytopes1, d_polytopes2, d_simplices, d_distances,
+    d_witness1, d_witness2, d_contact_normals, n);
+```
 
 ## Precision Configuration
 
-To switch between 32-bit (float) and 64-bit (double) precision, edit `GJK/common.h` line 10:
+To switch between 32-bit (float) and 64-bit (double) precision, edit [GJK/common.h:10](GJK/common.h#L10):
 - **32-bit**: `#define USE_32BITS`
 - **64-bit**: `//#define USE_32BITS`
 
@@ -113,32 +210,23 @@ Precision: 32-bit (float)
 ================================================================================
                            EXECUTION TIMES
 ================================================================================
-Regular GPU:               3.4191 ms
-Warp-Parallel GPU:         0.9624 ms
+GPU (Warp-Parallel):       0.9624 ms
 CPU:                       12.1139 ms
 
 ================================================================================
                           PERFORMANCE COMPARISON
 ================================================================================
-Warp-Parallel vs Regular GPU:  3.55x faster (warp-parallel wins)
-CPU vs Regular GPU:            3.54x speedup
-CPU vs Warp-Parallel GPU:      12.59x speedup
+CPU vs GPU:                12.59x speedup
 
 ================================================================================
                             VALIDATION RESULTS
 ================================================================================
-Regular GPU vs CPU:        PASSED (first 100 results within 1e-05 tolerance)
-Warp-Parallel GPU vs CPU:  PASSED (first 100 results within 1e-05 tolerance)
+GPU vs CPU:                PASSED (first 100 results within 1e-05 tolerance)
 
 ================================================================================
                             DISTANCE RESULTS
 ================================================================================
-Regular GPU:
-  Distance (first pair):   5.655237
-  Distance (last pair):    6.642425
-  Witnesses (first pair):  (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
-
-Warp-Parallel GPU:
+GPU:
   Distance (first pair):   5.655237
   Distance (last pair):    6.642425
   Witnesses (first pair):  (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)

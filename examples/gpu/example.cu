@@ -1,5 +1,5 @@
 #include "example.h"
-#include "GJK/gpu/warpParallelGJK.h"
+#include "GJK/gpu/openGJK.h"
 #include "../cpu/example.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -83,92 +83,6 @@ namespace GJK {
             cudaMemcpy(d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
             cudaMemcpy(d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
             cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
-
-            // Launch kernel with timing
-            timer().startGpuTimer();
-            int blockSize = 256;
-            int numBlocks = (n + blockSize - 1) / blockSize;
-            compute_minimum_distance<<<numBlocks, blockSize>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
-            timer().endGpuTimer();
-
-            // Copy results back
-            cudaMemcpy(distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            cudaMemcpy(simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
-
-            // Free memory
-            delete[] temp_bd1;
-            delete[] temp_bd2;
-            cudaFree(d_bd1);
-            cudaFree(d_bd2);
-            cudaFree(d_simplices);
-            cudaFree(d_distances);
-            cudaFree(d_coord1);
-            cudaFree(d_coord2);
-        }
-
-        void computeDistancesWarpParallel(int n,
-                            const gkPolytope* bd1,
-                            const gkPolytope* bd2,
-                            gkSimplex* simplices,
-                            gkFloat* distances) {
-            if (n <= 0) return;
-
-            // Device pointers
-            gkPolytope* d_bd1 = nullptr;
-            gkPolytope* d_bd2 = nullptr;
-            gkSimplex* d_simplices = nullptr;
-            gkFloat* d_distances = nullptr;
-            gkFloat* d_coord1 = nullptr;
-            gkFloat* d_coord2 = nullptr;
-
-            // Allocate device memory
-            cudaMalloc(&d_bd1, n * sizeof(gkPolytope));
-            cudaMalloc(&d_bd2, n * sizeof(gkPolytope));
-            cudaMalloc(&d_simplices, n * sizeof(gkSimplex));
-            cudaMalloc(&d_distances, n * sizeof(gkFloat));
-
-            // Calculate total coordinate size needed
-            int total_coords1 = 0;
-            int total_coords2 = 0;
-            for (int i = 0; i < n; i++) {
-                total_coords1 += bd1[i].numpoints * 3;
-                total_coords2 += bd2[i].numpoints * 3;
-            }
-
-            // Allocate coordinate arrays
-            cudaMalloc(&d_coord1, total_coords1 * sizeof(gkFloat));
-            cudaMalloc(&d_coord2, total_coords2 * sizeof(gkFloat));
-
-            // Copy coordinate data and update polytope structures
-            gkPolytope* temp_bd1 = new gkPolytope[n];
-            gkPolytope* temp_bd2 = new gkPolytope[n];
-
-            int offset1 = 0;
-            int offset2 = 0;
-            for (int i = 0; i < n; i++) {
-                // Copy polytope metadata
-                temp_bd1[i] = bd1[i];
-                temp_bd2[i] = bd2[i];
-
-                // Copy coordinate data to device
-                int coord_size1 = bd1[i].numpoints * 3 * sizeof(gkFloat);
-                int coord_size2 = bd2[i].numpoints * 3 * sizeof(gkFloat);
-
-                cudaMemcpy(d_coord1 + offset1, bd1[i].coord, coord_size1, cudaMemcpyHostToDevice);
-                cudaMemcpy(d_coord2 + offset2, bd2[i].coord, coord_size2, cudaMemcpyHostToDevice);
-
-                // Update pointers to device memory locations
-                temp_bd1[i].coord = d_coord1 + offset1;
-                temp_bd2[i].coord = d_coord2 + offset2;
-
-                offset1 += bd1[i].numpoints * 3;
-                offset2 += bd2[i].numpoints * 3;
-            }
-
-            // Copy polytope structures to device
-            cudaMemcpy(d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
             
             // Launch kernel with timing
             // Each collision uses 16 threads (half-warp)
@@ -179,7 +93,7 @@ namespace GJK {
             int blockSize = 256;  // 256 threads = 16 collisions per block
             int collisionsPerBlock = blockSize / THREADS_PER_COMPUTATION;
             int numBlocks = (n + collisionsPerBlock - 1) / collisionsPerBlock;
-            compute_minimum_distance_warp_parallel<<<numBlocks, blockSize>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
+            compute_minimum_distance<<<numBlocks, blockSize>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
             timer().endGpuTimer();
 
             // Copy results back
@@ -272,7 +186,7 @@ namespace GJK {
             int blockSizeGJK = 256;
             int collisionsPerBlockGJK = blockSizeGJK / THREADS_PER_COMPUTATION_GJK;
             int numBlocksGJK = (n + collisionsPerBlockGJK - 1) / collisionsPerBlockGJK;
-            compute_minimum_distance_warp_parallel<<<numBlocksGJK, blockSizeGJK>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
+            compute_minimum_distance<<<numBlocksGJK, blockSizeGJK>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
             
             // Wait for GJK to complete before starting EPA
             cudaDeviceSynchronize();
@@ -330,7 +244,7 @@ namespace GJK {
             if (d_normals_to_use == nullptr) {
                 cudaMalloc(&d_normals_to_use, n * 3 * sizeof(gkFloat));
             }
-            compute_epa_warp_parallel<<<numBlocksEPA, blockSizeEPA>>>(d_bd1, d_bd2, d_simplices, d_distances, d_witness1, d_witness2, d_normals_to_use, n);
+            compute_epa<<<numBlocksEPA, blockSizeEPA>>>(d_bd1, d_bd2, d_simplices, d_distances, d_witness1, d_witness2, d_normals_to_use, n);
             timer().endGpuTimer();
 
             cudaMemcpy(distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
@@ -449,7 +363,7 @@ namespace GJK {
             if (d_normals_to_use == nullptr) {
                 cudaMalloc(&d_normals_to_use, n * 3 * sizeof(gkFloat));
             }
-            compute_epa_warp_parallel<<<numBlocksEPA, blockSizeEPA>>>(d_bd1, d_bd2, d_simplices, d_distances, d_witness1, d_witness2, d_normals_to_use, n);
+            compute_epa<<<numBlocksEPA, blockSizeEPA>>>(d_bd1, d_bd2, d_simplices, d_distances, d_witness1, d_witness2, d_normals_to_use, n);
             timer().endGpuTimer();
 
             // Copy results back
@@ -641,7 +555,7 @@ namespace GJK {
             }
 
             // Write CSV header to file
-            fprintf(fp, "NumPolytopes,NumVertices,CPU_Time_ms,GPU_Time_ms,WarpParallelGPU_Time_ms\n");
+            fprintf(fp, "NumPolytopes,NumVertices,CPU_Time_ms,GPU_Time_ms\n");
 
             // Iterate through all  of polytope count and vertex count
             for (int pIdx = 0; pIdx < numPolytopesArraySize; pIdx++) {
@@ -653,7 +567,6 @@ namespace GJK {
                     // SUms for averaging over 10 runs
                     float cpu_time_sum = 0.0f;
                     float gpu_time_sum = 0.0f;
-                    float warp_gpu_time_sum = 0.0f;
                     const int NUM_RUNS = 10;
 
                     // Run each test configuration 10 times and accumulate results
@@ -681,11 +594,9 @@ namespace GJK {
                         gkPolytope* polytopes2 = (gkPolytope*)malloc(numPolytopes * sizeof(gkPolytope));
                         gkSimplex* simplices_cpu = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
                         gkSimplex* simplices_gpu = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
-                        gkSimplex* simplices_warp = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
                         gkSimplex* warm_up_simplices = (gkSimplex*)malloc(numPolytopes * sizeof(gkSimplex));
                         gkFloat* distances_cpu = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
                         gkFloat* distances_gpu = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
-                        gkFloat* distances_warp = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
                         gkFloat* warm_up_distances = (gkFloat*)malloc(numPolytopes * sizeof(gkFloat));
 
                         /* Initialize polytope pairs with unique data */
@@ -698,7 +609,6 @@ namespace GJK {
 
                             simplices_cpu[i].nvrtx = 0;
                             simplices_gpu[i].nvrtx = 0;
-                            simplices_warp[i].nvrtx = 0;
                             warm_up_simplices[i].nvrtx = 0;
                         }
 
@@ -713,15 +623,10 @@ namespace GJK {
                         float cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
                         cpu_time_sum += cpu_time;
 
-                        // Test GPU implementation
+                        // Test Warp-Parallel GPU implementation
                         GJK::GPU::computeDistances(numPolytopes, polytopes1, polytopes2, simplices_gpu, distances_gpu);
                         float gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
                         gpu_time_sum += gpu_time;
-
-                        // Test Warp-Parallel GPU implementation
-                        GJK::GPU::computeDistancesWarpParallel(numPolytopes, polytopes1, polytopes2, simplices_warp, distances_warp);
-                        float warp_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-                        warp_gpu_time_sum += warp_gpu_time;
 
                         // Free memory for this run
                         for (int i = 0; i < numPolytopes; i++) {
@@ -734,22 +639,19 @@ namespace GJK {
                         free(polytopes2);
                         free(simplices_cpu);
                         free(simplices_gpu);
-                        free(simplices_warp);
                         free(warm_up_simplices);
                         free(distances_cpu);
                         free(distances_gpu);
-                        free(distances_warp);
                         free(warm_up_distances);
                     }
 
                     // Calculate averages
                     float cpu_time_avg = cpu_time_sum / NUM_RUNS;
                     float gpu_time_avg = gpu_time_sum / NUM_RUNS;
-                    float warp_gpu_time_avg = warp_gpu_time_sum / NUM_RUNS;
 
                     // Write average results to CSV
                     fprintf(fp, "%d,%d,%.6f,%.6f,%.6f\n", 
-                            numPolytopes, numVertices, cpu_time_avg, gpu_time_avg, warp_gpu_time_avg);
+                            numPolytopes, numVertices, cpu_time_avg, gpu_time_avg);
                 }
             }
 
@@ -1230,14 +1132,14 @@ namespace GJK {
                 gkFloat witness1[3], witness2[3];
                 gkFloat contact_normal[3];
 
-                printf("  Running GJK (warp-parallel)...\n");
-                computeDistancesWarpParallel(1, &polytope1, &polytope2, &simplex, &distance);
+                printf("  Running GPU GJK...\n");
+                computeDistances(1, &polytope1, &polytope2, &simplex, &distance);
                 
                 printf("  GJK Results:\n");
                 printf("    Simplex vertices: %d\n", simplex.nvrtx);
                 printf("    Distance: %.6f\n", distance);
                 
-                printf("  Running EPA (warp-parallel)...\n");
+                printf("  Running GPU EPA...\n");
                 computeCollisionInformation(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
 
                 printf("  Final Results:\n");
