@@ -1637,8 +1637,6 @@ __device__ inline static void compute_witnesses(const gkPolytope* bd1,
 // Half a warp per polytope-polytope collision
 // Have first thread in group lead the GJK iteration, others for parallel support function calls
 
-
-
 // Parallel version of support function using all threads in a half-warp
 __device__ inline static void support_parallel(gkPolytope* body,
   const gkFloat* v, int half_lane_idx, unsigned int half_warp_mask, int half_warp_base_thread_idx) {
@@ -1697,7 +1695,6 @@ __device__ inline static void support_parallel(gkPolytope* body,
   }
 }
 
-// TODO: possibly some redudndant memory/warp operations that could be optimized
 __global__ void compute_minimum_distance(
   gkPolytope* polytypes1,
   gkPolytope* polytypes2,
@@ -1749,12 +1746,11 @@ __global__ void compute_minimum_distance(
   // Synchronize all threads in the half-warp before starting
   __syncwarp(half_warp_mask);
 
-  // Initialize search direction - right now all threads compute - could do one thread then shuffle but likely more expensive
+  // Initialize search direction
   v[0] = bd1.coord[0] - bd2.coord[0];
   v[1] = bd1.coord[1] - bd2.coord[1];
   v[2] = bd1.coord[2] - bd2.coord[2];
 
-  // TODO: compare between all threads compute speed vs one thread then shuffle
   // Initialize simplex (half warp lead thread sets it up, then shuffles to all threads)
   if (half_lane_idx == 0) {
     s.nvrtx = 1;
@@ -1848,11 +1844,11 @@ __global__ void compute_minimum_distance(
     w_idx[1] = bd2.s_idx;
 
     /* Test first exit condition (new point already in simplex/can't move
-     * further) - all threads compute - v and w are same on all threads */
+     * further) */
     gkFloat norm2_v = norm2(v);
     gkFloat exeedtol_rel = (norm2_v - dotProduct(v, w));
 
-    // All threads check exit conditions
+    //check exit conditions
     bool should_break = false;
     if (exeedtol_rel <= (eps_rel * norm2_v) || exeedtol_rel < eps_tot22) {
       should_break = true;
@@ -1903,7 +1899,7 @@ __global__ void compute_minimum_distance(
       }
     }
 
-    // Check exit condition - all threads compute so end loop at same spot
+    // Check exit condition
     norm2_v = norm2(v);
     if ((norm2_v <= (eps_tot * eps_tot * norm2Wmax))) {
       continue_iteration = false;
@@ -2778,41 +2774,72 @@ __global__ void compute_epa(
   while (iteration < max_iterations && poly.num_vertices < MAX_EPA_VERTICES - 1) {
     iteration++;
 
-    // Compute face normals and distances
-    int closest_face = -1;
-    gkFloat closest_distance = 1e10f;
-    gkFloat dir_x = 0, dir_y = 0, dir_z = 0;
+    // Compute face normals and distances in parallel across warp
+    // Each thread processes a subset of faces
+    const int faces_per_thread = (poly.max_face_index + 31) / 32;
+    const int start_face = warp_lane_idx * faces_per_thread;
+    const int end_face = (start_face + faces_per_thread < poly.max_face_index) ? 
+                         (start_face + faces_per_thread) : poly.max_face_index;
 
-    // Use only one thread for now (num faces is low so multiple and then shuffling seemed to take longer if not done smartly)
-    if (warp_lane_idx == 0) {
-      // Recompute normals & distances for all valid faces
-      for (int i = 0; i < poly.max_face_index; ++i) {
-        if (!poly.faces[i].valid) continue;
+    // Recompute normals & distances for assigned faces
+    for (int i = start_face; i < end_face; ++i) {
+      if (poly.faces[i].valid) {
         compute_face_normal_distance(&poly, i, centroid);
-      }
-
-      // closest-face search
-      for (int i = 0; i < poly.max_face_index; ++i) {
-        if (!poly.faces[i].valid) continue;
-        if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < closest_distance) {
-          closest_distance = poly.faces[i].distance;
-          closest_face = i;
-        }
-      }
-
-      if (closest_face >= 0) {
-        dir_x = poly.faces[closest_face].normal[0];
-        dir_y = poly.faces[closest_face].normal[1];
-        dir_z = poly.faces[closest_face].normal[2];
       }
     }
 
-    // Broadcast to whole warp for support_epa_parallel
-    closest_face = __shfl_sync(warp_mask, closest_face, 0);
-    closest_distance = __shfl_sync(warp_mask, closest_distance, 0);
-    dir_x = __shfl_sync(warp_mask, dir_x, 0);
-    dir_y = __shfl_sync(warp_mask, dir_y, 0);
-    dir_z = __shfl_sync(warp_mask, dir_z, 0);
+    __syncwarp(warp_mask);
+
+    // Broadcast updated face normals and distances to all threads
+    // Each thread receives updates from the thread that computed each face
+    for (int i = 0; i < poly.max_face_index; ++i) {
+      if (poly.faces[i].valid) {
+        int source_thread = i / faces_per_thread;
+        if (source_thread >= 32) source_thread = 31; // Clamp to valid thread index
+        
+        // Receive face data from the thread that computed it
+        for (int c = 0; c < 3; c++) {
+          poly.faces[i].normal[c] = __shfl_sync(warp_mask, poly.faces[i].normal[c], source_thread);
+        }
+        poly.faces[i].distance = __shfl_sync(warp_mask, poly.faces[i].distance, source_thread);
+      }
+    }
+
+    // parallel reduction to find closest face
+    // Each thread finds the closest face in its assigned range
+    int local_closest_face = -1;
+    gkFloat local_closest_distance = 1e10f;
+
+    for (int i = start_face; i < end_face; ++i) {
+      if (!poly.faces[i].valid) continue;
+      if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < local_closest_distance) {
+        local_closest_distance = poly.faces[i].distance;
+        local_closest_face = i;
+      }
+    }
+
+    // Parallel reduction across warp to find global minimum
+    for (int offset = 16; offset > 0; offset /= 2) {
+      gkFloat other_dist = __shfl_down_sync(warp_mask, local_closest_distance, offset);
+      int other_face = __shfl_down_sync(warp_mask, local_closest_face, offset);
+      
+      if (other_face >= 0 && (local_closest_face < 0 || other_dist < local_closest_distance)) {
+        local_closest_distance = other_dist;
+        local_closest_face = other_face;
+      }
+    }
+
+    // Broadcast result from thread 0 to all threads
+    int closest_face = __shfl_sync(warp_mask, local_closest_face, 0);
+    gkFloat closest_distance = __shfl_sync(warp_mask, local_closest_distance, 0);
+    
+    // Read direction from closest face (all threads have same polytope data)
+    gkFloat dir_x = 0, dir_y = 0, dir_z = 0;
+    if (closest_face >= 0) {
+      dir_x = poly.faces[closest_face].normal[0];
+      dir_y = poly.faces[closest_face].normal[1];
+      dir_z = poly.faces[closest_face].normal[2];
+    }
 
     if (closest_face < 0) {
       break;

@@ -55,66 +55,52 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
 - **Parallel Operations**:
   - Face normal/distance computation distributed across warp threads
   - Support function calls parallelized using all 32 threads
-  - Horizon edge detection optimized with single-pass edge collection and duplicate removal
-- **Synchronization**: Lane 0 (first thread) maintains authoritative polytope state; other threads assist with parallel support calls
+- **Synchronization**: Lane 0 (first thread) maintains authoritative polytope state; other threads assist with parallel function calls
 - **Convergence**: Iterates until penetration depth improvement is below tolerance or max iterations (64) reached
 
 ### API
 ```cuda
-// GJK only - compute minimum distance between polytopes
-__global__ void compute_minimum_distance(
-    gkPolytope* polytypes1,
-    gkPolytope* polytypes2,
-    gkSimplex* simplices,
-    gkFloat* distances,
-    int n);
+/**
+ * Computes minimum distance between polytopes using GJK algorithm on GPU.
+ * Handles all GPU memory allocation and transfers internally.
+ *
+ * @param n         Number of polytope pairs
+ * @param bd1       Array of first polytopes (host memory)
+ * @param bd2       Array of second polytopes (host memory)
+ * @param simplices Array to store resulting simplices (host memory)
+ * @param distances Array to store resulting distances (host memory)
+ */
+void computeDistances(int n,
+                    const gkPolytope* bd1,
+                    const gkPolytope* bd2,
+                    gkSimplex* simplices,
+                    gkFloat* distances);
 
-// EPA - compute penetration depth and witness points for colliding polytopes
-__global__ void compute_epa(
-    gkPolytope* polytopes1,
-    gkPolytope* polytopes2,
-    gkSimplex* simplices,
-    gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
-    gkFloat* contact_normals,
-    int n);
+ /**
+ * Computes collision information (penetration depth, witness points, and contact normal) for colliding polytopes using EPA algorithm only.
+ * Takes pre-computed simplices and distances from GJK as input and runs EPA to compute
+ * detailed collision information.
+ * Handles all GPU memory allocation and transfers internally.
+ *
+ * @param n         Number of polytope pairs
+ * @param bd1       Array of first polytopes (host memory)
+ * @param bd2       Array of second polytopes (host memory)
+ * @param simplices Array of input simplices from GJK (host memory, will be updated with results)
+ * @param distances Array of input distances from GJK (host memory, will be updated with negative penetration depths for colliding objects)
+ * @param witness1   Array to store witness points on first polytope (n*3 floats, host memory)
+ * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
+ * @param contact_normals Optional array to store contact normals from bd1 to bd2 (n*3 floats, host memory, can be nullptr)
+ */
+void computeCollisionInformation(int n,
+                    const gkPolytope* bd1,
+                    const gkPolytope* bd2,
+                    gkSimplex* simplices,
+                    gkFloat* distances,
+                    gkFloat* witness1,
+                    gkFloat* witness2,
+                    gkFloat* contact_normals = nullptr);
 ```
 
-The EPA functionality is accessible through `GJK::GPU::computeGJKAndEPA()` which:
-1. Runs GJK to detect collisions
-2. Automatically calls EPA for colliding polytopes (simplex with 4 vertices)
-3. Returns penetration depths (negative values), witness points, and contact normals for collisions
-4. Returns separation distances (positive values) for non-colliding polytopes
-
-**Thread Configuration:**
-- GJK: 16 threads per collision (half-warp parallelism)
-- EPA: 32 threads per collision (full-warp parallelism)
-- Recommended block size: 256 threads (handles 16 GJK collisions or 8 EPA collisions per block)
-
-
-
-## Graphs
-
-Performance comparison across different configurations (1000 polytopes or 1000 vertices fixed):
-
-|![](images/polytopes_vs_time_32bit_logx.png)|![](images/vertices_vs_time_32bit_logx.png)|
-|:--:|:--:|
-
-Note: Linear y-axis plots compress lower timing values, making comparisons difficult. Log-log plots below show full range:
-
-|![](images/polytopes_vs_time_32bit_loglog.png)|![](images/vertices_vs_time_32bit_loglog.png)|
-|:--:|:--:|
-|![](images/polytopes_vs_time_64bit_loglog.png)|![](images/vertices_vs_time_64bit_loglog.png)|
-|![](images/polytopes_vs_time_both_loglog.png)|![](images/vertices_vs_time_both_loglog.png)|
-
-The GPU implementation using warp-parallel execution is consistently faster across all test cases. Performance gains increase with the number of vertices/polytopes. Note the considerable performance differences for 64-bit precision, particularly for GPU algorithms.
-## Diagrams
-
-
-|![](images/GPUGJKBlockDiagram.png)|
-|:--:|
-| *GPU Implementation Block Diagram* |
 
 ## Usage
 
@@ -141,7 +127,7 @@ GJK::GPU::computeDistances(n, &polytope1, &polytope2, simplices, distances);
 // Results: distances[i] = minimum distance (0.0 = collision)
 ```
 
-### GJK + EPA (Penetration Depth & Contact Points)
+### EPA (Penetration Depth, Witness Points, and Contact Normals)
 
 ```cpp
 #include "GJK/gpu/openGJK.h"
@@ -151,49 +137,52 @@ gkFloat* witness1 = new gkFloat[n * 3];  // Contact points on polytope1
 gkFloat* witness2 = new gkFloat[n * 3];  // Contact points on polytope2
 gkFloat* contact_normals = new gkFloat[n * 3];  // Contact normals (optional)
 
-// Run GJK + EPA
-GJK::GPU::computeGJKAndEPA(n, &polytope1, &polytope2, simplices, distances,
+// Run EPA using simplex and distance values returned by prior GJK call
+GJK::GPU::computeCollisionInformation(n, &polytope1, &polytope2, simplices, distances,
                             witness1, witness2, contact_normals);
 
 // Results:
 // - distances[i] > 0: separation distance
-// - distances[i] < 0: penetration depth (magnitude)
+// - distances[i] < 0: penetration depth
 // - witness1/2[i*3 to i*3+2]: contact points (x, y, z)
 // - contact_normals[i*3 to i*3+2]: normal from polytope1 to polytope2
 ```
 
-### Direct Kernel Usage
-
-```cpp
-#include "GJK/gpu/openGJK.h"
-
-// Allocate device memory
-gkPolytope *d_polytopes1, *d_polytopes2;
-gkSimplex *d_simplices;
-gkFloat *d_distances;
-// ... allocate and copy data ...
-
-// Launch GJK kernel (16 threads per collision)
-const int THREADS_PER_COLLISION = 16;
-int blockSize = 256;  // 16 collisions per block
-int numBlocks = (n + 15) / 16;
-compute_minimum_distance<<<numBlocks, blockSize>>>(
-    d_polytopes1, d_polytopes2, d_simplices, d_distances, n);
-
-// Launch EPA kernel (32 threads per collision)
-const int THREADS_PER_COLLISION_EPA = 32;
-blockSize = 256;  // 8 collisions per block
-numBlocks = (n + 7) / 8;
-compute_epa<<<numBlocks, blockSize>>>(
-    d_polytopes1, d_polytopes2, d_simplices, d_distances,
-    d_witness1, d_witness2, d_contact_normals, n);
-```
 
 ## Precision Configuration
 
 To switch between 32-bit (float) and 64-bit (double) precision, edit [GJK/common.h:10](GJK/common.h#L10):
 - **32-bit**: `#define USE_32BITS`
-- **64-bit**: `//#define USE_32BITS`
+- **64-bit**: `//#define USE_32BITS`s
+
+
+
+## Graphs
+
+Performance comparison across different configurations (1000 polytopes or 1000 vertices fixed):
+
+|![](images/polytopes_vs_time_32bit_logx.png)|![](images/vertices_vs_time_32bit_logx.png)|
+|:--:|:--:|
+
+Note: Linear y-axis plots compress lower timing values, making comparisons difficult. Log-log plots below show full range:
+
+|![](images/polytopes_vs_time_32bit_loglog.png)|![](images/vertices_vs_time_32bit_loglog.png)|
+|:--:|:--:|
+|![](images/polytopes_vs_time_64bit_loglog.png)|![](images/vertices_vs_time_64bit_loglog.png)|
+|![](images/polytopes_vs_time_both_loglog.png)|![](images/vertices_vs_time_both_loglog.png)|
+
+The GPU implementation using warp-parallel execution is consistently faster across all test cases. Performance gains increase with the number of vertices/polytopes. Note the considerable performance differences for 64-bit precision, particularly for GPU algorithms.
+## Diagrams
+
+
+|![](images/GPUGJKImprovedBlockDiagram.png)|
+|:--:|
+| *GPU Implementation Block Diagram* |
+
+|![](images/GJKEPAInterface.png)|
+|:--:|
+| *GJK EPA Interface Diagram* |
+
 
 ## Test Results
 
