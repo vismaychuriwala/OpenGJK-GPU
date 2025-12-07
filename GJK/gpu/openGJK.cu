@@ -2240,14 +2240,14 @@ __device__ inline static void compute_barycentric_origin(
 
   if (fabs(denom) < gkEpsilon) {
     // Degenerate
-    *a0 = *a1 = *a2 = 1.0f / 3.0f;
+    *a0 = *a1 = *a2 = (gkFloat)1.0 / (gkFloat)3.0;
     return;
   }
 
-  gkFloat inv_denom = 1.0f / denom;
+  gkFloat inv_denom = (gkFloat)1.0 / denom;
   gkFloat u = (d11 * d20 - d01 * d21) * inv_denom;
   gkFloat v = (d00 * d21 - d01 * d20) * inv_denom;
-  gkFloat w = 1.0f - u - v;
+  gkFloat w = (gkFloat)1.0 - u - v;
 
   // Clamp to triangle
   if (w < 0) {
@@ -2259,24 +2259,24 @@ __device__ inline static void compute_barycentric_origin(
       v1_neg[i] = -v1[i];
     }
     gkFloat t = dotProduct(v1_neg, e12) / dotProduct(e12, e12);
-    t = fmax(0.0f, fmin(1.0f, t));
+    t = fmax((gkFloat)0.0, fmin((gkFloat)1.0, t));
     *a0 = 0;
-    *a1 = 1.0f - t;
+    *a1 = (gkFloat)1.0 - t;
     *a2 = t;
   }
   else if (u < 0) {
     // Origin projects outside edge v0-v2
     gkFloat t = dotProduct(v0_neg, e1) / dotProduct(e1, e1);
-    t = fmax(0.0f, fmin(1.0f, t));
-    *a0 = 1.0f - t;
+    t = fmax((gkFloat)0.0, fmin((gkFloat)1.0, t));
+    *a0 = (gkFloat)1.0 - t;
     *a1 = 0;
     *a2 = t;
   }
   else if (v < 0) {
     // Origin projects outside edge v0-v1
     gkFloat t = dotProduct(v0_neg, e0) / dotProduct(e0, e0);
-    t = fmax(0.0f, fmin(1.0f, t));
-    *a0 = 1.0f - t;
+    t = fmax((gkFloat)0.0, fmin((gkFloat)1.0, t));
+    *a0 = (gkFloat)1.0 - t;
     *a1 = t;
     *a2 = 0;
   }
