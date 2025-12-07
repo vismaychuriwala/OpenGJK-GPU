@@ -22,18 +22,13 @@ typedef struct {
     float radius;
 } GPU_PhysicsObject;
 
-// GPU Shape Data (local vertices on device)
-typedef struct {
-    gkFloat* d_local_vertices;  // Device pointer to local-space vertices
-    int num_vertices;
-} GPU_ShapeData;
-
 // Persistent GPU buffer pool
 struct GPU_Buffer_Pool {
     int max_pairs;
 
-    // Coordinate buffers (world-space vertices for all shapes)
-    gkFloat* d_all_coords;     // Flat array for all shape coordinates [max_objects * max_vertices_per_shape * 3]
+    // Coordinate buffers
+    gkFloat* d_local_coords;   // Flat array for local-space vertex offsets [max_objects * 12 * 3]
+    gkFloat* d_all_coords;     // Flat array for world-space coordinates [max_objects * 12 * 3]
 
     // Polytope, simplex, and distance buffers for parallel collision checks
     gkPolytope* d_polytopes1;  // Device array [max_pairs] - first polytope of each pair
@@ -54,8 +49,6 @@ struct GPU_GJK_Context {
     // GPU-owned simulation state
     GPU_PhysicsObject* d_objects;     // Device array of physics objects
     GPU_PhysicsObject* h_objects;     // Host copy for initialization/reset
-    GPU_ShapeData* h_shapes;          // Host array of shape metadata
-    GPU_ShapeData* d_shapes;          // Device array of shape metadata
 
     // Collision pair indices
     int* d_collision_pairs;           // Device array [num_pairs * 2]
@@ -245,15 +238,12 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
 
     // Allocate host memory
     ctx->h_objects = (GPU_PhysicsObject*)malloc(sizeof(GPU_PhysicsObject) * max_objects);
-    ctx->h_shapes = (GPU_ShapeData*)malloc(sizeof(GPU_ShapeData) * max_objects);
-    memset(ctx->h_shapes, 0, sizeof(GPU_ShapeData) * max_objects);
 
     // Allocate pinned host memory for fast GPU->CPU transfer
     cudaMallocHost(&ctx->h_positions, sizeof(Vector3f) * max_objects);
 
     // Allocate GPU memory for physics objects
     cudaMalloc(&ctx->d_objects, sizeof(GPU_PhysicsObject) * max_objects);
-    cudaMalloc(&ctx->d_shapes, sizeof(GPU_ShapeData) * max_objects);
     cudaMalloc(&ctx->d_collision_pairs, sizeof(int) * max_pairs * 2);
 
     // Allocate buffer pool
@@ -261,6 +251,7 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
     ctx->buffer_pool->max_pairs = max_pairs;
 
     // Allocate persistent GPU buffers for collision detection
+    cudaMalloc(&ctx->buffer_pool->d_local_coords, sizeof(gkFloat) * max_objects * 12 * 3);
     cudaMalloc(&ctx->buffer_pool->d_all_coords, sizeof(gkFloat) * max_objects * 12 * 3);
     cudaMalloc(&ctx->buffer_pool->d_polytopes1, sizeof(gkPolytope) * max_pairs);
     cudaMalloc(&ctx->buffer_pool->d_polytopes2, sizeof(gkPolytope) * max_pairs);
@@ -282,27 +273,17 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
 
     // Free device memory
     if (ctx->d_objects) cudaFree(ctx->d_objects);
-    if (ctx->d_shapes) cudaFree(ctx->d_shapes);
     if (ctx->d_collision_pairs) cudaFree(ctx->d_collision_pairs);
 
     // Free buffer pool
     if (ctx->buffer_pool) {
+        cudaFree(ctx->buffer_pool->d_local_coords);
         cudaFree(ctx->buffer_pool->d_all_coords);
         cudaFree(ctx->buffer_pool->d_polytopes1);
         cudaFree(ctx->buffer_pool->d_polytopes2);
         cudaFree(ctx->buffer_pool->d_simplices);
         cudaFree(ctx->buffer_pool->d_distances);
         free(ctx->buffer_pool);
-    }
-
-    // Free shape local vertices
-    if (ctx->h_shapes) {
-        for (int i = 0; i < ctx->num_objects; i++) {
-            if (ctx->h_shapes[i].d_local_vertices) {
-                cudaFree(ctx->h_shapes[i].d_local_vertices);
-            }
-        }
-        free(ctx->h_shapes);
     }
 
     // Free pinned host memory
@@ -333,11 +314,8 @@ bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
     context->h_objects[object_id].mass = mass;
     context->h_objects[object_id].radius = radius;
 
-    // Store shape local vertices on GPU
+    // Store local-space vertex offsets in consolidated buffer
     int num_verts = shape->num_vertices;
-    gkFloat* d_local_verts;
-    cudaMalloc(&d_local_verts, sizeof(gkFloat) * num_verts * 3);
-
     gkFloat* h_local_verts = (gkFloat*)malloc(sizeof(gkFloat) * num_verts * 3);
     for (int i = 0; i < num_verts; i++) {
         h_local_verts[i * 3 + 0] = shape->vertices[i].x;
@@ -345,13 +323,13 @@ bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
         h_local_verts[i * 3 + 2] = shape->vertices[i].z;
     }
 
-    cudaMemcpy(d_local_verts, h_local_verts,
+    // Copy to the correct offset in d_local_coords (assumes 12 vertices per object)
+    int coord_offset = object_id * 12 * 3;
+    cudaMemcpy(context->buffer_pool->d_local_coords + coord_offset,
+               h_local_verts,
                sizeof(gkFloat) * num_verts * 3,
                cudaMemcpyHostToDevice);
     free(h_local_verts);
-
-    context->h_shapes[object_id].d_local_vertices = d_local_verts;
-    context->h_shapes[object_id].num_vertices = num_verts;
 
     if (object_id + 1 > context->num_objects) {
         context->num_objects = object_id + 1;
@@ -365,12 +343,12 @@ bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
 
 // CUDA kernel: Initialize polytopes ONCE at startup (called from gpu_gjk_set_collision_pairs)
 // GJK initializes support cache (s[], s_idx) itself - we only set numpoints and coord pointer
-__global__ void init_polytopes_once_kernel(GPU_ShapeData* shapes,
-                                           int* pairs,
+__global__ void init_polytopes_once_kernel(int* pairs,
                                            gkFloat* all_coords,
                                            gkPolytope* polytopes1,
                                            gkPolytope* polytopes2,
-                                           int num_pairs)
+                                           int num_pairs,
+                                           int num_vertices_per_shape)
 {
     int p = blockIdx.x * blockDim.x + threadIdx.x;
     if (p >= num_pairs) return;
@@ -379,11 +357,11 @@ __global__ void init_polytopes_once_kernel(GPU_ShapeData* shapes,
     int idB = pairs[p * 2 + 1];
 
     // Setup polytope A (first in pair) - only geometry, GJK handles support cache
-    polytopes1[p].numpoints = shapes[idA].num_vertices;
+    polytopes1[p].numpoints = num_vertices_per_shape;
     polytopes1[p].coord = all_coords + (idA * 12 * 3);
 
     // Setup polytope B (second in pair)
-    polytopes2[p].numpoints = shapes[idB].num_vertices;
+    polytopes2[p].numpoints = num_vertices_per_shape;
     polytopes2[p].coord = all_coords + (idB * 12 * 3);
 }
 
@@ -407,50 +385,44 @@ bool gpu_gjk_set_collision_pairs(GPU_GJK_Context* context, int* pairs, int num_p
                sizeof(GPU_PhysicsObject) * context->num_objects,
                cudaMemcpyHostToDevice);
 
-    // Copy shape metadata to GPU
-    cudaMemcpy(context->d_shapes, context->h_shapes,
-               sizeof(GPU_ShapeData) * context->num_objects,
-               cudaMemcpyHostToDevice);
-
     // Initialize polytopes ONCE (no longer done per-frame!)
     int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
     init_polytopes_once_kernel<<<pairBlocks, BLOCK_SIZE>>>(
-        context->d_shapes, context->d_collision_pairs,
+        context->d_collision_pairs,
         context->buffer_pool->d_all_coords,
         context->buffer_pool->d_polytopes1,
         context->buffer_pool->d_polytopes2,
-        num_pairs);
+        num_pairs,
+        12);  // All shapes are icosahedrons with 12 vertices
     cudaDeviceSynchronize();
 
     printf("Set %d collision pairs on GPU (polytopes initialized)\n", num_pairs);
     return true;
 }
 
-// CUDA kernel: Transform local vertices to world space for all objects
-// Optimized: 1D grid processing all vertices across all objects
-__global__ void transform_to_world_kernel(GPU_ShapeData* shapes,
-                                         GPU_PhysicsObject* objects,
-                                         gkFloat* world_coords,
-                                         int num_objects)
+// CUDA kernel: Transform local vertices to world space
+// Recalculates world = local + position each frame (keeps vertices in sync with object position)
+__global__ void transform_to_world_kernel(GPU_PhysicsObject* objects,
+                                          gkFloat* local_coords,
+                                          gkFloat* world_coords,
+                                          int num_objects)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    // Each object has max 12 vertices, compute which object and vertex this thread handles
+    // Each object has 12 vertices, compute which object and vertex this thread handles
     int obj_id = tid / 12;
     int vert_id = tid % 12;
 
     if (obj_id >= num_objects) return;
+    if (vert_id >= 12) return;  // Icosahedron has 12 vertices
 
-    int num_verts = shapes[obj_id].num_vertices;
-    if (vert_id >= num_verts) return;
-
-    gkFloat* local = shapes[obj_id].d_local_vertices;
-    gkFloat* world = world_coords + (obj_id * 12 * 3);
+    // Calculate offsets for this vertex
+    int vertex_offset = (obj_id * 12 + vert_id) * 3;
 
     // Transform: world = local + position
-    world[vert_id * 3 + 0] = local[vert_id * 3 + 0] + objects[obj_id].position.x;
-    world[vert_id * 3 + 1] = local[vert_id * 3 + 1] + objects[obj_id].position.y;
-    world[vert_id * 3 + 2] = local[vert_id * 3 + 2] + objects[obj_id].position.z;
+    world_coords[vertex_offset + 0] = local_coords[vertex_offset + 0] + objects[obj_id].position.x;
+    world_coords[vertex_offset + 1] = local_coords[vertex_offset + 1] + objects[obj_id].position.y;
+    world_coords[vertex_offset + 2] = local_coords[vertex_offset + 2] + objects[obj_id].position.z;
 }
 
 bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* params)
@@ -464,13 +436,15 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
     int objBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
     physics_update_kernel<<<objBlocks, BLOCK_SIZE>>>(context->d_objects, num_objs, *params);
 
-    // Step 2: Transform local vertices to world space (optimized 1D grid)
+    // Step 2: Transform local vertices to world space (world = local + position)
     // Total work: num_objs * 12 vertices per object
     int total_vertices = num_objs * 12;
     int transformBlocks = (total_vertices + BLOCK_SIZE - 1) / BLOCK_SIZE;
     transform_to_world_kernel<<<transformBlocks, BLOCK_SIZE>>>(
-        context->d_shapes, context->d_objects,
-        context->buffer_pool->d_all_coords, num_objs);
+        context->d_objects,
+        context->buffer_pool->d_local_coords,
+        context->buffer_pool->d_all_coords,
+        num_objs);
 
     // Step 3: Batched GJK collision detection (polytopes already initialized at startup!)
     // Polytopes point to d_all_coords which was just updated with new positions

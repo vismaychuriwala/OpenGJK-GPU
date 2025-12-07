@@ -14,7 +14,7 @@
 #define RESTITUTION 0.8f
 
 // Spatial configuration (scales with number of objects)
-#define BOUNDARY_SCALE_FACTOR 0.3f  // Boundary = num_objects * scale_factor
+#define BOUNDARY_SCALE_FACTOR 0.15f  // Boundary = num_objects * scale_factor
 #define MIN_BOUNDARY_SIZE 10.0f
 #define MAX_BOUNDARY_SIZE 100.0f
 

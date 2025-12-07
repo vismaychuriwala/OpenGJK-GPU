@@ -19,7 +19,7 @@
 // - NUM_OBJECTS=10 → 45 pairs  (medium grid)
 // - NUM_OBJECTS=20 → 190 pairs (stress test)
 // - NUM_OBJECTS=50 → 1225 pairs (large benchmark)
-#define NUM_OBJECTS 200           // Number of physics objects
+#define NUM_OBJECTS 20           // Number of physics objects
 #define MAX_PAIRS ((NUM_OBJECTS * (NUM_OBJECTS - 1)) / 2)  // Compile-time constant for collision pairs
 
 // Define Physics Object structure
@@ -142,14 +142,14 @@ void auto_initialize_objects(PhysicsObject* objects, int num_objects) {
 
 // Camera controls with mouse rotation
 void UpdateCameraCustom(Camera3D* camera, float boundary) {
-    // Mouse rotation (right mouse button) - orbit around target
-    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        Vector2 mouseDelta = GetMouseDelta();
+    // Calculate current position relative to target
+    float dx = camera->position.x - camera->target.x;
+    float dy = camera->position.y - camera->target.y;
+    float dz = camera->position.z - camera->target.z;
 
-        // Calculate current position relative to target
-        float dx = camera->position.x - camera->target.x;
-        float dy = camera->position.y - camera->target.y;
-        float dz = camera->position.z - camera->target.z;
+    // Mouse rotation (LEFT mouse button) - orbit around target
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        Vector2 mouseDelta = GetMouseDelta();
 
         // Horizontal rotation (Y-axis)
         float angleH = mouseDelta.x * 0.003f;
@@ -175,12 +175,53 @@ void UpdateCameraCustom(Camera3D* camera, float boundary) {
             dx *= scale;
             dz *= scale;
         }
-
-        // Update camera position
-        camera->position.x = camera->target.x + dx;
-        camera->position.y = camera->target.y + dy;
-        camera->position.z = camera->target.z + dz;
     }
+
+    // Arrow key rotation
+    float rotSpeed = 0.02f;
+
+    // Left/Right arrows - horizontal rotation
+    if (IsKeyDown(KEY_LEFT)) {
+        float angleH = rotSpeed;
+        float cosH = cosf(-angleH);
+        float sinH = sinf(-angleH);
+        float newX = dx * cosH - dz * sinH;
+        float newZ = dx * sinH + dz * cosH;
+        dx = newX;
+        dz = newZ;
+    }
+    if (IsKeyDown(KEY_RIGHT)) {
+        float angleH = -rotSpeed;
+        float cosH = cosf(-angleH);
+        float sinH = sinf(-angleH);
+        float newX = dx * cosH - dz * sinH;
+        float newZ = dx * sinH + dz * cosH;
+        dx = newX;
+        dz = newZ;
+    }
+
+    // Up/Down arrows - vertical rotation
+    if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_DOWN)) {
+        float angleV = IsKeyDown(KEY_UP) ? -rotSpeed : rotSpeed;
+        float radius = sqrtf(dx*dx + dy*dy + dz*dz);
+        float currentPitch = asinf(dy / radius);
+        float newPitch = currentPitch + angleV;
+
+        // Clamp pitch to avoid gimbal lock
+        if (newPitch > -1.5f && newPitch < 1.5f) {
+            float horizontalDist = sqrtf(dx*dx + dz*dz);
+            dy = radius * sinf(newPitch);
+            float newHorizontalDist = radius * cosf(newPitch);
+            float scale = newHorizontalDist / horizontalDist;
+            dx *= scale;
+            dz *= scale;
+        }
+    }
+
+    // Update camera position
+    camera->position.x = camera->target.x + dx;
+    camera->position.y = camera->target.y + dy;
+    camera->position.z = camera->target.z + dz;
 
     // Keyboard movement (simple WASD controls)
     float moveSpeed = 0.5f;
@@ -194,7 +235,7 @@ void UpdateCameraCustom(Camera3D* camera, float boundary) {
     // Reset camera (scales with boundary size)
     if (IsKeyPressed(KEY_R)) {
         camera->position = (Vector3){ 0.0f, boundary * 0.8f, boundary * 1.6f };
-        camera->target = (Vector3){ 0.0f, 0.0f, 0.0f };
+        camera->target = (Vector3){ 0.0f, -2.0f, 0.0f };  // Look slightly down
         camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
     }
 }
@@ -264,7 +305,7 @@ int main(void) {
     // Initialize camera
     Camera3D camera = { 0 };
     camera.position = (Vector3){ 0.0f, 10.0f, 20.0f };
-    camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+    camera.target = (Vector3){ 0.0f, -2.0f, 0.0f };  // Look slightly down
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     camera.fovy = 45.0f;
     camera.projection = CAMERA_PERSPECTIVE;
@@ -342,7 +383,7 @@ int main(void) {
     // Update camera position to scale with boundary size
     float boundary = gpu_params.boundarySize;
     camera.position = (Vector3){ 0.0f, boundary * 0.8f, boundary * 1.6f };
-    camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+    camera.target = (Vector3){ 0.0f, -2.0f, 0.0f };  // Look slightly down
 
     SetTargetFPS(60);
     
@@ -377,9 +418,11 @@ int main(void) {
 
             BeginMode3D(camera);
 
-            // Draw floor (scales with boundary size)
+            // Draw floor and ceiling (scales with boundary size)
             float groundSize = gpu_params.boundarySize * 2.0f;
             float groundY = -gpu_params.boundarySize;  // Ground at bottom of boundary box
+            float ceilingY = gpu_params.boundarySize;   // Ceiling at top of boundary box
+
             DrawPlane((Vector3){0, groundY, 0}, (Vector2){groundSize, groundSize}, LIGHTGRAY);
 
 #ifdef USE_CUDA
@@ -413,10 +456,6 @@ int main(void) {
             DrawText(timing_text, 10, 40, 18, BLUE);
 #endif
 
-            // Controls
-            DrawText("Controls:", 10, 140, 18, DARKGRAY);
-            DrawText("SPACE: Reset simulation", 10, 165, 16, DARKGRAY);
-            DrawText("WASD+QE: Move camera | Right Mouse: Rotate | R: Reset", 10, 190, 16, DARKGRAY);
             
         EndDrawing();
     }
