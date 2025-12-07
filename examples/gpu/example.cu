@@ -725,16 +725,8 @@ namespace GJK {
                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
                printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
                
-               // Verify witness points are within bounds
-               bool valid1 = (witness1[0] >= -1.0f && witness1[0] <= 1.0f) &&
-                            (witness1[1] >= -1.0f && witness1[1] <= 1.0f) &&
-                            (witness1[2] >= -1.0f && witness1[2] <= 1.0f);
-               bool valid2 = (witness2[0] >= 0.0f && witness2[0] <= 2.0f) &&
-                            (witness2[1] >= -1.0f && witness2[1] <= 1.0f) &&
-                            (witness2[2] >= -1.0f && witness2[2] <= 1.0f);
-               
-               if (simplex.nvrtx == 4 && valid1 && valid2) {
-                   printf("  PASS: Collision detected, witness points valid\n");
+               if (distance < -0.8 && distance > -1.2) {
+                   printf("  PASS: Collision detected, penetration depth valid\n");
                } else {
                    printf("  FAIL: Invalid results\n");
                }

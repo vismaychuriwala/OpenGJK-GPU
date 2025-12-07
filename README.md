@@ -156,6 +156,45 @@ To switch between 32-bit (float) and 64-bit (double) precision, edit [GJK/common
 - **64-bit**: `//#define USE_32BITS`s
 
 
+## Getting Started With OpenGJK-GPU
+
+These steps walk you through building and running one of our examples uses of GJK.
+
+This can be found in **`examples/usage/main.c`** and is a simple C/C++ example demonstrating basic GJK distance computation using the GPU API
+
+### Prerequisites
+
+**Required:**
+- Git
+- C/C++ compiler (GCC, Clang, or MSVC)
+- CMake (version 3.18 or higher)
+- **CUDA Toolkit** (version 11.0 or higher) - Required for GPU implementation
+- **NVIDIA GPU** with CUDA support
+
+### Building and Running
+
+First, clone this repository:
+
+```bash
+git clone https://github.com/vismaychuriwala/OpenGJK-GPU.git
+cd OpenGJK-GPU
+```
+
+Then use these commands to build and run the example:
+
+**On Windows:**
+```cmd
+cmake -E make_directory build
+cmake -E chdir build cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake --build build --config Release
+cd build\bin\Release
+example_lib_opengjk_ce.exe
+```
+
+The successful output should be:
+```
+Distance between bodies 3.653650
+```
 
 ## Graphs
 
@@ -263,3 +302,6 @@ The validation automatically compares the first 100 distance computations betwee
   * GPU: NVIDIA GeForce RTX 3060 Laptop GPU (6GB GDDR6)
   * CUDA Toolkit: 13.0
   * Driver Version: 581.80
+
+## Use OpenGJK-GPU in Your Project
+

@@ -24,6 +24,7 @@ if(UNIX)
 endif(UNIX)
 
 add_subdirectory(GJK)
+add_subdirectory(examples/usage)
 
 include_directories(.)
 
