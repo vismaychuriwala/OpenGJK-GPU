@@ -1,6 +1,24 @@
+*This repo is currently a work in progress.*
 # OpenGJK-GPU
 
 CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
+
+## Introduction
+
+We aim to create an efficient and high quality open implementations of the GJK and EPA collision detection algorithms in CUDA, leveraging the GPU to achieve significant speedup over existing CPU implementations on high numbers of colliding polytopes. We also provide a physics simulation using OpenGL and Raylib for visualization to demonstrate our updated algorithms in action.
+
+**GJK (Gilbert-Johnson-Keerthi)** is a fast iterative algorithm for computing the minimum distance between two convex polytopes in 3D space. It works by iteratively building a simplex (a point, line segment, triangle, or tetrahedron) within the Minkowski difference of the two polytopes, converging toward the closest point to the origin. GJK is widely used in collision detection, robotics, and physics simulation because it's efficient, numerically stable, and works with any convex shape.
+
+**EPA (Expanding Polytope Algorithm)** is a complementary algorithm that computes penetration depth and witness points when two polytopes are overlapping. While GJK can detect collisions (distance = 0), EPA is needed to determine how deeply objects penetrate each other and where the contact points are, both of which are critical for collision response in physics engines.
+
+## CPU Baseline Implementation
+
+The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the common flattened memory layout:
+
+**Critical Changes:**
+- **Coordinate access pattern**: Changed from `coord[i]` (double pointer) to `&coord[i * 3]` (single pointer with stride)
+  - Modified in: `support()`, `W0D()`, `W1D()`, `W2D()`, `W3D()`, and `compute_minimum_distance()` initialization
+- **Build system**: Added C language support to CMake for proper C compilation
 
 ## Port Summary
 
@@ -23,16 +41,33 @@ CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
 
 6. **Code Structure**: GPU wrapper in `GJK::GPU` namespace with built-in CUDA timing support
 
-7. **Warp Parallel Implementation** Added warpParallelGJK.cu and warpParallelGJK.h which use 16 threads per polytope-polytope collision. Currently main speedup over normal GPU implementation is from parallelising the support function calls.
+7. **Warp Parallel Implementation** Added warpParallelGJK.cu and warpParallelGJK.h which use 16 threads per polytope-polytope collision. Currently main speedup over normal GPU implementation is from parallelising the support function calls and the GJK sub-distance algorithm (S1D/S2D/S3D) across warp lanes.
 
-## CPU Baseline Implementation
+7. **Warp Parallel EPA Implementation** Implemented `compute_epa_warp_parallel` kernel using one warp (32 threads) per collision.
 
-The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the common flattened memory layout:
+## EPA (Expanding Polytope Algorithm) Implementation
 
-**Critical Changes:**
-- **Coordinate access pattern**: Changed from `coord[i]` (double pointer) to `&coord[i * 3]` (single pointer with stride)
-  - Modified in: `support()`, `W0D()`, `W1D()`, `W2D()`, `W3D()`, and `compute_minimum_distance()` initialization
-- **Build system**: Added C language support to CMake for proper C compilation
+### Current Status
+- **Warp-Parallel EPA**: Implemented `compute_epa_warp_parallel` kernel using one warp (32 threads) per collision
+- **Integration**: EPA is called automatically after GJK when a collision is detected (returned distance is 0.00)
+- **Functionality**: Computes penetration depth and witness points for overlapping polytopes
+
+### Key Implementation Details
+- **Polytope Structure**: Uses `EPAPolytope` with up to 128 faces and dynamic vertex expansion
+- **Parallel Operations**:
+  - Face normal/distance computation distributed across warp threads
+  - Support function calls parallelized using all 32 threads
+  - Horizon edge detection optimized with single-pass edge collection and duplicate removal
+- **Synchronization**: Lane 0 (first thread) maintains authoritative polytope state; other threads assist with parallel support calls
+- **Convergence**: Iterates until penetration depth improvement is below tolerance or max iterations (64) reached
+
+### API
+The EPA functionality is accessible through `GJK::GPU::computeGJKAndEPA()` which:
+1. Runs GJK to detect collisions
+2. Automatically calls EPA for colliding polytopes (simplex with 4 vertices)
+3. Returns penetration depths (negative values) and witness points for collisions
+4. Returns separation distances (positive values) for non-colliding polytopes
+
 
 
 ## Graphs
@@ -113,6 +148,31 @@ CPU:
   Distance (last pair):    6.642425
   Witnesses (first pair):  (-3.503, 0.591, -2.867) and (1.812, 0.588, -0.935)
 ================================================================================
+
+========================================
+EPA Algorithm Testing
+========================================
+
+Test Case 5: Overlapping polytopes (~50 vertices each)
+-----------------------------------
+
+=== GJK Results (before EPA) ===
+  Collision 0:
+    Simplex vertices: 4
+    Distance: 0.000000
+    Witness 1: (0.501309, 0.017448, 0.503722)
+    Witness 2: (0.501309, 0.017449, 0.503722)
+================================
+
+  Simplex vertices: 4
+  Distance/Penetration: -0.329734
+  Witness 1: (0.480366, -0.027989, 0.269849)
+  Witness 2: (0.529449, 0.083507, 0.891680)
+  PASS: Collision detected with penetration depth of 0.329734
+
+========================================
+EPA Testing Complete
+========================================
 
 Testing complete!
 ```
