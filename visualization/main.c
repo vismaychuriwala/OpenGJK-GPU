@@ -18,7 +18,7 @@
 // - NUM_OBJECTS=10 → 45 pairs  (medium grid)
 // - NUM_OBJECTS=20 → 190 pairs (stress test)
 // - NUM_OBJECTS=50 → 1225 pairs (large benchmark)
-#define NUM_OBJECTS 10           // Number of physics objects
+#define NUM_OBJECTS 50           // Number of physics objects
 #define MAX_PAIRS ((NUM_OBJECTS * (NUM_OBJECTS - 1)) / 2)  // Compile-time constant for collision pairs
 
 // Define Physics Object structure
@@ -263,168 +263,89 @@ int main(void) {
         }
     }
     
-    // GPU support variables
+    // GPU initialization
     bool gpu_available = false;
-    GJKMode current_mode = MODE_GPU; // Start with GPU mode
-    double cpu_time = 0, gpu_time = 0;
-    
-    // Try to initialize GPU if available
+    double gpu_time = 0;
+
 #ifdef USE_CUDA
     GPU_GJK_Context* gpu_context = NULL;
-    gpu_available = gpu_gjk_init(&gpu_context, NUM_OBJECTS);
+    gpu_available = gpu_gjk_init(&gpu_context, NUM_OBJECTS, MAX_PAIRS);
 
     if (gpu_available) {
-        // Register all shapes at startup
+        // Register all objects with GPU
         for (int i = 0; i < NUM_OBJECTS; i++) {
-            gpu_gjk_register_shape(gpu_context, &gjk_shapes[i], i);
+            gpu_gjk_register_object(gpu_context, i, &gjk_shapes[i],
+                                   objects[i].position, objects[i].velocity,
+                                   objects[i].mass, objects[i].radius);
         }
-        current_mode = MODE_GPU;
+
+        // Set collision pairs
+        gpu_gjk_set_collision_pairs(gpu_context, collision_pairs, num_pairs);
+
         printf("GPU Physics Simulation Initialized!\n");
     } else {
-        printf("GPU not available, using CPU physics\n");
+        printf("GPU not available\n");
+        return 1;
     }
 #endif
+
+    // GPU physics parameters
+    GPU_PhysicsParams gpu_params;
+    gpu_params.gravity = (Vector3f){0.0f, -9.8f, 0.0f};
+    gpu_params.deltaTime = deltaTime;
+    gpu_params.dampingCoeff = 0.8f;
+    gpu_params.boundarySize = 15.0f;
+    gpu_params.collisionEpsilon = 1e-4f;
     
     SetTargetFPS(60);
     
     // Main game loop
     while (!WindowShouldClose()) {
-        // Physics Update - loop over all objects
-        for (int i = 0; i < NUM_OBJECTS; i++) {
-            // Update velocity with acceleration (gravity)
-            objects[i].velocity.x += objects[i].acceleration.x * deltaTime;
-            objects[i].velocity.y += objects[i].acceleration.y * deltaTime;
-            objects[i].velocity.z += objects[i].acceleration.z * deltaTime;
+#ifdef USE_CUDA
+        // Run full physics simulation on GPU
+        clock_t start = clock();
+        gpu_gjk_step_simulation(gpu_context, &gpu_params);
+        clock_t end = clock();
+        gpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
 
-            // Update position with velocity
-            objects[i].position.x += objects[i].velocity.x * deltaTime;
-            objects[i].position.y += objects[i].velocity.y * deltaTime;
-            objects[i].position.z += objects[i].velocity.z * deltaTime;
+        // Get render data from GPU
+        GPU_RenderData render_data;
+        gpu_gjk_get_render_data(gpu_context, &render_data);
+#endif
 
-            // Ground collision
-            if (objects[i].position.y - objects[i].radius < 0) {
-                objects[i].position.y = objects[i].radius;
-                objects[i].velocity.y = -objects[i].velocity.y * 0.8f; // Bounce with damping
-            }
-
-            // Wall collisions (simple boundary)
-            float boundary = 15.0f;
-
-            // X-axis boundaries
-            if (fabs(objects[i].position.x) > boundary - objects[i].radius) {
-                objects[i].velocity.x = -objects[i].velocity.x * 0.8f;
-                objects[i].position.x = (objects[i].position.x > 0) ?
-                    boundary - objects[i].radius : -boundary + objects[i].radius;
-            }
-
-            // Z-axis boundaries
-            if (fabs(objects[i].position.z) > boundary - objects[i].radius) {
-                objects[i].velocity.z = -objects[i].velocity.z * 0.8f;
-                objects[i].position.z = (objects[i].position.z > 0) ?
-                    boundary - objects[i].radius : -boundary + objects[i].radius;
-            }
-
-            // Update GJK shape position
-            gjk_shapes[i].position = objects[i].position;
-        }
-        
-        // Mode switching (only if GPU available)
-        if (IsKeyPressed(KEY_TAB) && gpu_available) {
-            current_mode = (current_mode == MODE_CPU) ? MODE_GPU : MODE_CPU;
-            printf("Switched to %s physics\n", current_mode == MODE_GPU ? "GPU" : "CPU");
-        }
-        
         // Reset simulation
         if (IsKeyPressed(KEY_SPACE)) {
-            for (int i = 0; i < NUM_OBJECTS; i++) {
-                objects[i] = initial_objects[i];
-            }
+#ifdef USE_CUDA
+            gpu_gjk_reset_simulation(gpu_context);
+#endif
             printf("Simulation Reset!\n");
         }
-        
-        // Collision detection with timing
-        clock_t start, end;
 
-#ifdef USE_CUDA
-        if (current_mode == MODE_GPU && gpu_available) {
-            start = clock();
-
-            // Update all positions on GPU
-            for (int i = 0; i < NUM_OBJECTS; i++) {
-                gpu_gjk_update_position(gpu_context, i, objects[i].position);
-            }
-
-            // Batch check all collision pairs on GPU
-            gpu_gjk_batch_check(gpu_context, collision_pairs, num_pairs, collision_results);
-
-            end = clock();
-            gpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
-        } else {
-#endif
-            // CPU collision detection for all pairs
-            start = clock();
-            for (int p = 0; p < num_pairs; p++) {
-                int idA = collision_pairs[p * 2 + 0];
-                int idB = collision_pairs[p * 2 + 1];
-                collision_results[p] = openGJK_collision_cpu(&gjk_shapes[idA], &gjk_shapes[idB]);
-            }
-            end = clock();
-            cpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
-#ifdef USE_CUDA
-        }
-#endif
-        
-        // Handle collision response for all detected collisions
-        for (int p = 0; p < num_pairs; p++) {
-            if (collision_results[p]) {
-                int idA = collision_pairs[p * 2 + 0];
-                int idB = collision_pairs[p * 2 + 1];
-                resolve_collision(&objects[idA], &objects[idB]);
-            }
-        }
-
-        // Calculate distance for display (first pair only)
-        float distance = 0.0f;
-        if (num_pairs > 0) {
-            int idA = collision_pairs[0];
-            int idB = collision_pairs[1];
-            float dx = objects[idA].position.x - objects[idB].position.x;
-            float dy = objects[idA].position.y - objects[idB].position.y;
-            float dz = objects[idA].position.z - objects[idB].position.z;
-            distance = sqrt(dx*dx + dy*dy + dz*dz);
-        }
-        
         // Update camera
         UpdateCameraCustom(&camera);
-        
+
         // Drawing
         BeginDrawing();
             ClearBackground(RAYWHITE);
-            
+
             BeginMode3D(camera);
-            
+
             // Draw floor
             DrawPlane((Vector3){0, 0, 0}, (Vector2){50, 50}, LIGHTGRAY);
 
-            // Determine which objects are colliding
-            bool object_colliding[NUM_OBJECTS];
-            for (int i = 0; i < NUM_OBJECTS; i++) {
-                object_colliding[i] = false;
-            }
-            for (int p = 0; p < num_pairs; p++) {
-                if (collision_results[p]) {
-                    object_colliding[collision_pairs[p * 2 + 0]] = true;
-                    object_colliding[collision_pairs[p * 2 + 1]] = true;
-                }
-            }
+#ifdef USE_CUDA
+            // Draw all objects using GPU render data
+            for (int i = 0; i < render_data.num_objects; i++) {
+                // Update shape position for rendering
+                gjk_shapes[i].position = render_data.positions[i];
 
-            // Draw all objects as polytopes (what we actually test with GJK)
-            for (int i = 0; i < NUM_OBJECTS; i++) {
-                Color drawColor = object_colliding[i] ? YELLOW : objects[i].color;
+                // Choose color based on collision state
+                Color drawColor = render_data.is_colliding[i] ? YELLOW : objects[i].color;
 
                 // Draw the solid polytope (icosahedron)
                 draw_polytope_solid(&gjk_shapes[i], drawColor);
             }
+#endif
             
             // Draw coordinate axes
             DrawLine3D((Vector3){0,0,0}, (Vector3){5,0,0}, RED);   // X axis
@@ -438,88 +359,40 @@ int main(void) {
             sprintf(title, "Physics Simulation - %d Objects - GPU GJK", NUM_OBJECTS);
             DrawText(title, 10, 10, 20, DARKGRAY);
             
-            // Mode and timing information
+            // GPU status and timing
 #ifdef USE_CUDA
-            if (gpu_available) {
-                const char* mode_text = (current_mode == MODE_GPU) ? "GPU PHYSICS" : "CPU PHYSICS";
-                Color mode_color = (current_mode == MODE_GPU) ? GREEN : BLUE;
-                DrawText(mode_text, screenWidth - 150, 10, 20, mode_color);
-                DrawText("Press TAB to switch modes", 10, 40, 20, DARKGRAY);
-                
-                char timing_text[100];
-                if (current_mode == MODE_GPU) {
-                    sprintf(timing_text, "GPU Physics Time: %.3f ms", gpu_time);
-                    DrawText(timing_text, 10, 70, 20, GREEN);
-                } else {
-                    sprintf(timing_text, "CPU Physics Time: %.3f ms", cpu_time);
-                    DrawText(timing_text, 10, 70, 20, BLUE);
-                }
-            } else {
-                DrawText("CPU PHYSICS (GPU not available)", screenWidth - 280, 10, 20, BLUE);
-                char timing_text[100];
-                sprintf(timing_text, "CPU Time: %.3f ms", cpu_time);
-                DrawText(timing_text, 10, 40, 20, BLUE);
-            }
-#else
-            DrawText("CPU PHYSICS", screenWidth - 150, 10, 20, BLUE);
+            DrawText("GPU PHYSICS", screenWidth - 150, 10, 20, GREEN);
             char timing_text[100];
-            sprintf(timing_text, "CPU Time: %.3f ms", cpu_time);
-            DrawText(timing_text, 10, 40, 20, BLUE);
-#endif
-            
-            // Physics info - count total collisions
+            sprintf(timing_text, "GPU Time: %.3f ms", gpu_time);
+            DrawText(timing_text, 10, 40, 18, BLUE);
+
+            // Count total collisions from render data
             int total_collisions = 0;
-            for (int p = 0; p < num_pairs; p++) {
-                if (collision_results[p]) total_collisions++;
+            for (int i = 0; i < render_data.num_objects; i++) {
+                if (render_data.is_colliding[i]) total_collisions++;
             }
 
             if (total_collisions > 0) {
                 char collision_text[64];
-                sprintf(collision_text, "COLLISIONS: %d - BOUNCING", total_collisions);
-                DrawText(collision_text, 10, 100, 30, RED);
+                sprintf(collision_text, "COLLISIONS: %d objects", total_collisions);
+                DrawText(collision_text, 10, 70, 24, RED);
             } else {
-                DrawText("No collisions", 10, 100, 30, GREEN);
+                DrawText("No collisions", 10, 70, 24, GREEN);
             }
 
-            // Show collision pair count and distance
-            char pairsText[64];
-            sprintf(pairsText, "Checking %d collision pairs", num_pairs);
-            DrawText(pairsText, 10, 140, 20, DARKGRAY);
+            // Position info for first object
+            char posText[128];
+            sprintf(posText, "Pos[0]: (%.1f, %.1f, %.1f)",
+                    render_data.positions[0].x,
+                    render_data.positions[0].y,
+                    render_data.positions[0].z);
+            DrawText(posText, 10, 110, 14, GRAY);
+#endif
 
-            char distanceText[50];
-            sprintf(distanceText, "Distance (pair 0): %.2f", distance);
-            DrawText(distanceText, 10, 165, 18, DARKGRAY);
-
-            // Show velocity info for first 2 objects (keeps UI simple)
-            char velocityText[80];
-            for (int i = 0; i < NUM_OBJECTS && i < 2; i++) {
-                sprintf(velocityText, "%s Vel: (%.1f, %.1f, %.1f)",
-                        objects[i].name,
-                        objects[i].velocity.x, objects[i].velocity.y, objects[i].velocity.z);
-                DrawText(velocityText, 10, 170 + i * 25, 18, objects[i].color);
-            }
-            
             // Controls
-            DrawText("Controls:", 10, 230, 20, DARKGRAY);
-            DrawText("SPACE: Reset simulation", 10, 260, 18, DARKGRAY);
-            DrawText("TAB: Switch CPU/GPU mode", 10, 285, 18, DARKGRAY);
-            DrawText("WASD+QE: Move camera | R: Reset camera", 10, 310, 18, DARKGRAY);
-            
-            // Physics features
-            DrawText("Physics Features:", 10, 345, 18, DARKGRAY);
-            DrawText("- Gravity simulation", 10, 370, 16, DARKGRAY);
-            DrawText("- Elastic collisions", 10, 390, 16, DARKGRAY);
-            DrawText("- Ground and wall bounds", 10, 410, 16, DARKGRAY);
-            DrawText("- Real-time collision response", 10, 430, 16, DARKGRAY);
-            
-            // Draw coordinates for first 2 objects
-            char posText[80];
-            for (int i = 0; i < NUM_OBJECTS && i < 2; i++) {
-                sprintf(posText, "%s: (%.1f, %.1f, %.1f)",
-                        objects[i].name,
-                        objects[i].position.x, objects[i].position.y, objects[i].position.z);
-                DrawText(posText, 10, screenHeight - 60 + i * 25, 18, objects[i].color);
-            }
+            DrawText("Controls:", 10, 140, 18, DARKGRAY);
+            DrawText("SPACE: Reset simulation", 10, 165, 16, DARKGRAY);
+            DrawText("WASD+QE: Move camera | R: Reset camera", 10, 190, 16, DARKGRAY);
             
         EndDrawing();
     }
