@@ -33,6 +33,7 @@ bool openGJK_distance_cpu(const GJK_Shape* shapeA, const GJK_Shape* shapeB, floa
 
 // Shape helpers
 GJK_Shape create_cube_shape(Vector3f position, float size);
+GJK_Shape create_sphere_shape(Vector3f position, float radius);  // Icosahedron approximation
 void      free_shape(GJK_Shape* shape);
 
 // Optional debug draw hook

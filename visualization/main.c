@@ -1,13 +1,26 @@
 #include "raylib.h"
 #include "gjk_integration.h"
+#include "sim_config.h"
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
+#include <string.h>
 
 // Include GPU headers at the TOP, not inside functions
 #ifdef USE_CUDA
 #include "gpu_gjk_interface.h"
 #endif
+
+// Configuration
+// Change NUM_OBJECTS to test different scenarios:
+// - NUM_OBJECTS=2  → 1 pair    (original setup, backwards compatible)
+// - NUM_OBJECTS=3  → 3 pairs   (small triangle)
+// - NUM_OBJECTS=5  → 10 pairs  (small grid)
+// - NUM_OBJECTS=10 → 45 pairs  (medium grid)
+// - NUM_OBJECTS=20 → 190 pairs (stress test)
+// - NUM_OBJECTS=50 → 1225 pairs (large benchmark)
+#define NUM_OBJECTS 200           // Number of physics objects
+#define MAX_PAIRS ((NUM_OBJECTS * (NUM_OBJECTS - 1)) / 2)  // Compile-time constant for collision pairs
 
 // Define Physics Object structure
 typedef struct {
@@ -28,19 +41,159 @@ Vector3 toRaylibVector3(Vector3f v) {
     return (Vector3){ v.x, v.y, v.z };
 }
 
-// Basic camera controls (simplified - no mouse rotation)
-void UpdateCameraCustom(Camera3D* camera) {
-    // Keyboard movement
-    if (IsKeyDown(KEY_W)) camera->position.z -= 0.5f;
-    if (IsKeyDown(KEY_S)) camera->position.z += 0.5f;
-    if (IsKeyDown(KEY_A)) camera->position.x -= 0.5f;
-    if (IsKeyDown(KEY_D)) camera->position.x += 0.5f;
-    if (IsKeyDown(KEY_Q)) camera->position.y -= 0.5f;
-    if (IsKeyDown(KEY_E)) camera->position.y += 0.5f;
-    
-    // Reset camera
+// Draw a solid icosahedron polytope with wireframe edges
+void draw_polytope_solid(const GJK_Shape* shape, Color color) {
+    if (!shape || shape->num_vertices != 12) return;
+
+    // Icosahedron has 20 triangular faces
+    // Define faces using vertex indices (ccw winding for outward normals)
+    static const int faces[20][3] = {
+        {0, 8, 4},   {0, 4, 6},   {0, 6, 9},   {0, 9, 2},   {0, 2, 8},
+        {1, 4, 10},  {1, 6, 4},   {1, 11, 6},  {1, 9, 11},  {1, 10, 9},
+        {2, 5, 8},   {2, 7, 5},   {2, 9, 7},   {3, 10, 5},  {3, 5, 7},
+        {3, 7, 11},  {3, 11, 10}, {4, 8, 10},  {5, 10, 8},  {6, 11, 9}
+    };
+
+    // Icosahedron has 30 edges
+    static const int edges[30][2] = {
+        {0, 2}, {0, 4}, {0, 6}, {0, 8}, {0, 9},
+        {1, 4}, {1, 6}, {1, 9}, {1, 10}, {1, 11},
+        {2, 5}, {2, 7}, {2, 8}, {2, 9},
+        {3, 5}, {3, 7}, {3, 10}, {3, 11},
+        {4, 6}, {4, 8}, {4, 10},
+        {5, 7}, {5, 8}, {5, 10},
+        {6, 9}, {6, 11},
+        {7, 9}, {7, 11},
+        {8, 10},
+        {9, 11}
+    };
+
+    // Transform vertices to world space
+    Vector3 world_verts[12];
+    for (int i = 0; i < 12; i++) {
+        world_verts[i] = (Vector3){
+            shape->vertices[i].x + shape->position.x,
+            shape->vertices[i].y + shape->position.y,
+            shape->vertices[i].z + shape->position.z
+        };
+    }
+
+    // Draw all 20 solid faces (double-sided to avoid backface culling issues)
+    for (int f = 0; f < 20; f++) {
+        Vector3 v0 = world_verts[faces[f][0]];
+        Vector3 v1 = world_verts[faces[f][1]];
+        Vector3 v2 = world_verts[faces[f][2]];
+
+        // Draw front face
+        DrawTriangle3D(v0, v1, v2, color);
+        // Draw back face (reversed winding)
+        DrawTriangle3D(v0, v2, v1, color);
+    }
+
+    // Draw all 30 edges on top for visibility
+    for (int e = 0; e < 30; e++) {
+        Vector3 p0 = world_verts[edges[e][0]];
+        Vector3 p1 = world_verts[edges[e][1]];
+        DrawLine3D(p0, p1, BLACK);
+    }
+}
+
+// Auto-initialize objects in a configurable pattern
+void auto_initialize_objects(PhysicsObject* objects, int num_objects) {
+    // Predefined colors for visual distinction
+    Color colors[] = {RED, BLUE, GREEN, ORANGE, PURPLE, PINK, LIME, SKYBLUE, MAROON};
+    int num_colors = sizeof(colors) / sizeof(colors[0]);
+
+    // Auto-generate objects in a grid pattern above the ground
+    int grid_size = (int)ceil(sqrt((double)num_objects));
+    float spacing = 3.0f;  // Space between objects
+    float start_height = 10.0f;
+
+    for (int i = 0; i < num_objects; i++) {
+        int row = i / grid_size;
+        int col = i % grid_size;
+
+        // Center the grid
+        float x_offset = -(grid_size - 1) * spacing / 2.0f;
+        float z_offset = -(grid_size - 1) * spacing / 2.0f;
+
+        char name[32];
+        sprintf(name, "Obj %d", i);
+
+        objects[i] = (PhysicsObject){
+            .position = {
+                x_offset + col * spacing,
+                start_height + (i % 3) * 2.0f,  // Vary height slightly
+                z_offset + row * spacing
+            },
+            .velocity = {
+                ((i % 3) - 1) * 1.0f,  // Vary X velocity: -1, 0, 1
+                0.0f,
+                ((i % 2) - 0.5f) * 2.0f  // Vary Z velocity: -1 or 1
+            },
+            .acceleration = { 0.0f, -9.8f, 0.0f },  // Gravity
+            .radius = 1.5f,
+            .mass = 1.0f,
+            .color = colors[i % num_colors]
+        };
+        strcpy(objects[i].name, name);
+    }
+}
+
+// Camera controls with mouse rotation
+void UpdateCameraCustom(Camera3D* camera, float boundary) {
+    // Mouse rotation (right mouse button) - orbit around target
+    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        Vector2 mouseDelta = GetMouseDelta();
+
+        // Calculate current position relative to target
+        float dx = camera->position.x - camera->target.x;
+        float dy = camera->position.y - camera->target.y;
+        float dz = camera->position.z - camera->target.z;
+
+        // Horizontal rotation (Y-axis)
+        float angleH = mouseDelta.x * 0.003f;
+        float cosH = cosf(-angleH);
+        float sinH = sinf(-angleH);
+        float newX = dx * cosH - dz * sinH;
+        float newZ = dx * sinH + dz * cosH;
+        dx = newX;
+        dz = newZ;
+
+        // Vertical rotation (simple pitch with clamping)
+        float angleV = mouseDelta.y * 0.003f;
+        float radius = sqrtf(dx*dx + dy*dy + dz*dz);
+        float currentPitch = asinf(dy / radius);
+        float newPitch = currentPitch + angleV;
+
+        // Clamp pitch to avoid gimbal lock
+        if (newPitch > -1.5f && newPitch < 1.5f) {
+            float horizontalDist = sqrtf(dx*dx + dz*dz);
+            dy = radius * sinf(newPitch);
+            float newHorizontalDist = radius * cosf(newPitch);
+            float scale = newHorizontalDist / horizontalDist;
+            dx *= scale;
+            dz *= scale;
+        }
+
+        // Update camera position
+        camera->position.x = camera->target.x + dx;
+        camera->position.y = camera->target.y + dy;
+        camera->position.z = camera->target.z + dz;
+    }
+
+    // Keyboard movement (simple WASD controls)
+    float moveSpeed = 0.5f;
+    if (IsKeyDown(KEY_W)) camera->position.z -= moveSpeed;
+    if (IsKeyDown(KEY_S)) camera->position.z += moveSpeed;
+    if (IsKeyDown(KEY_A)) camera->position.x -= moveSpeed;
+    if (IsKeyDown(KEY_D)) camera->position.x += moveSpeed;
+    if (IsKeyDown(KEY_Q)) camera->position.y -= moveSpeed;
+    if (IsKeyDown(KEY_E)) camera->position.y += moveSpeed;
+
+    // Reset camera (scales with boundary size)
     if (IsKeyPressed(KEY_R)) {
-        camera->position = (Vector3){ 0.0f, 10.0f, 20.0f };
+        camera->position = (Vector3){ 0.0f, boundary * 0.8f, boundary * 1.6f };
         camera->target = (Vector3){ 0.0f, 0.0f, 0.0f };
         camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
     }
@@ -116,186 +269,129 @@ int main(void) {
     camera.fovy = 45.0f;
     camera.projection = CAMERA_PERSPECTIVE;
     
-    // Create physics objects (spheres)
-    PhysicsObject sphere1 = {
-        .position = { -5.0f, 8.0f, 0.0f },
-        .velocity = { 2.0f, 0.0f, 0.0f },
-        .acceleration = { 0.0f, -9.8f, 0.0f }, // Gravity
-        .radius = 1.5f,
-        .mass = 1.0f,
-        .color = RED,
-        .name = "Sphere A"
-    };
+    // Create physics objects arrays
+    PhysicsObject objects[NUM_OBJECTS];
+    GJK_Shape gjk_shapes[NUM_OBJECTS];
+    PhysicsObject initial_objects[NUM_OBJECTS]; // For reset functionality
+
+    // Auto-initialize all objects
+    auto_initialize_objects(objects, NUM_OBJECTS);
+
+    // Create GJK shapes (icosahedron approximation of spheres)
+    for (int i = 0; i < NUM_OBJECTS; i++) {
+        gjk_shapes[i] = create_sphere_shape(objects[i].position, objects[i].radius);
+    }
+
+    // Store initial state for reset
+    for (int i = 0; i < NUM_OBJECTS; i++) {
+        initial_objects[i] = objects[i];
+    }
     
-    PhysicsObject sphere2 = {
-        .position = { 5.0f, 8.0f, 0.0f },
-        .velocity = { -2.0f, 0.0f, 0.0f },
-        .acceleration = { 0.0f, -9.8f, 0.0f }, // Gravity
-        .radius = 1.5f,
-        .mass = 1.0f,
-        .color = BLUE,
-        .name = "Sphere B"
-    };
+    // Physics simulation variables (using macros from sim_config.h)
+    float deltaTime = DELTA_TIME;
+
+    // Collision detection arrays
+    const int num_pairs = MAX_PAIRS;
+    int collision_pairs[MAX_PAIRS * 2];
+    bool collision_results[MAX_PAIRS];
+
+    // Generate all unique collision pairs
+    int pair_idx = 0;
+    for (int i = 0; i < NUM_OBJECTS; i++) {
+        for (int j = i + 1; j < NUM_OBJECTS; j++) {
+            collision_pairs[pair_idx * 2 + 0] = i;
+            collision_pairs[pair_idx * 2 + 1] = j;
+            pair_idx++;
+        }
+    }
     
-    // Create GJK shapes (bounding spheres)
-    GJK_Shape gjk_sphere1 = create_cube_shape(sphere1.position, sphere1.radius * 2.0f); // Approximate sphere with cube
-    GJK_Shape gjk_sphere2 = create_cube_shape(sphere2.position, sphere2.radius * 2.0f);
-    
-    // Physics simulation variables
-    bool collision = false;
-    float distance = 0.0f;
-    float deltaTime = 1.0f / 60.0f; // Fixed timestep for stable physics
-    
-    // GPU support variables
+    // GPU initialization
     bool gpu_available = false;
-    GJKMode current_mode = MODE_GPU; // Start with GPU mode
-    double cpu_time = 0, gpu_time = 0;
-    
-    // Try to initialize GPU if available
+    double gpu_time = 0;
+
 #ifdef USE_CUDA
     GPU_GJK_Context* gpu_context = NULL;
-    gpu_available = gpu_gjk_init(&gpu_context, 10);  // Support up to 10 objects
-    
+    gpu_available = gpu_gjk_init(&gpu_context, NUM_OBJECTS, MAX_PAIRS);
+
     if (gpu_available) {
-        // Register shapes once at startup
-        gpu_gjk_register_shape(gpu_context, &gjk_sphere1, 0);
-        gpu_gjk_register_shape(gpu_context, &gjk_sphere2, 1);
-        current_mode = MODE_GPU;
+        // Register all objects with GPU
+        for (int i = 0; i < NUM_OBJECTS; i++) {
+            gpu_gjk_register_object(gpu_context, i, &gjk_shapes[i],
+                                   objects[i].position, objects[i].velocity,
+                                   objects[i].mass, objects[i].radius);
+        }
+
+        // Set collision pairs
+        gpu_gjk_set_collision_pairs(gpu_context, collision_pairs, num_pairs);
+
         printf("GPU Physics Simulation Initialized!\n");
     } else {
-        printf("GPU not available, using CPU physics\n");
+        printf("GPU not available\n");
+        return 1;
     }
 #endif
-    
+
+    // GPU physics parameters (using macros from sim_config.h)
+    GPU_PhysicsParams gpu_params;
+    gpu_params.gravity = (Vector3f){0.0f, GRAVITY_Y, 0.0f};
+    gpu_params.deltaTime = DELTA_TIME;
+    gpu_params.dampingCoeff = DAMPING_COEFF;
+    gpu_params.boundarySize = COMPUTE_BOUNDARY(NUM_OBJECTS);
+    gpu_params.collisionEpsilon = COLLISION_EPSILON;
+
+    // Update camera position to scale with boundary size
+    float boundary = gpu_params.boundarySize;
+    camera.position = (Vector3){ 0.0f, boundary * 0.8f, boundary * 1.6f };
+    camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+
     SetTargetFPS(60);
     
     // Main game loop
     while (!WindowShouldClose()) {
-        // Physics Update
-        // Update velocities with acceleration (gravity)
-        sphere1.velocity.x += sphere1.acceleration.x * deltaTime;
-        sphere1.velocity.y += sphere1.acceleration.y * deltaTime;
-        sphere1.velocity.z += sphere1.acceleration.z * deltaTime;
-        
-        sphere2.velocity.x += sphere2.acceleration.x * deltaTime;
-        sphere2.velocity.y += sphere2.acceleration.y * deltaTime;
-        sphere2.velocity.z += sphere2.acceleration.z * deltaTime;
-        
-        // Update positions with velocity
-        sphere1.position.x += sphere1.velocity.x * deltaTime;
-        sphere1.position.y += sphere1.velocity.y * deltaTime;
-        sphere1.position.z += sphere1.velocity.z * deltaTime;
-        
-        sphere2.position.x += sphere2.velocity.x * deltaTime;
-        sphere2.position.y += sphere2.velocity.y * deltaTime;
-        sphere2.position.z += sphere2.velocity.z * deltaTime;
-        
-        // Ground collision
-        if (sphere1.position.y - sphere1.radius < 0) {
-            sphere1.position.y = sphere1.radius;
-            sphere1.velocity.y = -sphere1.velocity.y * 0.8f; // Bounce with damping
-        }
-        if (sphere2.position.y - sphere2.radius < 0) {
-            sphere2.position.y = sphere2.radius;
-            sphere2.velocity.y = -sphere2.velocity.y * 0.8f; // Bounce with damping
-        }
-        
-        // Wall collisions (simple boundary)
-        float boundary = 15.0f;
-        if (fabs(sphere1.position.x) > boundary - sphere1.radius) {
-            sphere1.velocity.x = -sphere1.velocity.x * 0.8f;
-            sphere1.position.x = (sphere1.position.x > 0) ? boundary - sphere1.radius : -boundary + sphere1.radius;
-        }
-        if (fabs(sphere2.position.x) > boundary - sphere2.radius) {
-            sphere2.velocity.x = -sphere2.velocity.x * 0.8f;
-            sphere2.position.x = (sphere2.position.x > 0) ? boundary - sphere2.radius : -boundary + sphere2.radius;
-        }
-        
-        // Update GJK shape positions
-        gjk_sphere1.position = sphere1.position;
-        gjk_sphere2.position = sphere2.position;
-        
-        // Mode switching (only if GPU available)
-        if (IsKeyPressed(KEY_TAB) && gpu_available) {
-            current_mode = (current_mode == MODE_CPU) ? MODE_GPU : MODE_CPU;
-            printf("Switched to %s physics\n", current_mode == MODE_GPU ? "GPU" : "CPU");
-        }
-        
+#ifdef USE_CUDA
+        // Run full physics simulation on GPU
+        clock_t start = clock();
+        gpu_gjk_step_simulation(gpu_context, &gpu_params);
+        clock_t end = clock();
+        gpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
+
+        // Get render data from GPU
+        GPU_RenderData render_data;
+        gpu_gjk_get_render_data(gpu_context, &render_data);
+#endif
+
         // Reset simulation
         if (IsKeyPressed(KEY_SPACE)) {
-            sphere1.position = (Vector3f){ -5.0f, 8.0f, 0.0f };
-            sphere1.velocity = (Vector3f){ 2.0f, 0.0f, 0.0f };
-            sphere2.position = (Vector3f){ 5.0f, 8.0f, 0.0f };
-            sphere2.velocity = (Vector3f){ -2.0f, 0.0f, 0.0f };
+#ifdef USE_CUDA
+            gpu_gjk_reset_simulation(gpu_context);
+#endif
             printf("Simulation Reset!\n");
         }
-        
-        // Collision detection with timing
-        clock_t start, end;
-        
-#ifdef USE_CUDA
-        if (current_mode == MODE_GPU && gpu_available) {
-            start = clock();
-            
-            // Update positions on GPU
-            gpu_gjk_update_position(gpu_context, 0, sphere1.position);
-            gpu_gjk_update_position(gpu_context, 1, sphere2.position);
-            
-            // Check collision on GPU
-            int pairs[] = {0, 1};
-            bool gpu_results[1];
-            gpu_gjk_batch_check(gpu_context, pairs, 1, gpu_results);
-            collision = gpu_results[0];
-            
-            end = clock();
-            gpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
-        } else {
-#endif
-            // CPU collision detection
-            start = clock();
-            collision = openGJK_collision_cpu(&gjk_sphere1, &gjk_sphere2);
-            end = clock();
-            cpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
-#ifdef USE_CUDA
-        }
-#endif
-        
-        // Handle collision response
-        if (collision) {
-            resolve_collision(&sphere1, &sphere2);
-        }
-        
-        // Calculate distance for display
-        float dx = sphere1.position.x - sphere2.position.x;
-        float dy = sphere1.position.y - sphere2.position.y;
-        float dz = sphere1.position.z - sphere2.position.z;
-        distance = sqrt(dx*dx + dy*dy + dz*dz);
-        
-        // Update camera
-        UpdateCameraCustom(&camera);
-        
+
+        // Update camera (pass boundary for proper reset scaling)
+        UpdateCameraCustom(&camera, gpu_params.boundarySize);
+
         // Drawing
         BeginDrawing();
             ClearBackground(RAYWHITE);
-            
+
             BeginMode3D(camera);
-            
-            // Draw floor
-            DrawPlane((Vector3){0, 0, 0}, (Vector2){50, 50}, LIGHTGRAY);
-            
-            // Draw spheres with collision highlighting
-            Color sphere1Color = collision ? YELLOW : RED;
-            Color sphere2Color = collision ? YELLOW : BLUE;
-            
-            Vector3 pos1 = toRaylibVector3(sphere1.position);
-            Vector3 pos2 = toRaylibVector3(sphere2.position);
-            
-            DrawSphere(pos1, sphere1.radius, sphere1Color);
-            DrawSphere(pos2, sphere2.radius, sphere2Color);
-            
-            // Draw sphere outlines
-            DrawSphereWires(pos1, sphere1.radius, 8, 8, DARKGRAY);
-            DrawSphereWires(pos2, sphere2.radius, 8, 8, DARKGRAY);
+
+            // Draw floor (scales with boundary size)
+            float groundSize = gpu_params.boundarySize * 2.0f;
+            float groundY = -gpu_params.boundarySize;  // Ground at bottom of boundary box
+            DrawPlane((Vector3){0, groundY, 0}, (Vector2){groundSize, groundSize}, LIGHTGRAY);
+
+#ifdef USE_CUDA
+            // Draw all objects using GPU render data
+            for (int i = 0; i < render_data.num_objects; i++) {
+                // Update shape position for rendering
+                gjk_shapes[i].position = render_data.positions[i];
+
+                // Draw the solid polytope (icosahedron) with original color
+                draw_polytope_solid(&gjk_shapes[i], objects[i].color);
+            }
+#endif
             
             // Draw coordinate axes
             DrawLine3D((Vector3){0,0,0}, (Vector3){5,0,0}, RED);   // X axis
@@ -305,73 +401,22 @@ int main(void) {
             EndMode3D();
             
             // Draw UI
-            DrawText("Physics Simulation - GPU GJK Collision Detection", 10, 10, 20, DARKGRAY);
+            char title[128];
+            sprintf(title, "Physics Simulation - %d Objects - GPU GJK", NUM_OBJECTS);
+            DrawText(title, 10, 10, 20, DARKGRAY);
             
-            // Mode and timing information
+            // GPU status and timing
 #ifdef USE_CUDA
-            if (gpu_available) {
-                const char* mode_text = (current_mode == MODE_GPU) ? "GPU PHYSICS" : "CPU PHYSICS";
-                Color mode_color = (current_mode == MODE_GPU) ? GREEN : BLUE;
-                DrawText(mode_text, screenWidth - 150, 10, 20, mode_color);
-                DrawText("Press TAB to switch modes", 10, 40, 20, DARKGRAY);
-                
-                char timing_text[100];
-                if (current_mode == MODE_GPU) {
-                    sprintf(timing_text, "GPU Physics Time: %.3f ms", gpu_time);
-                    DrawText(timing_text, 10, 70, 20, GREEN);
-                } else {
-                    sprintf(timing_text, "CPU Physics Time: %.3f ms", cpu_time);
-                    DrawText(timing_text, 10, 70, 20, BLUE);
-                }
-            } else {
-                DrawText("CPU PHYSICS (GPU not available)", screenWidth - 280, 10, 20, BLUE);
-                char timing_text[100];
-                sprintf(timing_text, "CPU Time: %.3f ms", cpu_time);
-                DrawText(timing_text, 10, 40, 20, BLUE);
-            }
-#else
-            DrawText("CPU PHYSICS", screenWidth - 150, 10, 20, BLUE);
+            DrawText("GPU PHYSICS", screenWidth - 150, 10, 20, GREEN);
             char timing_text[100];
-            sprintf(timing_text, "CPU Time: %.3f ms", cpu_time);
-            DrawText(timing_text, 10, 40, 20, BLUE);
+            sprintf(timing_text, "GPU Time: %.3f ms", gpu_time);
+            DrawText(timing_text, 10, 40, 18, BLUE);
 #endif
-            
-            // Physics info
-            if (collision) {
-                DrawText("COLLISION! - BOUNCING", 10, 100, 30, RED);
-            } else {
-                DrawText("No collision", 10, 100, 30, GREEN);
-            }
-            
-            char distanceText[50], velocity1Text[80], velocity2Text[80];
-            sprintf(distanceText, "Distance: %.2f", distance);
-            sprintf(velocity1Text, "Red Vel: (%.1f, %.1f, %.1f)", sphere1.velocity.x, sphere1.velocity.y, sphere1.velocity.z);
-            sprintf(velocity2Text, "Blue Vel: (%.1f, %.1f, %.1f)", sphere2.velocity.x, sphere2.velocity.y, sphere2.velocity.z);
-            
-            DrawText(distanceText, 10, 140, 20, DARKGRAY);
-            DrawText(velocity1Text, 10, 170, 18, RED);
-            DrawText(velocity2Text, 10, 195, 18, BLUE);
-            
+
             // Controls
-            DrawText("Controls:", 10, 230, 20, DARKGRAY);
-            DrawText("SPACE: Reset simulation", 10, 260, 18, DARKGRAY);
-            DrawText("TAB: Switch CPU/GPU mode", 10, 285, 18, DARKGRAY);
-            DrawText("WASD+QE: Move camera | R: Reset camera", 10, 310, 18, DARKGRAY);
-            
-            // Physics features
-            DrawText("Physics Features:", 10, 345, 18, DARKGRAY);
-            DrawText("- Gravity simulation", 10, 370, 16, DARKGRAY);
-            DrawText("- Elastic collisions", 10, 390, 16, DARKGRAY);
-            DrawText("- Ground and wall bounds", 10, 410, 16, DARKGRAY);
-            DrawText("- Real-time collision response", 10, 430, 16, DARKGRAY);
-            
-            // Draw coordinates
-            char pos1Text[80], pos2Text[80];
-            sprintf(pos1Text, "Red: (%.1f, %.1f, %.1f)", sphere1.position.x, sphere1.position.y, sphere1.position.z);
-            sprintf(pos2Text, "Blue: (%.1f, %.1f, %.1f)", sphere2.position.x, sphere2.position.y, sphere2.position.z);
-            
-            DrawText(pos1Text, 10, screenHeight - 60, 18, RED);
-            DrawText(pos2Text, 10, screenHeight - 35, 18, BLUE);
+            DrawText("Controls:", 10, 140, 18, DARKGRAY);
+            DrawText("SPACE: Reset simulation", 10, 165, 16, DARKGRAY);
+            DrawText("WASD+QE: Move camera | Right Mouse: Rotate | R: Reset", 10, 190, 16, DARKGRAY);
             
         EndDrawing();
     }
@@ -382,9 +427,10 @@ int main(void) {
         gpu_gjk_cleanup(&gpu_context);
     }
 #endif
-    free_shape(&gjk_sphere1);
-    free_shape(&gjk_sphere2);
+    for (int i = 0; i < NUM_OBJECTS; i++) {
+        free_shape(&gjk_shapes[i]);
+    }
     CloseWindow();
-    
+
     return 0;
 }
