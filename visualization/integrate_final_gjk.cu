@@ -262,7 +262,8 @@ __global__ void generate_pairs_kernel(GPU_PhysicsObject* objects,
                                       float cell_size,
                                       float boundary,
                                       int* pair_offsets,
-                                      int* pair_buffer)
+                                      int* pair_buffer,
+                                      int max_pairs)
 {
     int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (obj_id >= num_objects) return;
@@ -307,6 +308,12 @@ __global__ void generate_pairs_kernel(GPU_PhysicsObject* objects,
 
                     // Write pair to buffer at predetermined offset
                     int global_pair_idx = write_offset + local_pair_idx;
+
+                    // Bounds check to prevent buffer overflow (fixes phantom collision bug)
+                    if (global_pair_idx >= max_pairs) {
+                        return;  // Stop writing if we exceed buffer capacity
+                    }
+
                     pair_buffer[global_pair_idx * 2 + 0] = obj_id;
                     pair_buffer[global_pair_idx * 2 + 1] = other_id;
                     local_pair_idx++;
@@ -741,6 +748,9 @@ int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_P
         context->d_objects, num_objs, context->d_grid,
         cell_size, params->boundarySize);
 
+    // Step 2.5: Clear pair counts (prevents garbage values in tail threads)
+    cudaMemset(context->d_pair_counts, 0, sizeof(int) * num_objs);
+
     // Step 3: Count pairs per object (Pass 1)
     count_pairs_kernel<<<objBlocks, BLOCK_SIZE>>>(
         context->d_objects, num_objs, context->d_grid,
@@ -775,7 +785,8 @@ int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_P
         generate_pairs_kernel<<<objBlocks, BLOCK_SIZE>>>(
             context->d_objects, num_objs, context->d_grid,
             cell_size, params->boundarySize,
-            context->d_pair_offsets, context->d_collision_pairs);
+            context->d_pair_offsets, context->d_collision_pairs,
+            context->max_pairs);
     }
 
     return context->num_pairs;
