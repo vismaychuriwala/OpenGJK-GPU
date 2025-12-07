@@ -194,7 +194,7 @@ __global__ void insert_objects_kernel(GPU_PhysicsObject* objects,
         grid[cell_idx].objects[slot] = obj_id;
     }
     // If slot >= MAX_OBJECTS_PER_CELL, object is silently dropped (cell overflow)
-    // This is acceptable for broad-phase - we may miss some collisions but won't crash
+    // This is safe because read loops clamp to min(cell->count, MAX_OBJECTS_PER_CELL)
 }
 
 // Kernel 2: Count pairs per object (Pass 1 of two-pass approach)
@@ -333,7 +333,8 @@ __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
                                          int* pairs,
                                          gkFloat* distances,
                                          float epsilon,
-                                         int num_pairs)
+                                         int num_pairs,
+                                         int num_objects)
 {
     int p = blockIdx.x * blockDim.x + threadIdx.x;
     if (p >= num_pairs) return;
@@ -343,6 +344,9 @@ __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
 
     int idA = pairs[p * 2 + 0];
     int idB = pairs[p * 2 + 1];
+
+    // Bounds check to prevent phantom collisions from invalid pair IDs
+    if (idA < 0 || idA >= num_objects || idB < 0 || idB >= num_objects) return;
 
     GPU_PhysicsObject* obj1 = &objects[idA];
     GPU_PhysicsObject* obj2 = &objects[idB];
@@ -670,7 +674,8 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
             context->d_objects, context->d_collision_pairs,
             context->buffer_pool->d_distances,
             params->collisionEpsilon,
-            num_pairs);
+            num_pairs,
+            num_objs);
     }
 
     // No sync needed - GPU->CPU transfer in get_render_data will implicitly sync

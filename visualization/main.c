@@ -117,6 +117,12 @@ void auto_initialize_objects(PhysicsObject* objects, int num_objects) {
         float vel_noise_y = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
         float vel_noise_z = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
 
+        // Random varied sizes: range from 0.5 to 1.8
+        float radius = 0.5f + ((float)rand() / RAND_MAX) * 1.3f;
+
+        // Mass proportional to volume (radius^3) for realistic physics
+        float mass = radius * radius * radius;
+
         char name[32];
         sprintf(name, "Obj %d", i);
 
@@ -132,8 +138,8 @@ void auto_initialize_objects(PhysicsObject* objects, int num_objects) {
                 ((i % 2) - 0.5f) * 2.0f + vel_noise_z
             },
             .acceleration = { 0.0f, -9.8f, 0.0f },  // Gravity
-            .radius = 1.5f,
-            .mass = 1.0f,
+            .radius = radius,
+            .mass = mass,
             .color = colors[i % num_colors]
         };
         strcpy(objects[i].name, name);
