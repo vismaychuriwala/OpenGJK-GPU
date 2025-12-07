@@ -12,14 +12,8 @@
 #endif
 
 // Configuration
-// Change NUM_OBJECTS to test different scenarios:
-// - NUM_OBJECTS=2  → 1 pair    (original setup, backwards compatible)
-// - NUM_OBJECTS=3  → 3 pairs   (small triangle)
-// - NUM_OBJECTS=5  → 10 pairs  (small grid)
-// - NUM_OBJECTS=10 → 45 pairs  (medium grid)
-// - NUM_OBJECTS=20 → 190 pairs (stress test)
-// - NUM_OBJECTS=50 → 1225 pairs (large benchmark)
-#define NUM_OBJECTS 20           // Number of physics objects
+
+#define NUM_OBJECTS 300           // Number of physics objects
 #define MAX_PAIRS ((NUM_OBJECTS * (NUM_OBJECTS - 1)) / 2)  // Compile-time constant for collision pairs
 
 // Define Physics Object structure
@@ -436,10 +430,10 @@ int main(void) {
             }
 #endif
             
-            // Draw coordinate axes
-            DrawLine3D((Vector3){0,0,0}, (Vector3){5,0,0}, RED);   // X axis
-            DrawLine3D((Vector3){0,0,0}, (Vector3){0,5,0}, GREEN); // Y axis
-            DrawLine3D((Vector3){0,0,0}, (Vector3){0,0,5}, BLUE);  // Z axis
+            // // Draw coordinate axes
+            // DrawLine3D((Vector3){0,0,0}, (Vector3){5,0,0}, RED);   // X axis
+            // DrawLine3D((Vector3){0,0,0}, (Vector3){0,5,0}, GREEN); // Y axis
+            // DrawLine3D((Vector3){0,0,0}, (Vector3){0,0,5}, BLUE);  // Z axis
             
             EndMode3D();
             
