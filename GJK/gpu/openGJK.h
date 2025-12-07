@@ -12,8 +12,8 @@
  * polytopes using 16 threads per collision.
  *
  * The simplex has to be initialised prior to the call to this function. */
-__global__ void compute_minimum_distance(gkPolytope* polytypes1, gkPolytope* polytypes2,
-  gkSimplex* simplices, gkFloat* distances, int n);
+__global__ void compute_minimum_distance(const gkPolytope* polytypes1, const gkPolytope* polytypes2,
+  gkSimplex* simplices, gkFloat* distances, const int n);
 
 /*! @brief Invoke the warp-parallel EPA algorithm to compute penetration depth and witness points
  * for colliding polytopes using 32 threads (one warp) per collision.
@@ -31,7 +31,7 @@ __global__ void compute_minimum_distance(gkPolytope* polytypes1, gkPolytope* pol
  * @param contact_normals Output array for contact normals (3 floats per collision, points from polytope1 to polytope2)
  * @param n Number of polytope pairs to process
  */
-__global__ void compute_epa(gkPolytope* polytopes1, gkPolytope* polytopes2,
-  gkSimplex* simplices, gkFloat* distances, gkFloat* witness1, gkFloat* witness2, gkFloat* contact_normals, int n);
+__global__ void compute_epa(const gkPolytope* polytopes1, const gkPolytope* polytopes2,
+  gkSimplex* simplices, gkFloat* distances, gkFloat* witness1, gkFloat* witness2, gkFloat* contact_normals, const int n);
 
 #endif  // OPENGJK_H__

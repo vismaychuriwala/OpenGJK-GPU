@@ -1,8 +1,9 @@
 *This repo is currently a work in progress.*
 # OpenGJK-GPU
 
-CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK).
+CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK) and the EPA algorithm.
 
+Contributors: [Marcus Hedlund](https://github.com/mhedlund7), [Vismay Churiwala](https://vismaychuriwala.com/), [Cindy Wei](https://www.linkedin.com/in/cindy-wei-7ba778227/?utm_source=share&utm_campaign=share_via&utm_content=profile&utm_medium=ios_app)
 ## Introduction
 
 We aim to create an efficient and high quality open implementations of the GJK and EPA collision detection algorithms in CUDA, leveraging the GPU to achieve significant speedup over existing CPU implementations on high numbers of colliding polytopes. We also provide a physics simulation using OpenGL and Raylib for visualization to demonstrate our updated algorithms in action.
@@ -31,8 +32,8 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
 
 3. **Kernel Signature**: Changed from CPU function to `__global__` kernel:
    ```cuda
-   __global__ void compute_minimum_distance(gkPolytope* polytopes1, gkPolytope* polytopes2,
-                                             gkSimplex* simplices, gkFloat* distances, int n);
+   __global__ void compute_minimum_distance(const gkPolytope* polytopes1, const gkPolytope* polytopes2,
+                                             gkSimplex* simplices, gkFloat* distances, const int n);
    ```
 
 4. **Performance Optimization**: Changed to copy-by-value for polytopes and simplices to keep data in registers/local memory instead of global memory
@@ -70,7 +71,7 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
  * @param simplices Array to store resulting simplices (host memory)
  * @param distances Array to store resulting distances (host memory)
  */
-void computeDistances(int n,
+void computeDistances(const int n,
                     const gkPolytope* bd1,
                     const gkPolytope* bd2,
                     gkSimplex* simplices,
@@ -91,7 +92,7 @@ void computeDistances(int n,
  * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
  * @param contact_normals Optional array to store contact normals from bd1 to bd2 (n*3 floats, host memory, can be nullptr)
  */
-void computeCollisionInformation(int n,
+void computeCollisionInformation(const int n,
                     const gkPolytope* bd1,
                     const gkPolytope* bd2,
                     gkSimplex* simplices,
@@ -303,5 +304,18 @@ The validation automatically compares the first 100 distance computations betwee
   * CUDA Toolkit: 13.0
   * Driver Version: 581.80
 
-## Use OpenGJK-GPU in Your Project
+## References
 
+* [CPU OpenGJK](https://github.com/MattiaMontanari/openGJK)
+* [Improving the GJK algorithm for faster and more reliable distance queries between convex objects](https://web.archive.org/web/20200320045859id_/https://ora.ox.ac.uk/objects/uuid:69c743d9-73de-4aff-8e6f-b4dd7c010907/download_file?safe_filename=GJK.PDF&file_format=application%2Fpdf&type_of_work=Journal+article)
+* [A Strange But Elegant Approach to a Surprisingly Hard Problem](https://www.youtube.com/watch?v=ajv46BSqcK4)
+* [The Gilbert–Johnson–Keerthi algorithm explained as simply as possible](https://computerwebsite.net/writing/gjk)
+* [Winterdev:](https://winter.dev/) [GJK](https://www.youtube.com/watch?v=MDusDn8oTSE), [EPA](https://www.youtube.com/watch?v=0XQ2FSz3EK8)
+* [Using CUDA Warp-Level Primitives](https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/)
+
+## Deliverables
+* [Project Proposal](https://docs.google.com/document/d/14fZ2E0YpqXE-DzvDsl6Hdc9iFCNBl_NMRxxjJE2w3jY/edit?usp=sharing)
+* [Milestone 1](https://docs.google.com/presentation/d/1WPj8Xt3JGV5DWIja9NVG7UvrkLtkmIimTGchkGf9aNI/edit?usp=sharing)
+* [Milestone 2](https://docs.google.com/presentation/d/159heWqZZO2uYQWvfda83ui7vZ1OU14n4bIfr-fYUg88/edit?usp=sharing)
+* [Milestone 3](https://docs.google.com/presentation/d/1I9fcP2MQteWr0Ev3IUGg4ZLAJAGmjjiiVTp2Livz6tw/edit?usp=sharing)
+* [Final Presentation](https://docs.google.com/presentation/d/1fWIkM41XUq6gc-5EAmZyqX3KbV449bzZ/edit?usp=sharing&ouid=110712747235989636284&rtpof=true&sd=true)

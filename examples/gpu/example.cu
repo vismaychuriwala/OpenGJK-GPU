@@ -20,7 +20,7 @@ namespace GJK {
             return timer;
         }
 
-        void computeDistances(int n,
+        void computeDistances(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -111,7 +111,7 @@ namespace GJK {
             cudaFree(d_coord2);
         }
 
-        void computeGJKAndEPA(int n,
+        void computeGJKAndEPA(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -274,7 +274,7 @@ namespace GJK {
             cudaFree(d_coord2);
         }
 
-        void computeCollisionInformation(int n,
+        void computeCollisionInformation(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -532,9 +532,9 @@ namespace GJK {
         }
 
         void testing(const int* numPolytopesArray,
-                     int numPolytopesArraySize,
+                     const int numPolytopesArraySize,
                      const int* numVerticesArray,
-                     int numVerticesArraySize,
+                     const int numVerticesArraySize,
                      const char* outputFile) {
             
             if (numPolytopesArray == nullptr || numVerticesArray == nullptr || outputFile == nullptr) {
