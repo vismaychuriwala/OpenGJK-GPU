@@ -1,5 +1,6 @@
 // integrate_final_gjk.cu - GPU-owned physics simulation
 #include "gpu_gjk_interface.h"
+#include "sim_config.h"
 #include "../GJK/gpu/warpParallelGJK.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
@@ -60,12 +61,8 @@ struct GPU_GJK_Context {
     int* d_collision_pairs;           // Device array [num_pairs * 2]
     bool* d_collision_results;        // Device array [num_pairs]
 
-    // Per-object collision flags (aggregated from pairs)
-    bool* d_object_colliding;         // Device array [num_objects]
-
     // Render data (pinned host memory for fast GPU->CPU transfer)
     Vector3f* h_positions;            // Pinned host array [num_objects]
-    bool* h_colliding;                // Pinned host array [num_objects]
     Vector3f* d_positions_temp;       // Device array for extracting positions [num_objects]
 
     // Persistent buffer pool for collision detection
@@ -92,14 +89,20 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
     obj->position.y += obj->velocity.y * params.deltaTime;
     obj->position.z += obj->velocity.z * params.deltaTime;
 
-    // Ground collision
-    if (obj->position.y - obj->radius < 0.0f) {
-        obj->position.y = obj->radius;
+    // Boundary collisions (all axes use same boundary size)
+    float boundary = params.boundarySize;
+    float ground = -boundary;  // Ground at bottom of boundary box
+    float ceiling = boundary;  // Ceiling at top of boundary box
+
+    // Y-axis (ground and ceiling)
+    if (obj->position.y - obj->radius < ground) {
+        obj->position.y = ground + obj->radius;
         obj->velocity.y = -obj->velocity.y * params.dampingCoeff;
     }
-
-    // Boundary collisions
-    float boundary = params.boundarySize;
+    if (obj->position.y + obj->radius > ceiling) {
+        obj->position.y = ceiling - obj->radius;
+        obj->velocity.y = -obj->velocity.y * params.dampingCoeff;
+    }
 
     // X-axis
     if (fabsf(obj->position.x) > boundary - obj->radius) {
@@ -142,28 +145,6 @@ __global__ void build_world_coords_kernel(GPU_PhysicsObject* objects,
     world_coords[world_idx + 0] = local_vertices[local_idx + 0] + objects[obj_id].position.x;
     world_coords[world_idx + 1] = local_vertices[local_idx + 1] + objects[obj_id].position.y;
     world_coords[world_idx + 2] = local_vertices[local_idx + 2] + objects[obj_id].position.z;
-}
-
-// CUDA kernel: Aggregate collision results per object
-__global__ void aggregate_collisions_kernel(int* pairs,
-                                           bool* pair_results,
-                                           bool* object_colliding,
-                                           int num_pairs,
-                                           int num_objects)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= num_objects) return;
-
-    object_colliding[i] = false;
-
-    for (int p = 0; p < num_pairs; p++) {
-        if (pair_results[p]) {
-            if (pairs[p * 2 + 0] == i || pairs[p * 2 + 1] == i) {
-                object_colliding[i] = true;
-                return;
-            }
-        }
-    }
 }
 
 // CUDA kernel: Elastic collision response (matches CPU version)
@@ -220,8 +201,7 @@ __global__ void collision_response_kernel(GPU_PhysicsObject* objects,
     if (velAlongNormal > 0.0f) return;
 
     // Collision impulse (elastic collision)
-    float restitution = 0.8f;
-    float j = -(1.0f + restitution) * velAlongNormal;
+    float j = -(1.0f + RESTITUTION) * velAlongNormal;
     j /= (1.0f / obj1->mass + 1.0f / obj2->mass);
 
     // Apply impulse
@@ -269,14 +249,12 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
 
     // Allocate pinned host memory for fast GPU->CPU transfer
     cudaMallocHost(&ctx->h_positions, sizeof(Vector3f) * max_objects);
-    cudaMallocHost(&ctx->h_colliding, sizeof(bool) * max_objects);
 
     // Allocate GPU memory for physics objects
     cudaMalloc(&ctx->d_objects, sizeof(GPU_PhysicsObject) * max_objects);
     cudaMalloc(&ctx->d_shapes, sizeof(GPU_ShapeData) * max_objects);
     cudaMalloc(&ctx->d_collision_pairs, sizeof(int) * max_pairs * 2);
     cudaMalloc(&ctx->d_collision_results, sizeof(bool) * max_pairs);
-    cudaMalloc(&ctx->d_object_colliding, sizeof(bool) * max_objects);
     cudaMalloc(&ctx->d_positions_temp, sizeof(Vector3f) * max_objects);
 
     // Allocate buffer pool
@@ -308,7 +286,6 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
     if (ctx->d_shapes) cudaFree(ctx->d_shapes);
     if (ctx->d_collision_pairs) cudaFree(ctx->d_collision_pairs);
     if (ctx->d_collision_results) cudaFree(ctx->d_collision_results);
-    if (ctx->d_object_colliding) cudaFree(ctx->d_object_colliding);
     if (ctx->d_positions_temp) cudaFree(ctx->d_positions_temp);
 
     // Free buffer pool
@@ -333,7 +310,6 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
 
     // Free pinned host memory
     if (ctx->h_positions) cudaFreeHost(ctx->h_positions);
-    if (ctx->h_colliding) cudaFreeHost(ctx->h_colliding);
 
     // Free host memory
     if (ctx->h_objects) free(ctx->h_objects);
@@ -390,6 +366,30 @@ bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
     return true;
 }
 
+// CUDA kernel: Initialize polytopes ONCE at startup (called from gpu_gjk_set_collision_pairs)
+// GJK initializes support cache (s[], s_idx) itself - we only set numpoints and coord pointer
+__global__ void init_polytopes_once_kernel(GPU_ShapeData* shapes,
+                                           int* pairs,
+                                           gkFloat* all_coords,
+                                           gkPolytope* polytopes1,
+                                           gkPolytope* polytopes2,
+                                           int num_pairs)
+{
+    int p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= num_pairs) return;
+
+    int idA = pairs[p * 2 + 0];
+    int idB = pairs[p * 2 + 1];
+
+    // Setup polytope A (first in pair) - only geometry, GJK handles support cache
+    polytopes1[p].numpoints = shapes[idA].num_vertices;
+    polytopes1[p].coord = all_coords + (idA * 12 * 3);
+
+    // Setup polytope B (second in pair)
+    polytopes2[p].numpoints = shapes[idB].num_vertices;
+    polytopes2[p].coord = all_coords + (idB * 12 * 3);
+}
+
 bool gpu_gjk_set_collision_pairs(GPU_GJK_Context* context, int* pairs, int num_pairs)
 {
     if (!context || !pairs) return false;
@@ -415,47 +415,32 @@ bool gpu_gjk_set_collision_pairs(GPU_GJK_Context* context, int* pairs, int num_p
                sizeof(GPU_ShapeData) * context->num_objects,
                cudaMemcpyHostToDevice);
 
-    printf("Set %d collision pairs on GPU\n", num_pairs);
+    // Initialize polytopes ONCE (no longer done per-frame!)
+    int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    init_polytopes_once_kernel<<<pairBlocks, BLOCK_SIZE>>>(
+        context->d_shapes, context->d_collision_pairs,
+        context->buffer_pool->d_all_coords,
+        context->buffer_pool->d_polytopes1,
+        context->buffer_pool->d_polytopes2,
+        num_pairs);
+    cudaDeviceSynchronize();
+
+    printf("Set %d collision pairs on GPU (polytopes initialized)\n", num_pairs);
     return true;
 }
 
-// CUDA kernel: Setup polytopes from world coordinates for batch GJK
-// Note: GJK kernel expects separate arrays for poly1 and poly2
-__global__ void setup_polytopes_kernel(GPU_ShapeData* shapes,
-                                       GPU_PhysicsObject* objects,
-                                       int* pairs,
-                                       gkFloat* all_coords,
-                                       gkPolytope* polytopes1,
-                                       gkPolytope* polytopes2,
-                                       int num_pairs)
-{
-    int p = blockIdx.x * blockDim.x + threadIdx.x;
-    if (p >= num_pairs) return;
-
-    int idA = pairs[p * 2 + 0];
-    int idB = pairs[p * 2 + 1];
-
-    // Setup polytope A (first in pair)
-    polytopes1[p].numpoints = shapes[idA].num_vertices;
-    polytopes1[p].coord = all_coords + (idA * 12 * 3);
-    polytopes1[p].s[0] = polytopes1[p].s[1] = polytopes1[p].s[2] = 0.0f;
-    polytopes1[p].s_idx = 0;
-
-    // Setup polytope B (second in pair)
-    polytopes2[p].numpoints = shapes[idB].num_vertices;
-    polytopes2[p].coord = all_coords + (idB * 12 * 3);
-    polytopes2[p].s[0] = polytopes2[p].s[1] = polytopes2[p].s[2] = 0.0f;
-    polytopes2[p].s_idx = 0;
-}
-
 // CUDA kernel: Transform local vertices to world space for all objects
+// Optimized: 1D grid processing all vertices across all objects
 __global__ void transform_to_world_kernel(GPU_ShapeData* shapes,
                                          GPU_PhysicsObject* objects,
                                          gkFloat* world_coords,
                                          int num_objects)
 {
-    int obj_id = blockIdx.x;
-    int vert_id = threadIdx.x;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Each object has max 12 vertices, compute which object and vertex this thread handles
+    int obj_id = tid / 12;
+    int vert_id = tid % 12;
 
     if (obj_id >= num_objects) return;
 
@@ -491,27 +476,19 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
     int num_pairs = context->num_pairs;
 
     // Step 1: Physics update (parallel per object)
-    int objBlockSize = 256;
-    int objBlocks = (num_objs + objBlockSize - 1) / objBlockSize;
-    physics_update_kernel<<<objBlocks, objBlockSize>>>(context->d_objects, num_objs, *params);
+    int objBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    physics_update_kernel<<<objBlocks, BLOCK_SIZE>>>(context->d_objects, num_objs, *params);
 
-    // Step 2: Transform local vertices to world space (parallel per vertex per object)
-    // Launch with 1 block per object, 16 threads per block (12 vertices + padding)
-    transform_to_world_kernel<<<num_objs, 16>>>(
+    // Step 2: Transform local vertices to world space (optimized 1D grid)
+    // Total work: num_objs * 12 vertices per object
+    int total_vertices = num_objs * 12;
+    int transformBlocks = (total_vertices + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    transform_to_world_kernel<<<transformBlocks, BLOCK_SIZE>>>(
         context->d_shapes, context->d_objects,
         context->buffer_pool->d_all_coords, num_objs);
 
-    // Step 3: Setup polytope structures for batch GJK
-    int pairBlockSize = 256;
-    int pairBlocks = (num_pairs + pairBlockSize - 1) / pairBlockSize;
-    setup_polytopes_kernel<<<pairBlocks, pairBlockSize>>>(
-        context->d_shapes, context->d_objects, context->d_collision_pairs,
-        context->buffer_pool->d_all_coords,
-        context->buffer_pool->d_polytopes1,
-        context->buffer_pool->d_polytopes2,
-        num_pairs);
-
-    // Step 4: Batched GJK collision detection
+    // Step 3: Batched GJK collision detection (polytopes already initialized at startup!)
+    // Polytopes point to d_all_coords which was just updated with new positions
     // Each collision uses 16 threads (half-warp), so use 32 threads per block for 2 pairs
     const int threadsPerCollision = 16;
     const int collisionsPerBlock = 2;
@@ -525,24 +502,20 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
         context->buffer_pool->d_distances,
         num_pairs);
 
-    // Step 5: Check distances against collision epsilon
-    check_collision_kernel<<<pairBlocks, pairBlockSize>>>(
+    // Step 4: Check distances against collision epsilon
+    int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    check_collision_kernel<<<pairBlocks, BLOCK_SIZE>>>(
         context->buffer_pool->d_distances,
         context->d_collision_results,
         params->collisionEpsilon,
         num_pairs);
 
-    // Step 6: Collision response (parallel per colliding pair)
-    collision_response_kernel<<<pairBlocks, pairBlockSize>>>(
+    // Step 5: Collision response (parallel per colliding pair)
+    collision_response_kernel<<<pairBlocks, BLOCK_SIZE>>>(
         context->d_objects, context->d_collision_pairs,
         context->d_collision_results, num_pairs);
 
-    // Step 7: Aggregate collision flags per object
-    aggregate_collisions_kernel<<<objBlocks, objBlockSize>>>(
-        context->d_collision_pairs, context->d_collision_results,
-        context->d_object_colliding, num_pairs, num_objs);
-
-    cudaDeviceSynchronize();
+    // No sync needed - GPU->CPU transfer in get_render_data will implicitly sync
 
     return true;
 }
@@ -565,22 +538,17 @@ bool gpu_gjk_get_render_data(GPU_GJK_Context* context, GPU_RenderData* data)
     int num_objs = context->num_objects;
 
     // Extract positions from physics objects on GPU
-    int blockSize = 256;
-    int numBlocks = (num_objs + blockSize - 1) / blockSize;
-    extract_positions_kernel<<<numBlocks, blockSize>>>(
+    int numBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    extract_positions_kernel<<<numBlocks, BLOCK_SIZE>>>(
         context->d_objects, context->d_positions_temp, num_objs);
 
-    // Copy positions and collision flags from GPU to pinned host memory
+    // Copy positions from GPU to pinned host memory
     cudaMemcpy(context->h_positions, context->d_positions_temp,
                sizeof(Vector3f) * num_objs,
                cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(context->h_colliding, context->d_object_colliding,
-               sizeof(bool) * num_objs,
-               cudaMemcpyDeviceToHost);
-
     data->positions = context->h_positions;
-    data->is_colliding = context->h_colliding;
+    data->is_colliding = NULL;  // No longer tracking per-object collision flags
     data->num_objects = num_objs;
 
     return true;

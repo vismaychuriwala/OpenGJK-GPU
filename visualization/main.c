@@ -1,5 +1,6 @@
 #include "raylib.h"
 #include "gjk_integration.h"
+#include "sim_config.h"
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
@@ -18,7 +19,7 @@
 // - NUM_OBJECTS=10 → 45 pairs  (medium grid)
 // - NUM_OBJECTS=20 → 190 pairs (stress test)
 // - NUM_OBJECTS=50 → 1225 pairs (large benchmark)
-#define NUM_OBJECTS 50           // Number of physics objects
+#define NUM_OBJECTS 200           // Number of physics objects
 #define MAX_PAIRS ((NUM_OBJECTS * (NUM_OBJECTS - 1)) / 2)  // Compile-time constant for collision pairs
 
 // Define Physics Object structure
@@ -139,19 +140,60 @@ void auto_initialize_objects(PhysicsObject* objects, int num_objects) {
     }
 }
 
-// Basic camera controls (simplified - no mouse rotation)
-void UpdateCameraCustom(Camera3D* camera) {
-    // Keyboard movement
-    if (IsKeyDown(KEY_W)) camera->position.z -= 0.5f;
-    if (IsKeyDown(KEY_S)) camera->position.z += 0.5f;
-    if (IsKeyDown(KEY_A)) camera->position.x -= 0.5f;
-    if (IsKeyDown(KEY_D)) camera->position.x += 0.5f;
-    if (IsKeyDown(KEY_Q)) camera->position.y -= 0.5f;
-    if (IsKeyDown(KEY_E)) camera->position.y += 0.5f;
-    
-    // Reset camera
+// Camera controls with mouse rotation
+void UpdateCameraCustom(Camera3D* camera, float boundary) {
+    // Mouse rotation (right mouse button) - orbit around target
+    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        Vector2 mouseDelta = GetMouseDelta();
+
+        // Calculate current position relative to target
+        float dx = camera->position.x - camera->target.x;
+        float dy = camera->position.y - camera->target.y;
+        float dz = camera->position.z - camera->target.z;
+
+        // Horizontal rotation (Y-axis)
+        float angleH = mouseDelta.x * 0.003f;
+        float cosH = cosf(-angleH);
+        float sinH = sinf(-angleH);
+        float newX = dx * cosH - dz * sinH;
+        float newZ = dx * sinH + dz * cosH;
+        dx = newX;
+        dz = newZ;
+
+        // Vertical rotation (simple pitch with clamping)
+        float angleV = mouseDelta.y * 0.003f;
+        float radius = sqrtf(dx*dx + dy*dy + dz*dz);
+        float currentPitch = asinf(dy / radius);
+        float newPitch = currentPitch + angleV;
+
+        // Clamp pitch to avoid gimbal lock
+        if (newPitch > -1.5f && newPitch < 1.5f) {
+            float horizontalDist = sqrtf(dx*dx + dz*dz);
+            dy = radius * sinf(newPitch);
+            float newHorizontalDist = radius * cosf(newPitch);
+            float scale = newHorizontalDist / horizontalDist;
+            dx *= scale;
+            dz *= scale;
+        }
+
+        // Update camera position
+        camera->position.x = camera->target.x + dx;
+        camera->position.y = camera->target.y + dy;
+        camera->position.z = camera->target.z + dz;
+    }
+
+    // Keyboard movement (simple WASD controls)
+    float moveSpeed = 0.5f;
+    if (IsKeyDown(KEY_W)) camera->position.z -= moveSpeed;
+    if (IsKeyDown(KEY_S)) camera->position.z += moveSpeed;
+    if (IsKeyDown(KEY_A)) camera->position.x -= moveSpeed;
+    if (IsKeyDown(KEY_D)) camera->position.x += moveSpeed;
+    if (IsKeyDown(KEY_Q)) camera->position.y -= moveSpeed;
+    if (IsKeyDown(KEY_E)) camera->position.y += moveSpeed;
+
+    // Reset camera (scales with boundary size)
     if (IsKeyPressed(KEY_R)) {
-        camera->position = (Vector3){ 0.0f, 10.0f, 20.0f };
+        camera->position = (Vector3){ 0.0f, boundary * 0.8f, boundary * 1.6f };
         camera->target = (Vector3){ 0.0f, 0.0f, 0.0f };
         camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
     }
@@ -245,8 +287,8 @@ int main(void) {
         initial_objects[i] = objects[i];
     }
     
-    // Physics simulation variables
-    float deltaTime = 1.0f / 60.0f; // Fixed timestep for stable physics
+    // Physics simulation variables (using macros from sim_config.h)
+    float deltaTime = DELTA_TIME;
 
     // Collision detection arrays
     const int num_pairs = MAX_PAIRS;
@@ -289,14 +331,19 @@ int main(void) {
     }
 #endif
 
-    // GPU physics parameters
+    // GPU physics parameters (using macros from sim_config.h)
     GPU_PhysicsParams gpu_params;
-    gpu_params.gravity = (Vector3f){0.0f, -9.8f, 0.0f};
-    gpu_params.deltaTime = deltaTime;
-    gpu_params.dampingCoeff = 0.8f;
-    gpu_params.boundarySize = 15.0f;
-    gpu_params.collisionEpsilon = 1e-4f;
-    
+    gpu_params.gravity = (Vector3f){0.0f, GRAVITY_Y, 0.0f};
+    gpu_params.deltaTime = DELTA_TIME;
+    gpu_params.dampingCoeff = DAMPING_COEFF;
+    gpu_params.boundarySize = COMPUTE_BOUNDARY(NUM_OBJECTS);
+    gpu_params.collisionEpsilon = COLLISION_EPSILON;
+
+    // Update camera position to scale with boundary size
+    float boundary = gpu_params.boundarySize;
+    camera.position = (Vector3){ 0.0f, boundary * 0.8f, boundary * 1.6f };
+    camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+
     SetTargetFPS(60);
     
     // Main game loop
@@ -321,8 +368,8 @@ int main(void) {
             printf("Simulation Reset!\n");
         }
 
-        // Update camera
-        UpdateCameraCustom(&camera);
+        // Update camera (pass boundary for proper reset scaling)
+        UpdateCameraCustom(&camera, gpu_params.boundarySize);
 
         // Drawing
         BeginDrawing();
@@ -330,8 +377,10 @@ int main(void) {
 
             BeginMode3D(camera);
 
-            // Draw floor
-            DrawPlane((Vector3){0, 0, 0}, (Vector2){50, 50}, LIGHTGRAY);
+            // Draw floor (scales with boundary size)
+            float groundSize = gpu_params.boundarySize * 2.0f;
+            float groundY = -gpu_params.boundarySize;  // Ground at bottom of boundary box
+            DrawPlane((Vector3){0, groundY, 0}, (Vector2){groundSize, groundSize}, LIGHTGRAY);
 
 #ifdef USE_CUDA
             // Draw all objects using GPU render data
@@ -339,11 +388,8 @@ int main(void) {
                 // Update shape position for rendering
                 gjk_shapes[i].position = render_data.positions[i];
 
-                // Choose color based on collision state
-                Color drawColor = render_data.is_colliding[i] ? YELLOW : objects[i].color;
-
-                // Draw the solid polytope (icosahedron)
-                draw_polytope_solid(&gjk_shapes[i], drawColor);
+                // Draw the solid polytope (icosahedron) with original color
+                draw_polytope_solid(&gjk_shapes[i], objects[i].color);
             }
 #endif
             
@@ -365,34 +411,12 @@ int main(void) {
             char timing_text[100];
             sprintf(timing_text, "GPU Time: %.3f ms", gpu_time);
             DrawText(timing_text, 10, 40, 18, BLUE);
-
-            // Count total collisions from render data
-            int total_collisions = 0;
-            for (int i = 0; i < render_data.num_objects; i++) {
-                if (render_data.is_colliding[i]) total_collisions++;
-            }
-
-            if (total_collisions > 0) {
-                char collision_text[64];
-                sprintf(collision_text, "COLLISIONS: %d objects", total_collisions);
-                DrawText(collision_text, 10, 70, 24, RED);
-            } else {
-                DrawText("No collisions", 10, 70, 24, GREEN);
-            }
-
-            // Position info for first object
-            char posText[128];
-            sprintf(posText, "Pos[0]: (%.1f, %.1f, %.1f)",
-                    render_data.positions[0].x,
-                    render_data.positions[0].y,
-                    render_data.positions[0].z);
-            DrawText(posText, 10, 110, 14, GRAY);
 #endif
 
             // Controls
             DrawText("Controls:", 10, 140, 18, DARKGRAY);
             DrawText("SPACE: Reset simulation", 10, 165, 16, DARKGRAY);
-            DrawText("WASD+QE: Move camera | R: Reset camera", 10, 190, 16, DARKGRAY);
+            DrawText("WASD+QE: Move camera | Right Mouse: Rotate | R: Reset", 10, 190, 16, DARKGRAY);
             
         EndDrawing();
     }
