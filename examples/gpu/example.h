@@ -65,6 +65,30 @@ namespace GJK {
                             gkFloat* witness2);
 
         /**
+         * Computes collision information (penetration depth and witness points) using EPA algorithm only.
+         * Takes pre-computed simplices and distances from GJK as input and runs EPA to compute
+         * detailed collision information. Uses warp-parallel implementation (32 threads per collision).
+         * Handles all GPU memory allocation and transfers internally.
+         *
+         * @param n         Number of polytope pairs
+         * @param bd1       Array of first polytopes (host memory)
+         * @param bd2       Array of second polytopes (host memory)
+         * @param simplices Array of input simplices from GJK (host memory, will be updated with results)
+         * @param distances Array of input distances from GJK (host memory, will be updated with penetration depths)
+         * @param witness1   Array to store witness points on first polytope (n*3 floats, host memory)
+         * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
+         * @param contact_normals Optional array to store contact normals (n*3 floats, host memory, can be nullptr)
+         */
+        void computeCollisionInformation(int n,
+                            const gkPolytope* bd1,
+                            const gkPolytope* bd2,
+                            gkSimplex* simplices,
+                            gkFloat* distances,
+                            gkFloat* witness1,
+                            gkFloat* witness2,
+                            gkFloat* contact_normals = nullptr);
+
+        /**
          * Runs performance tests for all combinations of polytope counts and vertex counts.
          * Tests CPU, GPU, and warp-parallel GPU implementations and saves results to CSV.
          *
