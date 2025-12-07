@@ -228,6 +228,7 @@ int main(void) {
     int frame_count = 0;
     double last_time = glfwGetTime();
     double last_physics_time = last_time;
+    double last_frame_time = last_time;
     int fps = 0;
     int collision_count = 0;
     double physics_accumulator = 0.0;
@@ -248,9 +249,12 @@ int main(void) {
 
     // Main loop
     while (!glfwWindowShouldClose(window)) {
-        // Calculate FPS
+        // Calculate FPS and delta time
         frame_count++;
         double current_time = glfwGetTime();
+        float deltaTime = (float)(current_time - last_frame_time);
+        last_frame_time = current_time;
+
         if (current_time - last_time >= 1.0) {
             fps = frame_count;
             frame_count = 0;
@@ -280,8 +284,8 @@ int main(void) {
             camera_reset(&camera);
         }
 
-        // Update camera controls
-        camera_update_controls(&camera);
+        // Update camera controls with delta time for frame-rate independence
+        camera_update_controls(&camera, deltaTime);
 
         // Update camera matrices
         float aspect = (float)screenWidth / (float)screenHeight;

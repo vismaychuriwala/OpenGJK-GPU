@@ -21,7 +21,7 @@ void camera_update_matrices(Camera3D* camera, float aspect_ratio) {
         glm::radians(camera->fovy), aspect_ratio, 0.1f, 1000.0f);
 }
 
-void camera_update_controls(Camera3D* camera) {
+void camera_update_controls(Camera3D* camera, float deltaTime) {
     // Calculate current position relative to target
     float dx = camera->position.x - camera->target.x;
     float dy = camera->position.y - camera->target.y;
@@ -106,15 +106,16 @@ void camera_update_controls(Camera3D* camera) {
 
     // Keyboard movement (WASD controls in world coordinates)
     // Move both camera and target to pan the view without changing rotation
-    float moveSpeed = 0.5f;
+    // Speed in units per second (30 units/sec to match Raylib at 60 FPS with 0.5 speed)
+    float moveSpeed = 30.0f;  // units per second
     glm::vec3 movement(0.0f);
 
-    if (IsKeyDown(GLFW_KEY_W)) movement.z -= moveSpeed;  // Forward in world -Z
-    if (IsKeyDown(GLFW_KEY_S)) movement.z += moveSpeed;  // Backward in world +Z
-    if (IsKeyDown(GLFW_KEY_A)) movement.x -= moveSpeed;  // Left in world -X
-    if (IsKeyDown(GLFW_KEY_D)) movement.x += moveSpeed;  // Right in world +X
-    if (IsKeyDown(GLFW_KEY_Q)) movement.y -= moveSpeed;  // Down in world -Y
-    if (IsKeyDown(GLFW_KEY_E)) movement.y += moveSpeed;  // Up in world +Y
+    if (IsKeyDown(GLFW_KEY_W)) movement.z -= moveSpeed * deltaTime;  // Forward in world -Z
+    if (IsKeyDown(GLFW_KEY_S)) movement.z += moveSpeed * deltaTime;  // Backward in world +Z
+    if (IsKeyDown(GLFW_KEY_A)) movement.x -= moveSpeed * deltaTime;  // Left in world -X
+    if (IsKeyDown(GLFW_KEY_D)) movement.x += moveSpeed * deltaTime;  // Right in world +X
+    if (IsKeyDown(GLFW_KEY_Q)) movement.y -= moveSpeed * deltaTime;  // Down in world -Y
+    if (IsKeyDown(GLFW_KEY_E)) movement.y += moveSpeed * deltaTime;  // Up in world +Y
 
     // Apply movement to both camera and target (maintains orbit orientation)
     camera->position += movement;

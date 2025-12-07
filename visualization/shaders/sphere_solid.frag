@@ -15,9 +15,9 @@ void main() {
 
     float diffuse = max(dot(normal, lightDir), 0.0);
 
-    // Add ambient light so objects aren't completely black
-    float ambient = 0.3;
-    float lighting = ambient + diffuse * 0.7;
+    // Higher ambient light for brighter, more vibrant colors
+    float ambient = 0.6;
+    float lighting = ambient + diffuse * 0.5;
 
     FragColor = vec4(vColor.rgb * lighting, vColor.a);
 }

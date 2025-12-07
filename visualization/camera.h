@@ -22,7 +22,7 @@ void camera_init(Camera3D* camera, glm::vec3 position, glm::vec3 target, float f
 void camera_update_matrices(Camera3D* camera, float aspect_ratio);
 
 // Update camera based on user input (ported from main.c)
-void camera_update_controls(Camera3D* camera);
+void camera_update_controls(Camera3D* camera, float deltaTime);
 
 // Reset camera to default position
 void camera_reset(Camera3D* camera);
