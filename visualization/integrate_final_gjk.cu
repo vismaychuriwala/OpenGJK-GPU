@@ -171,18 +171,6 @@ __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
     float ny = dy / dist;
     float nz = dz / dist;
 
-    // Separate objects to prevent sticking
-    float overlap = (obj1->radius + obj2->radius) - dist;
-    if (overlap > 0.0f) {
-        obj1->position.x -= nx * overlap * 0.5f;
-        obj1->position.y -= ny * overlap * 0.5f;
-        obj1->position.z -= nz * overlap * 0.5f;
-
-        obj2->position.x += nx * overlap * 0.5f;
-        obj2->position.y += ny * overlap * 0.5f;
-        obj2->position.z += nz * overlap * 0.5f;
-    }
-
     // Relative velocity
     float relVx = obj2->velocity.x - obj1->velocity.x;
     float relVy = obj2->velocity.y - obj1->velocity.y;
