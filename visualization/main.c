@@ -2,6 +2,7 @@
 #include "gjk_integration.h"
 #include "sim_config.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <time.h>
 #include <string.h>
@@ -10,11 +11,6 @@
 #ifdef USE_CUDA
 #include "gpu_gjk_interface.h"
 #endif
-
-// Configuration
-
-#define NUM_OBJECTS 300           // Number of physics objects
-#define MAX_PAIRS ((NUM_OBJECTS * (NUM_OBJECTS - 1)) / 2)  // Compile-time constant for collision pairs
 
 // Define Physics Object structure
 typedef struct {
@@ -111,19 +107,29 @@ void auto_initialize_objects(PhysicsObject* objects, int num_objects) {
         float x_offset = -(grid_size - 1) * spacing / 2.0f;
         float z_offset = -(grid_size - 1) * spacing / 2.0f;
 
+        // Add small random noise to avoid exact overlaps (range: -0.2 to +0.2)
+        float noise_scale = 0.2f;
+        float pos_noise_x = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        float pos_noise_y = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        float pos_noise_z = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+
+        float vel_noise_x = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        float vel_noise_y = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        float vel_noise_z = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+
         char name[32];
         sprintf(name, "Obj %d", i);
 
         objects[i] = (PhysicsObject){
             .position = {
-                x_offset + col * spacing,
-                start_height + (i % 3) * 2.0f,  // Vary height slightly
-                z_offset + row * spacing
+                x_offset + col * spacing + pos_noise_x,
+                start_height + (i % 3) * 2.0f + pos_noise_y,
+                z_offset + row * spacing + pos_noise_z
             },
             .velocity = {
-                ((i % 3) - 1) * 1.0f,  // Vary X velocity: -1, 0, 1
-                0.0f,
-                ((i % 2) - 0.5f) * 2.0f  // Vary Z velocity: -1 or 1
+                ((i % 3) - 1) * 1.0f + vel_noise_x,
+                vel_noise_y,
+                ((i % 2) - 0.5f) * 2.0f + vel_noise_z
             },
             .acceleration = { 0.0f, -9.8f, 0.0f },  // Gravity
             .radius = 1.5f,
@@ -325,24 +331,10 @@ int main(void) {
     // Physics simulation variables (using macros from sim_config.h)
     float deltaTime = DELTA_TIME;
 
-    // Collision detection arrays
-    const int num_pairs = MAX_PAIRS;
-    int collision_pairs[MAX_PAIRS * 2];
-    bool collision_results[MAX_PAIRS];
-
-    // Generate all unique collision pairs
-    int pair_idx = 0;
-    for (int i = 0; i < NUM_OBJECTS; i++) {
-        for (int j = i + 1; j < NUM_OBJECTS; j++) {
-            collision_pairs[pair_idx * 2 + 0] = i;
-            collision_pairs[pair_idx * 2 + 1] = j;
-            pair_idx++;
-        }
-    }
-    
     // GPU initialization
     bool gpu_available = false;
     double gpu_time = 0;
+    int num_pairs_generated = 0;  // Will be updated each frame by dynamic pair generation
 
 #ifdef USE_CUDA
     GPU_GJK_Context* gpu_context = NULL;
@@ -356,10 +348,13 @@ int main(void) {
                                    objects[i].mass, objects[i].radius);
         }
 
-        // Set collision pairs
-        gpu_gjk_set_collision_pairs(gpu_context, collision_pairs, num_pairs);
+        // Sync registered objects to GPU device memory
+        gpu_gjk_sync_objects_to_device(gpu_context);
 
-        printf("GPU Physics Simulation Initialized!\n");
+        // NOTE: Collision pairs will be generated dynamically each frame using spatial grid
+        // No need to call gpu_gjk_set_collision_pairs() anymore
+
+        printf("GPU Physics Simulation Initialized with Dynamic Broad-Phase Culling!\n");
     } else {
         printf("GPU not available\n");
         return 1;
@@ -384,9 +379,14 @@ int main(void) {
     // Main game loop
     while (!WindowShouldClose()) {
 #ifdef USE_CUDA
-        // Run full physics simulation on GPU
         clock_t start = clock();
+
+        // Step 1: Dynamically generate collision pairs using spatial grid broad-phase culling
+        num_pairs_generated = gpu_gjk_update_collision_pairs_dynamic(gpu_context, &gpu_params);
+
+        // Step 2: Run full physics simulation on GPU (uses dynamically generated pairs)
         gpu_gjk_step_simulation(gpu_context, &gpu_params);
+
         clock_t end = clock();
         gpu_time = ((double)(end - start)) / CLOCKS_PER_SEC * 1000.0;
 
@@ -444,10 +444,16 @@ int main(void) {
             
             // GPU status and timing
 #ifdef USE_CUDA
-            DrawText("GPU PHYSICS", screenWidth - 150, 10, 20, GREEN);
-            char timing_text[100];
+            DrawText("GPU PHYSICS + BROAD-PHASE CULLING", screenWidth - 320, 10, 20, GREEN);
+            char timing_text[128];
             sprintf(timing_text, "GPU Time: %.3f ms", gpu_time);
             DrawText(timing_text, 10, 40, 18, BLUE);
+
+            char culling_text[128];
+            sprintf(culling_text, "Pairs: %d / %d (%.1f%% culled)",
+                    num_pairs_generated, MAX_PAIRS,
+                    100.0f * (1.0f - (float)num_pairs_generated / MAX_PAIRS));
+            DrawText(culling_text, 10, 60, 18, DARKGREEN);
 #endif
 
             

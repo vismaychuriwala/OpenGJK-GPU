@@ -47,6 +47,14 @@ bool gpu_gjk_get_render_data(GPU_GJK_Context* context, GPU_RenderData* data);
 // Reset simulation to initial state
 bool gpu_gjk_reset_simulation(GPU_GJK_Context* context);
 
+// Sync registered objects to GPU (call after all objects are registered)
+bool gpu_gjk_sync_objects_to_device(GPU_GJK_Context* context);
+
+// Dynamically generate collision pairs using spatial grid broad-phase culling
+// This should be called each frame before running GJK
+// Returns the number of pairs generated
+int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_PhysicsParams* params);
+
 #ifdef __cplusplus
 }
 #endif

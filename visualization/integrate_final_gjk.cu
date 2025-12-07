@@ -2,6 +2,7 @@
 #include "gpu_gjk_interface.h"
 #include "sim_config.h"
 #include "../GJK/gpu/openGJK.h"
+#include "scan_kernels.cuh"
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <math.h>
@@ -21,6 +22,12 @@ typedef struct {
     float mass;
     float radius;
 } GPU_PhysicsObject;
+
+// Spatial grid cell - stores object IDs in this cell
+typedef struct {
+    int objects[MAX_OBJECTS_PER_CELL];    // Object IDs in this cell
+    int count;                             // Number of objects in cell (0-32)
+} GridCell;
 
 // Persistent GPU buffer pool
 struct GPU_Buffer_Pool {
@@ -58,6 +65,17 @@ struct GPU_GJK_Context {
 
     // Persistent buffer pool for collision detection
     GPU_Buffer_Pool* buffer_pool;
+
+    // Spatial grid for broad-phase culling
+    GridCell* d_grid;                 // Device array [GRID_SIZE^3] = 8000 cells
+    int* d_pair_counts;               // Device array [max_objects] - pairs per object
+    int* d_pair_offsets;              // Device array [max_objects] - prefix sum of counts
+    int h_total_pairs;                // Host copy of total pairs generated
+
+    // Temp buffers for multi-block scan
+    int* d_block_sums;                // Per-block sums for scan
+    int* d_block_incr;                // Scanned block sums
+    int max_scan_blocks;              // Max blocks needed for scan
 };
 
 // CUDA kernel: Physics update for all objects
@@ -137,6 +155,170 @@ __global__ void build_world_coords_kernel(GPU_PhysicsObject* objects,
     world_coords[world_idx + 1] = local_vertices[local_idx + 1] + objects[obj_id].position.y;
     world_coords[world_idx + 2] = local_vertices[local_idx + 2] + objects[obj_id].position.z;
 }
+
+// ============================================================================
+// SPATIAL GRID KERNELS FOR BROAD-PHASE CULLING
+// ============================================================================
+
+// Note: Grid clearing is done with cudaMemset in the host code for better performance
+
+// Kernel 1: Insert objects into spatial grid
+__global__ void insert_objects_kernel(GPU_PhysicsObject* objects,
+                                      int num_objects,
+                                      GridCell* grid,
+                                      float cell_size,
+                                      float boundary)
+{
+    int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (obj_id >= num_objects) return;
+
+    Vector3f pos = objects[obj_id].position;
+
+    // Convert world position to grid cell coordinates
+    // Map from [-boundary, boundary] to [0, GRID_SIZE-1]
+    int cx = (int)floorf((pos.x + boundary) / cell_size);
+    int cy = (int)floorf((pos.y + boundary) / cell_size);
+    int cz = (int)floorf((pos.z + boundary) / cell_size);
+
+    // Clamp to grid bounds
+    cx = max(0, min(cx, SPATIAL_GRID_SIZE - 1));
+    cy = max(0, min(cy, SPATIAL_GRID_SIZE - 1));
+    cz = max(0, min(cz, SPATIAL_GRID_SIZE - 1));
+
+    // Calculate 1D cell index
+    int cell_idx = cx + cy * SPATIAL_GRID_SIZE + cz * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+
+    // Atomically insert object into cell
+    int slot = atomicAdd(&grid[cell_idx].count, 1);
+    if (slot < MAX_OBJECTS_PER_CELL) {
+        grid[cell_idx].objects[slot] = obj_id;
+    }
+    // If slot >= MAX_OBJECTS_PER_CELL, object is silently dropped (cell overflow)
+    // This is acceptable for broad-phase - we may miss some collisions but won't crash
+}
+
+// Kernel 2: Count pairs per object (Pass 1 of two-pass approach)
+__global__ void count_pairs_kernel(GPU_PhysicsObject* objects,
+                                   int num_objects,
+                                   GridCell* grid,
+                                   float cell_size,
+                                   float boundary,
+                                   int* pair_counts)
+{
+    int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (obj_id >= num_objects) return;
+
+    Vector3f pos = objects[obj_id].position;
+    int count = 0;
+
+    // Get object's cell coordinates
+    int cx = (int)floorf((pos.x + boundary) / cell_size);
+    int cy = (int)floorf((pos.y + boundary) / cell_size);
+    int cz = (int)floorf((pos.z + boundary) / cell_size);
+
+    // Clamp to grid bounds
+    cx = max(0, min(cx, SPATIAL_GRID_SIZE - 1));
+    cy = max(0, min(cy, SPATIAL_GRID_SIZE - 1));
+    cz = max(0, min(cz, SPATIAL_GRID_SIZE - 1));
+
+    // Check 27 neighboring cells (including self)
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx;
+                int ny = cy + dy;
+                int nz = cz + dz;
+
+                // Skip if out of bounds
+                if (nx < 0 || nx >= SPATIAL_GRID_SIZE) continue;
+                if (ny < 0 || ny >= SPATIAL_GRID_SIZE) continue;
+                if (nz < 0 || nz >= SPATIAL_GRID_SIZE) continue;
+
+                // Get neighbor cell
+                int cell_idx = nx + ny * SPATIAL_GRID_SIZE + nz * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+                GridCell* cell = &grid[cell_idx];
+
+                // Count pairs with objects in this cell
+                for (int i = 0; i < cell->count && i < MAX_OBJECTS_PER_CELL; i++) {
+                    int other_id = cell->objects[i];
+
+                    // Only count each pair once (avoid duplicates)
+                    if (other_id <= obj_id) continue;
+
+                    count++;
+                }
+            }
+        }
+    }
+
+    // Store count for this object
+    pair_counts[obj_id] = count;
+}
+
+// Kernel 3: Generate pairs using offsets from prefix sum (Pass 2 of two-pass approach)
+__global__ void generate_pairs_kernel(GPU_PhysicsObject* objects,
+                                       int num_objects,
+                                      GridCell* grid,
+                                      float cell_size,
+                                      float boundary,
+                                      int* pair_offsets,
+                                      int* pair_buffer)
+{
+    int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (obj_id >= num_objects) return;
+
+    Vector3f pos = objects[obj_id].position;
+    int write_offset = pair_offsets[obj_id];  // Where this object writes its pairs
+
+    // Get object's cell coordinates
+    int cx = (int)floorf((pos.x + boundary) / cell_size);
+    int cy = (int)floorf((pos.y + boundary) / cell_size);
+    int cz = (int)floorf((pos.z + boundary) / cell_size);
+
+    // Clamp to grid bounds
+    cx = max(0, min(cx, SPATIAL_GRID_SIZE - 1));
+    cy = max(0, min(cy, SPATIAL_GRID_SIZE - 1));
+    cz = max(0, min(cz, SPATIAL_GRID_SIZE - 1));
+
+    // Check 27 neighboring cells (including self)
+    int local_pair_idx = 0;
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx;
+                int ny = cy + dy;
+                int nz = cz + dz;
+
+                // Skip if out of bounds
+                if (nx < 0 || nx >= SPATIAL_GRID_SIZE) continue;
+                if (ny < 0 || ny >= SPATIAL_GRID_SIZE) continue;
+                if (nz < 0 || nz >= SPATIAL_GRID_SIZE) continue;
+
+                // Get neighbor cell
+                int cell_idx = nx + ny * SPATIAL_GRID_SIZE + nz * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+                GridCell* cell = &grid[cell_idx];
+
+                // Generate pairs with objects in this cell
+                for (int i = 0; i < cell->count && i < MAX_OBJECTS_PER_CELL; i++) {
+                    int other_id = cell->objects[i];
+
+                    // Only generate each pair once (avoid duplicates)
+                    if (other_id <= obj_id) continue;
+
+                    // Write pair to buffer at predetermined offset
+                    int global_pair_idx = write_offset + local_pair_idx;
+                    pair_buffer[global_pair_idx * 2 + 0] = obj_id;
+                    pair_buffer[global_pair_idx * 2 + 1] = other_id;
+                    local_pair_idx++;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// COLLISION DETECTION AND RESPONSE KERNELS
+// ============================================================================
 
 // CUDA kernel: Fused collision check and response (eliminates intermediate bool array)
 // Checks distance against epsilon and immediately applies collision response if colliding
@@ -246,9 +428,18 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
     cudaMalloc(&ctx->buffer_pool->d_simplices, sizeof(gkSimplex) * max_pairs);
     cudaMalloc(&ctx->buffer_pool->d_distances, sizeof(gkFloat) * max_pairs);
 
+    // Allocate spatial grid for broad-phase culling
+    int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+    cudaMalloc(&ctx->d_grid, sizeof(GridCell) * total_cells);
+    cudaMalloc(&ctx->d_pair_counts, sizeof(int) * max_objects);
+    cudaMalloc(&ctx->d_pair_offsets, sizeof(int) * max_objects);
+    ctx->h_total_pairs = 0;
+
     ctx->initialized = true;
     printf("GPU simulation context initialized (max_objects=%d, max_pairs=%d)\n",
            max_objects, max_pairs);
+    printf("Spatial grid: %dx%dx%d = %d cells\n",
+           SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, total_cells);
 
     return true;
 }
@@ -262,6 +453,11 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
     // Free device memory
     if (ctx->d_objects) cudaFree(ctx->d_objects);
     if (ctx->d_collision_pairs) cudaFree(ctx->d_collision_pairs);
+
+    // Free spatial grid
+    if (ctx->d_grid) cudaFree(ctx->d_grid);
+    if (ctx->d_pair_counts) cudaFree(ctx->d_pair_counts);
+    if (ctx->d_pair_offsets) cudaFree(ctx->d_pair_offsets);
 
     // Free buffer pool
     if (ctx->buffer_pool) {
@@ -434,28 +630,41 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
         context->buffer_pool->d_all_coords,
         num_objs);
 
-    // Step 3: Batched GJK collision detection (polytopes already initialized at startup!)
-    // Polytopes point to d_all_coords which was just updated with new positions
+    // Step 3: Initialize polytopes for current pairs (pairs change each frame with dynamic culling)
+    if (num_pairs > 0) {
+        int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        init_polytopes_once_kernel<<<pairBlocks, BLOCK_SIZE>>>(
+            context->d_collision_pairs,
+            context->buffer_pool->d_all_coords,
+            context->buffer_pool->d_polytopes1,
+            context->buffer_pool->d_polytopes2,
+            num_pairs,
+            12);  // All shapes are icosahedrons with 12 vertices
+    }
+
+    // Step 4: Batched GJK collision detection
     // Each collision uses 16 threads (half-warp), so use 32 threads per block for 2 pairs
     const int threadsPerCollision = 16;
     const int collisionsPerBlock = 2;
     const int threadsPerBlock = threadsPerCollision * collisionsPerBlock;  // 32
     int gjkBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
 
-    compute_minimum_distance<<<gjkBlocks, threadsPerBlock>>>(
-        context->buffer_pool->d_polytopes1,  // First polytopes [num_pairs]
-        context->buffer_pool->d_polytopes2,  // Second polytopes [num_pairs]
-        context->buffer_pool->d_simplices,
-        context->buffer_pool->d_distances,
-        num_pairs);
+    if (num_pairs > 0) {
+        compute_minimum_distance<<<gjkBlocks, threadsPerBlock>>>(
+            context->buffer_pool->d_polytopes1,  // First polytopes [num_pairs]
+            context->buffer_pool->d_polytopes2,  // Second polytopes [num_pairs]
+            context->buffer_pool->d_simplices,
+            context->buffer_pool->d_distances,
+            num_pairs);
 
-    // Step 4: Fused collision check + response (eliminates separate check kernel and bool array)
-    int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    check_and_respond_kernel<<<pairBlocks, BLOCK_SIZE>>>(
-        context->d_objects, context->d_collision_pairs,
-        context->buffer_pool->d_distances,
-        params->collisionEpsilon,
-        num_pairs);
+        // Step 5: Fused collision check + response
+        int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        check_and_respond_kernel<<<pairBlocks, BLOCK_SIZE>>>(
+            context->d_objects, context->d_collision_pairs,
+            context->buffer_pool->d_distances,
+            params->collisionEpsilon,
+            num_pairs);
+    }
 
     // No sync needed - GPU->CPU transfer in get_render_data will implicitly sync
 
@@ -502,6 +711,74 @@ bool gpu_gjk_reset_simulation(GPU_GJK_Context* context)
 
     printf("GPU simulation reset to initial state\n");
     return true;
+}
+
+bool gpu_gjk_sync_objects_to_device(GPU_GJK_Context* context)
+{
+    if (!context || !context->initialized) return false;
+
+    cudaMemcpy(context->d_objects, context->h_objects,
+               sizeof(GPU_PhysicsObject) * context->num_objects,
+               cudaMemcpyHostToDevice);
+
+    return true;
+}
+
+int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_PhysicsParams* params)
+{
+    if (!context || !context->initialized || !params) return 0;
+
+    int num_objs = context->num_objects;
+    float cell_size = COMPUTE_CELL_SIZE(params->boundarySize);
+
+    // Step 1: Clear spatial grid (use cudaMemset for efficiency)
+    int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+    cudaMemset(context->d_grid, 0, sizeof(GridCell) * total_cells);
+
+    // Step 2: Insert objects into spatial grid
+    int objBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    insert_objects_kernel<<<objBlocks, BLOCK_SIZE>>>(
+        context->d_objects, num_objs, context->d_grid,
+        cell_size, params->boundarySize);
+
+    // Step 3: Count pairs per object (Pass 1)
+    count_pairs_kernel<<<objBlocks, BLOCK_SIZE>>>(
+        context->d_objects, num_objs, context->d_grid,
+        cell_size, params->boundarySize, context->d_pair_counts);
+
+    // Step 4: Prefix sum to get write offsets
+    // For simplicity with small N (300), use single-block scan
+    int n_pow2 = next_power_of_2(num_objs);
+    int blockSize = n_pow2 / 2;  // Need n/2 threads for scan
+    if (blockSize > 512) blockSize = 512;  // Clamp to reasonable size
+
+    int sharedMemSize = (n_pow2 + CONFLICT_FREE_OFFSET(n_pow2)) * sizeof(int);
+    block_scan_kernel<<<1, blockSize, sharedMemSize>>>(
+        num_objs, context->d_pair_offsets, context->d_pair_counts, nullptr);
+
+    // Step 5: Get total pair count (last offset + last count)
+    int h_last_offset, h_last_count;
+    cudaMemcpy(&h_last_offset, context->d_pair_offsets + num_objs - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_last_count, context->d_pair_counts + num_objs - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    context->h_total_pairs = h_last_offset + h_last_count;
+    context->num_pairs = context->h_total_pairs;
+
+    // Check if we exceed max pairs
+    if (context->num_pairs > context->max_pairs) {
+        fprintf(stderr, "Warning: Generated %d pairs, but max is %d. Clamping.\n",
+                context->num_pairs, context->max_pairs);
+        context->num_pairs = context->max_pairs;
+    }
+
+    // Step 6: Generate actual pairs (Pass 2)
+    if (context->num_pairs > 0) {
+        generate_pairs_kernel<<<objBlocks, BLOCK_SIZE>>>(
+            context->d_objects, num_objs, context->d_grid,
+            cell_size, params->boundarySize,
+            context->d_pair_offsets, context->d_collision_pairs);
+    }
+
+    return context->num_pairs;
 }
 
 #ifdef __cplusplus
