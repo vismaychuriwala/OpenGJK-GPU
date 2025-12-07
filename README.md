@@ -304,6 +304,15 @@ The validation automatically compares the first 100 distance computations betwee
   * CUDA Toolkit: 13.0
   * Driver Version: 581.80
 
+## References
+
+* [CPU OpenGJK](https://github.com/MattiaMontanari/openGJK)
+* [Improving the GJK algorithm for faster and more reliable distance queries between convex objects](https://web.archive.org/web/20200320045859id_/https://ora.ox.ac.uk/objects/uuid:69c743d9-73de-4aff-8e6f-b4dd7c010907/download_file?safe_filename=GJK.PDF&file_format=application%2Fpdf&type_of_work=Journal+article)
+* [A Strange But Elegant Approach to a Surprisingly Hard Problem](https://www.youtube.com/watch?v=ajv46BSqcK4)
+* [The Gilbert–Johnson–Keerthi algorithm explained as simply as possible](https://computerwebsite.net/writing/gjk)
+* [Winterdev:](https://winter.dev/) [GJK](https://www.youtube.com/watch?v=MDusDn8oTSE), [EPA](https://www.youtube.com/watch?v=0XQ2FSz3EK8)
+* [Using CUDA Warp-Level Primitives](https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/)
+
 ## Deliverables
 * [Project Proposal](https://docs.google.com/document/d/14fZ2E0YpqXE-DzvDsl6Hdc9iFCNBl_NMRxxjJE2w3jY/edit?usp=sharing)
 * [Milestone 1](https://docs.google.com/presentation/d/1WPj8Xt3JGV5DWIja9NVG7UvrkLtkmIimTGchkGf9aNI/edit?usp=sharing)
