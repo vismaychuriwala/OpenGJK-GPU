@@ -223,14 +223,53 @@ void UpdateCameraCustom(Camera3D* camera, float boundary) {
     camera->position.y = camera->target.y + dy;
     camera->position.z = camera->target.z + dz;
 
-    // Keyboard movement (simple WASD controls)
+    // Keyboard movement (WASD controls in world coordinates)
+    // Move both camera and target to pan the view without changing rotation
     float moveSpeed = 0.5f;
-    if (IsKeyDown(KEY_W)) camera->position.z -= moveSpeed;
-    if (IsKeyDown(KEY_S)) camera->position.z += moveSpeed;
-    if (IsKeyDown(KEY_A)) camera->position.x -= moveSpeed;
-    if (IsKeyDown(KEY_D)) camera->position.x += moveSpeed;
-    if (IsKeyDown(KEY_Q)) camera->position.y -= moveSpeed;
-    if (IsKeyDown(KEY_E)) camera->position.y += moveSpeed;
+    Vector3 movement = { 0.0f, 0.0f, 0.0f };
+
+    if (IsKeyDown(KEY_W)) movement.z -= moveSpeed;  // Forward in world -Z
+    if (IsKeyDown(KEY_S)) movement.z += moveSpeed;  // Backward in world +Z
+    if (IsKeyDown(KEY_A)) movement.x -= moveSpeed;  // Left in world -X
+    if (IsKeyDown(KEY_D)) movement.x += moveSpeed;  // Right in world +X
+    if (IsKeyDown(KEY_Q)) movement.y -= moveSpeed;  // Down in world -Y
+    if (IsKeyDown(KEY_E)) movement.y += moveSpeed;  // Up in world +Y
+
+    // Apply movement to both camera and target (maintains orbit orientation)
+    camera->position.x += movement.x;
+    camera->position.y += movement.y;
+    camera->position.z += movement.z;
+    camera->target.x += movement.x;
+    camera->target.y += movement.y;
+    camera->target.z += movement.z;
+
+    // Mouse scroll for zoom (move camera toward/away from target)
+    float scroll = GetMouseWheelMove();
+    if (scroll != 0.0f) {
+        // Calculate direction from camera to target
+        float zoomDx = camera->target.x - camera->position.x;
+        float zoomDy = camera->target.y - camera->position.y;
+        float zoomDz = camera->target.z - camera->position.z;
+        float distance = sqrtf(zoomDx*zoomDx + zoomDy*zoomDy + zoomDz*zoomDz);
+
+        // Normalize direction
+        if (distance > 0.1f) {  // Prevent division by zero
+            zoomDx /= distance;
+            zoomDy /= distance;
+            zoomDz /= distance;
+
+            // Zoom speed (scales with current distance for smooth feel)
+            float zoomSpeed = distance * 0.1f;
+            float zoomAmount = scroll * zoomSpeed;
+
+            // Don't zoom too close (min distance = 2 units)
+            if (distance - zoomAmount > 2.0f || zoomAmount < 0.0f) {
+                camera->position.x += zoomDx * zoomAmount;
+                camera->position.y += zoomDy * zoomAmount;
+                camera->position.z += zoomDz * zoomAmount;
+            }
+        }
+    }
 
     // Reset camera (scales with boundary size)
     if (IsKeyPressed(KEY_R)) {
