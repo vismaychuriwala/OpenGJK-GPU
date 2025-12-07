@@ -59,11 +59,9 @@ struct GPU_GJK_Context {
 
     // Collision pair indices
     int* d_collision_pairs;           // Device array [num_pairs * 2]
-    bool* d_collision_results;        // Device array [num_pairs]
 
     // Render data (pinned host memory for fast GPU->CPU transfer)
     Vector3f* h_positions;            // Pinned host array [num_objects]
-    Vector3f* d_positions_temp;       // Device array for extracting positions [num_objects]
 
     // Persistent buffer pool for collision detection
     GPU_Buffer_Pool* buffer_pool;
@@ -147,16 +145,19 @@ __global__ void build_world_coords_kernel(GPU_PhysicsObject* objects,
     world_coords[world_idx + 2] = local_vertices[local_idx + 2] + objects[obj_id].position.z;
 }
 
-// CUDA kernel: Elastic collision response (matches CPU version)
-__global__ void collision_response_kernel(GPU_PhysicsObject* objects,
+// CUDA kernel: Fused collision check and response (eliminates intermediate bool array)
+// Checks distance against epsilon and immediately applies collision response if colliding
+__global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
                                          int* pairs,
-                                         bool* results,
+                                         gkFloat* distances,
+                                         float epsilon,
                                          int num_pairs)
 {
     int p = blockIdx.x * blockDim.x + threadIdx.x;
     if (p >= num_pairs) return;
 
-    if (!results[p]) return;
+    // Inline collision check - early exit if no collision
+    if (fabsf(distances[p]) > epsilon) return;
 
     int idA = pairs[p * 2 + 0];
     int idB = pairs[p * 2 + 1];
@@ -254,8 +255,6 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
     cudaMalloc(&ctx->d_objects, sizeof(GPU_PhysicsObject) * max_objects);
     cudaMalloc(&ctx->d_shapes, sizeof(GPU_ShapeData) * max_objects);
     cudaMalloc(&ctx->d_collision_pairs, sizeof(int) * max_pairs * 2);
-    cudaMalloc(&ctx->d_collision_results, sizeof(bool) * max_pairs);
-    cudaMalloc(&ctx->d_positions_temp, sizeof(Vector3f) * max_objects);
 
     // Allocate buffer pool
     ctx->buffer_pool = (GPU_Buffer_Pool*)malloc(sizeof(GPU_Buffer_Pool));
@@ -285,8 +284,6 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
     if (ctx->d_objects) cudaFree(ctx->d_objects);
     if (ctx->d_shapes) cudaFree(ctx->d_shapes);
     if (ctx->d_collision_pairs) cudaFree(ctx->d_collision_pairs);
-    if (ctx->d_collision_results) cudaFree(ctx->d_collision_results);
-    if (ctx->d_positions_temp) cudaFree(ctx->d_positions_temp);
 
     // Free buffer pool
     if (ctx->buffer_pool) {
@@ -456,18 +453,6 @@ __global__ void transform_to_world_kernel(GPU_ShapeData* shapes,
     world[vert_id * 3 + 2] = local[vert_id * 3 + 2] + objects[obj_id].position.z;
 }
 
-// CUDA kernel: Check collision distances against epsilon
-__global__ void check_collision_kernel(gkFloat* distances,
-                                      bool* results,
-                                      float epsilon,
-                                      int num_pairs)
-{
-    int p = blockIdx.x * blockDim.x + threadIdx.x;
-    if (p >= num_pairs) return;
-
-    results[p] = (fabsf(distances[p]) <= epsilon);
-}
-
 bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* params)
 {
     if (!context || !context->initialized || !params) return false;
@@ -502,33 +487,17 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
         context->buffer_pool->d_distances,
         num_pairs);
 
-    // Step 4: Check distances against collision epsilon
+    // Step 4: Fused collision check + response (eliminates separate check kernel and bool array)
     int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    check_collision_kernel<<<pairBlocks, BLOCK_SIZE>>>(
+    check_and_respond_kernel<<<pairBlocks, BLOCK_SIZE>>>(
+        context->d_objects, context->d_collision_pairs,
         context->buffer_pool->d_distances,
-        context->d_collision_results,
         params->collisionEpsilon,
         num_pairs);
-
-    // Step 5: Collision response (parallel per colliding pair)
-    collision_response_kernel<<<pairBlocks, BLOCK_SIZE>>>(
-        context->d_objects, context->d_collision_pairs,
-        context->d_collision_results, num_pairs);
 
     // No sync needed - GPU->CPU transfer in get_render_data will implicitly sync
 
     return true;
-}
-
-// CUDA kernel: Extract positions from physics objects for rendering
-__global__ void extract_positions_kernel(GPU_PhysicsObject* objects,
-                                        Vector3f* positions,
-                                        int num_objects)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= num_objects) return;
-
-    positions[i] = objects[i].position;
 }
 
 bool gpu_gjk_get_render_data(GPU_GJK_Context* context, GPU_RenderData* data)
@@ -537,15 +506,15 @@ bool gpu_gjk_get_render_data(GPU_GJK_Context* context, GPU_RenderData* data)
 
     int num_objs = context->num_objects;
 
-    // Extract positions from physics objects on GPU
-    int numBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    extract_positions_kernel<<<numBlocks, BLOCK_SIZE>>>(
-        context->d_objects, context->d_positions_temp, num_objs);
-
-    // Copy positions from GPU to pinned host memory
-    cudaMemcpy(context->h_positions, context->d_positions_temp,
-               sizeof(Vector3f) * num_objs,
-               cudaMemcpyDeviceToHost);
+    // Use strided memcpy to extract positions directly from GPU_PhysicsObject array
+    // cudaMemcpy2D can copy position field (12 bytes) with stride of sizeof(GPU_PhysicsObject)
+    cudaMemcpy2D(context->h_positions,                    // dst
+                 sizeof(Vector3f),                        // dst pitch (contiguous)
+                 context->d_objects,                      // src (position is first field, offset 0)
+                 sizeof(GPU_PhysicsObject),               // src pitch (stride between objects)
+                 sizeof(Vector3f),                        // width (bytes to copy per row)
+                 num_objs,                                // height (number of rows = objects)
+                 cudaMemcpyDeviceToHost);
 
     data->positions = context->h_positions;
     data->is_colliding = NULL;  // No longer tracking per-object collision flags
