@@ -1,31 +1,44 @@
+# OpenGJK Visualization
 
+Two visualization options: **OpenGL** (recommended, faster) and **Raylib** (legacy).
 
-## 1. Install Dependencies
+## Requirements
 
-### **Raylib**
-- Download Raylib for Windows from: https://github.com/raysan5/raylib/releases
-- Extract to `C:\raylib\`
-- Should have: `C:\raylib\include\` and `C:\raylib\lib\raylib.lib`
+### Compiler
+- **Visual Studio 2022/2026** with C++ build tools
+- **CUDA Toolkit 13.0+** (default: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0`)
+- Must use **x64 Native Tools Command Prompt**
 
-### **CUDA Toolkit**
-- Download from: https://developer.nvidia.com/cuda-downloads
-- Install to default location: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0` (or later)
-- If using a different path, update `CUDA_PATH` in `build_final.bat`
-- **Note**: Using Visual Studio 2026 requires the `-allow-unsupported-compiler` flag (already added to build script)
+### Libraries
 
-### **Visual Studio**
-- Requires Visual Studio 2022 or 2026 with C++ build tools
-- Must use "x64 Native Tools Command Prompt" (not regular Command Prompt)
-- The build script expects `cl.exe` (MSVC compiler) and `nvcc` (CUDA compiler) in PATH
+**OpenGL version:**
+- **GLFW 3.4** - Download from https://www.glfw.org/download.html, extract to `C:\glfw-3.4.bin.WIN64`
+- **GLM** - Download from https://github.com/g-truc/glm/releases, extract to `C:\glm`
+- **GLAD** - Already included in `glad/` folder (generated from https://glad.dav1d.de/)
 
-## 2. Build & Run
+**Raylib version (legacy):**
+- **Raylib** - Download from https://github.com/raysan5/raylib/releases, extract to `C:\raylib` (needs `include/` and `lib/raylib.lib`)
 
+## Build & Run
+
+### OpenGL Version (Recommended)
 ```cmd
-# Open "x64 Native Tools Command Prompt for VS 2022"
-# (Finds compiler automatically)
+cd visualization
+build_opengl.bat
+gjk_visualizer_opengl.exe
+```
 
-cd OpenGJK-GPU\visualization
+### Raylib Version (Legacy)
+```cmd
+cd visualization\old_raylib
 build_final.bat
 gjk_visualizer_gpu_only.exe
 ```
 
+## Controls
+- **WASD** - Move camera
+- **Q/E** - Up/Down
+- **Mouse** - Rotate view (hold left button)
+- **Scroll** - Zoom
+- **SPACE** - Reset simulation
+- **W key** - Toggle wireframe (OpenGL only)

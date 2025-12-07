@@ -24,13 +24,16 @@ if exist "%GLM_PATH%\include\glm\glm.hpp" (
 )
 set GLAD_PATH=glad
 
+REM Create build directory if it doesn't exist
+if not exist build mkdir build
+
 REM Auto-detect GPU architecture (same as build_final.bat)
 echo Step 0: Auto-detecting GPU architecture...
-nvcc -allow-unsupported-compiler detect_gpu_arch.cu -o detect_gpu_arch.exe >nul 2>nul
+nvcc -allow-unsupported-compiler utils\detect_gpu_arch.cu -o build\detect_gpu_arch.exe >nul 2>nul
 if %errorlevel% equ 0 (
-    detect_gpu_arch.exe > gpu_arch.tmp
-    set /p GPU_ARCH=<gpu_arch.tmp
-    del detect_gpu_arch.exe gpu_arch.tmp
+    build\detect_gpu_arch.exe > build\gpu_arch.tmp
+    set /p GPU_ARCH=<build\gpu_arch.tmp
+    del build\detect_gpu_arch.exe build\gpu_arch.tmp
     echo Detected GPU architecture: %GPU_ARCH%
 ) else (
     echo WARNING: Could not auto-detect GPU, defaulting to sm_86
@@ -41,7 +44,7 @@ echo Step 1: Compiling GLAD OpenGL loader...
 cl /c /MD ^
     /I"%GLAD_PATH%\include" ^
     "%GLAD_PATH%\src\glad.c" ^
-    /Fo:glad.obj
+    /Fo:build\glad.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile GLAD
@@ -53,8 +56,8 @@ echo Step 2: Compiling input handling module...
 cl /c /MD /EHsc /std:c++17 ^
     /I"%GLFW_PATH%\include" ^
     /I"%GLAD_PATH%\include" ^
-    input.cpp ^
-    /Fo:input.obj
+    rendering\input.cpp ^
+    /Fo:build\input.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile input.cpp
@@ -67,8 +70,8 @@ cl /c /MD /EHsc /std:c++17 ^
     /I"%GLFW_PATH%\include" ^
     /I"%GLM_INCL%" ^
     /I"%GLAD_PATH%\include" ^
-    camera.cpp ^
-    /Fo:camera.obj
+    rendering\camera.cpp ^
+    /Fo:build\camera.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile camera.cpp
@@ -80,8 +83,8 @@ echo Step 4: Compiling OpenGL renderer...
 cl /c /MD /EHsc /std:c++17 ^
     /I"%GLAD_PATH%\include" ^
     /I"%GLM_INCL%" ^
-    opengl_renderer.cpp ^
-    /Fo:opengl_renderer.obj
+    rendering\opengl_renderer.cpp ^
+    /Fo:build\opengl_renderer.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile opengl_renderer.cpp
@@ -97,7 +100,7 @@ nvcc -allow-unsupported-compiler -arch=%GPU_ARCH% -c ^
     -I"..\GJK\gpu" ^
     -I"..\GJK" ^
     -I"." ^
-    -o openGJK_gpu.obj
+    -o build\openGJK_gpu.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile openGJK.cu
@@ -113,7 +116,7 @@ nvcc -allow-unsupported-compiler -arch=%GPU_ARCH% -c ^
     -I"..\GJK\gpu" ^
     -I"..\GJK" ^
     -I"." ^
-    -o gpu_gjk_bridge.obj
+    -o build\gpu_gjk_bridge.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile integrate_final_gjk.cu
@@ -125,7 +128,7 @@ echo Step 7: Compiling CPU GJK (fallback)...
 cl /c /MD ^
     /I"..\GJK\cpu" ^
     ..\GJK\cpu\openGJK.c ^
-    /Fo:openGJK.obj
+    /Fo:build\openGJK.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile openGJK.c
@@ -138,7 +141,7 @@ cl /c /MD /DUSE_CUDA ^
     /I"%CUDA_PATH%\include" ^
     /I"..\GJK\cpu" ^
     gjk_integration.c ^
-    /Fo:gjk_integration.obj
+    /Fo:build\gjk_integration.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile gjk_integration.c
@@ -155,7 +158,7 @@ cl /c /MD /EHsc /std:c++17 /DUSE_CUDA ^
     /I"..\GJK\cpu" ^
     /I"." ^
     main_opengl.cpp ^
-    /Fo:main_opengl.obj
+    /Fo:build\main_opengl.obj
 
 if errorlevel 1 (
     echo Error: Failed to compile main_opengl.cpp
@@ -165,15 +168,15 @@ if errorlevel 1 (
 echo.
 echo Step 10: Linking final executable...
 link /OUT:gjk_visualizer_opengl.exe ^
-    main_opengl.obj ^
-    glad.obj ^
-    input.obj ^
-    camera.obj ^
-    opengl_renderer.obj ^
-    gjk_integration.obj ^
-    openGJK.obj ^
-    gpu_gjk_bridge.obj ^
-    openGJK_gpu.obj ^
+    build\main_opengl.obj ^
+    build\glad.obj ^
+    build\input.obj ^
+    build\camera.obj ^
+    build\opengl_renderer.obj ^
+    build\gjk_integration.obj ^
+    build\openGJK.obj ^
+    build\gpu_gjk_bridge.obj ^
+    build\openGJK_gpu.obj ^
     "%GLFW_PATH%\lib-vc2022\glfw3.lib" ^
     opengl32.lib ^
     gdi32.lib ^

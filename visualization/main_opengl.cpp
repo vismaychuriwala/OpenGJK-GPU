@@ -7,9 +7,9 @@
 #include <cstring>
 #include <cmath>
 
-#include "input.h"
-#include "camera.h"
-#include "opengl_renderer.h"
+#include "rendering/input.h"
+#include "rendering/camera.h"
+#include "rendering/opengl_renderer.h"
 #include "sim_config.h"
 #include "gjk_integration.h"
 

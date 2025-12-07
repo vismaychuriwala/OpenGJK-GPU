@@ -2,7 +2,7 @@
 #include "gpu_gjk_interface.h"
 #include "sim_config.h"
 #include "../GJK/gpu/openGJK.h"
-#include "scan_kernels.cuh"
+#include "utils/scan_kernels.cuh"
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <math.h>

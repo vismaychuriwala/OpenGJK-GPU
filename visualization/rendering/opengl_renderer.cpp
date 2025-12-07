@@ -1,5 +1,5 @@
 #include "opengl_renderer.h"
-#include "sim_config.h"
+#include "../sim_config.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
