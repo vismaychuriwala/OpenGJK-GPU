@@ -18,7 +18,7 @@ namespace GJK {
          * @param simplices Array to store resulting simplices (host memory)
          * @param distances Array to store distances (host memory)
          */
-        void computeDistances(int n,
+        void computeDistances(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -40,7 +40,7 @@ namespace GJK {
          * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
          * @param contact_normals Optional array to store contact normals from bd1 to bd2 (n*3 floats, host memory, can be nullptr)
          */
-        void computeCollisionInformation(int n,
+        void computeCollisionInformation(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -65,7 +65,7 @@ namespace GJK {
          * @param witness1   Array to store witness points on first polytope (n*3 floats, host memory)
          * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
          */
-        void computeGJKAndEPA(int n,
+        void computeGJKAndEPA(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -86,9 +86,9 @@ namespace GJK {
          * @param outputFile            Path to output CSV file
          */
         void testing(const int* numPolytopesArray,
-                     int numPolytopesArraySize,
+                     const int numPolytopesArraySize,
                      const int* numVerticesArray,
-                     int numVerticesArraySize,
+                     const int numVerticesArraySize,
                      const char* outputFile);
 
         /**

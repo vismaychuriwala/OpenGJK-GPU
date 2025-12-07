@@ -1696,11 +1696,11 @@ __device__ inline static void support_parallel(gkPolytope* body,
 }
 
 __global__ void compute_minimum_distance(
-  gkPolytope* polytypes1,
-  gkPolytope* polytypes2,
+  const gkPolytope* polytypes1,
+  const gkPolytope* polytypes2,
   gkSimplex* simplices,
   gkFloat* distances,
-  int n) {
+  const int n) {
 
   // Calculate which collision this half-warp handles
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -2294,14 +2294,14 @@ typedef struct {
 // ENTRY POINT TO EPA CALL
 // Main EPA kernel - one warp per collision
 __global__ void compute_epa(
-  gkPolytope* polytopes1,
-  gkPolytope* polytopes2,
+  const gkPolytope* polytopes1,
+  const gkPolytope* polytopes2,
   gkSimplex* simplices,
   gkFloat* distances,
   gkFloat* witness1,
   gkFloat* witness2,
   gkFloat* contact_normals,
-  int n) {
+  const int n) {
 
   // Calculate which collision this warp handles
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;

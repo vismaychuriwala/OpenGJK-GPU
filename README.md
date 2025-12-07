@@ -31,8 +31,8 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
 
 3. **Kernel Signature**: Changed from CPU function to `__global__` kernel:
    ```cuda
-   __global__ void compute_minimum_distance(gkPolytope* polytopes1, gkPolytope* polytopes2,
-                                             gkSimplex* simplices, gkFloat* distances, int n);
+   __global__ void compute_minimum_distance(const gkPolytope* polytopes1, const gkPolytope* polytopes2,
+                                             gkSimplex* simplices, gkFloat* distances, const int n);
    ```
 
 4. **Performance Optimization**: Changed to copy-by-value for polytopes and simplices to keep data in registers/local memory instead of global memory
@@ -70,7 +70,7 @@ The CPU baseline in `GJK/cpu/` was adapted from the original openGJK to use the 
  * @param simplices Array to store resulting simplices (host memory)
  * @param distances Array to store resulting distances (host memory)
  */
-void computeDistances(int n,
+void computeDistances(const int n,
                     const gkPolytope* bd1,
                     const gkPolytope* bd2,
                     gkSimplex* simplices,
@@ -91,7 +91,7 @@ void computeDistances(int n,
  * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
  * @param contact_normals Optional array to store contact normals from bd1 to bd2 (n*3 floats, host memory, can be nullptr)
  */
-void computeCollisionInformation(int n,
+void computeCollisionInformation(const int n,
                     const gkPolytope* bd1,
                     const gkPolytope* bd2,
                     gkSimplex* simplices,
