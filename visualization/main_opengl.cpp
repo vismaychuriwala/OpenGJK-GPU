@@ -245,6 +245,7 @@ int main(void) {
     std::printf("Left Mouse: Drag to rotate\n");
     std::printf("Mouse Scroll: Zoom\n");
     std::printf("R: Reset camera\n");
+    std::printf("F: Toggle wireframe\n");
     std::printf("ESC: Exit\n\n");
 
     // Main loop
@@ -282,6 +283,12 @@ int main(void) {
         // Reset camera
         if (IsKeyPressed(GLFW_KEY_R)) {
             camera_reset(&camera);
+        }
+
+        // Toggle wireframe
+        if (IsKeyPressed(GLFW_KEY_F)) {
+            renderer_toggle_wireframe(&renderer);
+            std::printf("Wireframe: %s\n", renderer.wireframe_enabled ? "ON" : "OFF");
         }
 
         // Update camera controls with delta time for frame-rate independence
