@@ -6,9 +6,8 @@
 //    ___  _ __   ___ _ __ | |  __     | | ' /                                    //
 //   / _ \| '_ \ / _ \ '_ \| | |_ |_   | |  <                                     //
 //  | (_) | |_) |  __/ | | | |__| | |__| | . \                                    //
-//   \___/| .__/ \___|_| |_|\_____|\____/|_|\_\                                   //
+//   \___/| .__/ \___/|_| |_|\_____|\____/|_|\_\                                   //
 //        | |                                                                     //
-//        |_|                                                                     //
 //                                                                                //
 // Copyright 2022 Mattia Montanari, University of Oxford                          //
 //                                                                                //
@@ -92,7 +91,7 @@ readinput(const char* inputfile, gkFloat** pts, int* out) {
 }
 
 /**
- * @brief Main program of example1_c (described in Section 3.1 of the paper).
+ * @brief Main program demonstrating GJK distance computation using GPU API.
  *
  */
 int
@@ -159,3 +158,4 @@ main() {
 
   return (0);
 }
+

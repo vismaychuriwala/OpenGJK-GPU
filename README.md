@@ -159,9 +159,10 @@ To switch between 32-bit (float) and 64-bit (double) precision, edit [GJK/common
 
 ## Getting Started With OpenGJK-GPU
 
-These steps walk you through building and running one of our examples uses of GJK.
+These steps walk you through building and running our example programs that demonstrate how to use the GJK and EPA APIs.
 
-This can be found in **`examples/usage/main.c`** and is a simple C/C++ example demonstrating basic GJK distance computation using the GPU API
+These can be found in **`examples/usage/`** and are simple C/C++ examples 
+demonstrating basic GJK and EPA collision computation using the GPU API
 
 ### Prerequisites
 
@@ -181,7 +182,7 @@ git clone https://github.com/vismaychuriwala/OpenGJK-GPU.git
 cd OpenGJK-GPU
 ```
 
-Then use these commands to build and run the example:
+Then use these commands to build the examples:
 
 **On Windows:**
 ```cmd
@@ -189,12 +190,62 @@ cmake -E make_directory build
 cmake -E chdir build cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build build --config Release
 cd build\bin\Release
-example_lib_opengjk_ce.exe
+```
+
+**On Linux/Mac:**
+```bash
+cmake -E make_directory build
+cmake -E chdir build cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake --build build
+cd build/bin
+```
+
+### Running the Examples
+
+**Note:** Make sure you're in the `build\bin\Release` directory (Windows) or `build/bin` directory (Linux/Mac) before running the executables.
+
+#### GJK Example (`GJKUsage`)
+
+This example demonstrates basic GJK distance computation using the GPU API. It reads two polytopes from input files and computes the minimum distance between them.
+
+**On Windows:**
+```cmd
+GJKUsage.exe
+```
+
+**On Linux/Mac:**
+```bash
+./GJKUsage
 ```
 
 The successful output should be:
 ```
 Distance between bodies 3.653650
+Witnesses: (1.025173, 1.490318, 0.255463) and (-1.025173, -1.490318, -0.255463)
+```
+
+#### EPA Example (`EPAUsage`)
+
+This example demonstrates using GJK followed by EPA to compute detailed collision information. It creates two cubes (one rotated) and shows how to use `computeDistances` followed by `computeCollisionInformation` to get penetration depth and contact normals.
+
+**On Windows:**
+```cmd
+cd build\bin\Release
+EPAUsage.exe
+```
+
+**On Linux/Mac:**
+```bash
+cd build/bin
+./EPAUsage
+```
+
+The successful output should show:
+```
+Penetration depth: 1.500000
+Witness point on cube 1: (1.000000, 0.500000, 0.707107)
+Witness point on cube 2: (-0.500000, 0.500000, 0.707107)
+Contact normal (from cube 1 to cube 2): (1.000000, -0.000000, 0.000000)
 ```
 
 ## Graphs
@@ -310,7 +361,7 @@ The validation automatically compares the first 100 distance computations betwee
 * [Improving the GJK algorithm for faster and more reliable distance queries between convex objects](https://web.archive.org/web/20200320045859id_/https://ora.ox.ac.uk/objects/uuid:69c743d9-73de-4aff-8e6f-b4dd7c010907/download_file?safe_filename=GJK.PDF&file_format=application%2Fpdf&type_of_work=Journal+article)
 * [A Strange But Elegant Approach to a Surprisingly Hard Problem](https://www.youtube.com/watch?v=ajv46BSqcK4)
 * [The Gilbert–Johnson–Keerthi algorithm explained as simply as possible](https://computerwebsite.net/writing/gjk)
-* [Winterdev:](https://winter.dev/) [GJK](https://www.youtube.com/watch?v=MDusDn8oTSE), [EPA](https://www.youtube.com/watch?v=0XQ2FSz3EK8)
+* [Winterdev:](https://winter.dev/) [GJK,](https://www.youtube.com/watch?v=MDusDn8oTSE) [EPA](https://www.youtube.com/watch?v=0XQ2FSz3EK8)
 * [Using CUDA Warp-Level Primitives](https://developer.nvidia.com/blog/using-cuda-warp-level-primitives/)
 
 ## Deliverables

@@ -545,8 +545,7 @@ namespace GJK {
             // Open CSV file to write results to
             FILE* fp = nullptr;
 #ifdef WIN32
-            errno_t err;
-            if ((err = fopen_s(&fp, outputFile, "w")) != 0) {
+            if (fopen_s(&fp, outputFile, "w") != 0) {
 #else
             if ((fp = fopen(outputFile, "w")) == NULL) {
 #endif
@@ -650,7 +649,7 @@ namespace GJK {
                     float gpu_time_avg = gpu_time_sum / NUM_RUNS;
 
                     // Write average results to CSV
-                    fprintf(fp, "%d,%d,%.6f,%.6f,%.6f\n", 
+                    fprintf(fp, "%d,%d,%.6f,%.6f\n", 
                             numPolytopes, numVertices, cpu_time_avg, gpu_time_avg);
                 }
             }
