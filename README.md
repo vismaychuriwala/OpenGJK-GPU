@@ -188,6 +188,12 @@ This abstraction allows users to focus on their application logic without worryi
 
 ### Performance
 
+|![GJK Runtime GPU VS CPU Varying Number of Vertices](images/chart1_vertices_runtime.png)|![GJK Runtime GPU VS CPU Varying Number of Polytopes](images/chart2_polytopes_runtime.png)|
+|:--:|:--:|
+|*GJK Runtime GPU VS CPU Varying Number of Vertices*|*GJK Runtime GPU VS CPU Varying Number of Polytopes*|
+
+Performance benchmarks demonstrate significant GPU acceleration across varying problem sizes. When testing 1000 polytope pairs with increasing vertex complexity, the GPU achieves speedups ranging from **7x** at 50 vertices to a peak of **37x** at 1000 vertices per polytope, before decreasing to **16x** at 5000 vertices. This indicates optimal GPU efficiency at moderate vertex counts where the workload is substantial enough to leverage parallelism without becoming memory-bound. When varying the number of polytope pairs while keeping vertex count fixed at 500, the GPU advantage scales consistently with problem size—starting close to **2x speedup** at 50 polytopes and reaching **27x speedup** at 50,000 polytopes. This scaling behavior demonstrates the GPU's strength in handling massively parallel workloads where each polytope pair collision check can be processed independently. Overall, GPU-accelerated GJK is particularly beneficial for large-scale collision detection scenarios typical in physics simulations and game engines, where many polytope pairs must be processed simultaneously.
+
 
 ## Visualization
 |![1000 Polytopes Collision Simulation](images/CollisionGif.gif)|![1000 Polytopes Collision Simulation](images/CollisionGif2.gif)|
