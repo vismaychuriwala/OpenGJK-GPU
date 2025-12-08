@@ -147,13 +147,44 @@ To switch between 32-bit (float) and 64-bit (double) precision, edit `GJK/common
 
 ### Key Features
 
-1. **Warp-Parallel Execution**: GPU kernels use warp-level parallelism (16 threads per collision for GJK, 32 threads for EPA) to parallelize support function calls and sub-algorithms using `__shfl_sync()` operations.
+#### 1. Warp-Parallel Execution
 
-2. **Flattened Memory Layout**: Polytopes use a single contiguous array `gkFloat* coord` instead of double pointers for efficient GPU memory access.
+Our GPU kernels leverage CUDA warp-level parallelism to achieve significant performance improvements. Each GJK collision pair is processed by a dedicated half warp (16 threads) while EPA uses a full warp (32 threads), with threads collaborating to parallelize computationally expensive operations:
 
-3. **Separate GJK/EPA API**: GJK and EPA can be called independently, allowing users to run GJK first and conditionally run EPA only when collisions are detected.
+- **GJK Algorithm**: Uses 16 threads per collision to parallelize expensive support function calls and sub-distance algorithms. Threads within a warp use `__shfl_sync()` operations to share data and perform parallel reductions, eliminating the need for shared memory synchronization.
 
-4. **Automatic Memory Management**: All GPU memory allocation and transfers are handled internally by the wrapper functions.
+- **EPA Algorithm**: Uses all 32 threads of a warp to parallelize face normal computation and closest-face searches. Face normals and distances are computed in parallel across threads, with warp shuffles used for efficient reduction to find the global minimum.
+
+This two-level parallelism (across collisions and within each collision) maximizes GPU utilization and minimizes memory access overhead.
+
+|![GPU GJK Block Diagram](images/GPUGJKImprovedBlockDiagram.png)|
+|:--:|
+|*GPU GJK Implementation Block Diagram - showing warp-parallel execution structure*|
+
+#### 2. Separate GJK/EPA API
+
+The API design separates GJK and EPA into independent functions, providing flexibility for different use cases:
+
+- **`computeDistances()`**: Performs GJK distance computation only. Fast and efficient for collision detection when penetration depth is not needed.
+
+- **`computeCollisionInformation()`**: Performs EPA using pre-computed GJK results. Can be called conditionally only when collisions are detected, avoiding unnecessary computation for separated objects.
+
+This separation allows users to optimize their collision detection pipeline by running EPA only when needed, reducing computational overhead for non-colliding objects.
+
+|![GJK EPA Interface](images/GJKEPAInterface.png)|
+|:--:|
+|*GJK/EPA Interface Diagram - showing the sequential workflow*|
+
+#### 3. Automatic Memory Management
+
+All GPU memory operations are handled internally by the wrapper functions, providing a clean and simple API:
+
+- Automatic allocation and deallocation of device memory for polytopes, simplices, and results
+- Efficient host-to-device and device-to-host memory transfers
+- Proper cleanup on function exit, preventing memory leaks
+- No manual CUDA memory management required from the user
+
+This abstraction allows users to focus on their application logic without worrying about low-level GPU memory management details.
 
 ### Performance
 
