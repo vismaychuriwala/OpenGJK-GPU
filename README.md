@@ -15,7 +15,7 @@ OpenGJK-GPU provides efficient GPU-accelerated implementations of the **GJK (Gil
 
 **EPA** is a complementary algorithm that computes penetration depth and witness points when two polytopes are overlapping. While GJK can detect collisions, EPA determines how deeply objects penetrate each other and where the contact points are—critical for collision response in physics engines.
 
-Our GPU implementation leverages two levels of parallelism: processing multiple collision pairs simultaneously and parallelizing computation within each collision across a warp. This approach achieves speedups of up to 30x over CPU implementations when handling many polytope pairs.
+Our GPU implementations leverage two levels of parallelism: processing multiple collision pairs simultaneously and parallelizing computation within each collision across a warp. This approach achieves speedups of up to 30x over CPU implementations when handling many polytope pairs.
 
 ## Basic API
 
@@ -163,7 +163,7 @@ To switch between 32-bit (float) and 64-bit (double) precision, edit `GJK/common
 |:--:|:--:|
 |*1000 Polytopes Collision Simulation Start Up*|*1000 Polytopes Collision Simulation After Stabilizing*|
 
-The repository includes a physics simulation visualizer demonstrating the algorithms in action. Two visualization options are available: **OpenGL** (recommended, faster) and **Raylib** (legacy).
+The repository also includes a physics simulation visualizer demonstrating the algorithms in action. Two visualization options are available: **OpenGL** (recommended, faster) and **Raylib** (legacy).
 
 ### OpenGL Version (Recommended)
 
