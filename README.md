@@ -200,7 +200,7 @@ Performance benchmarks demonstrate significant GPU acceleration across varying p
 |:--:|:--:|
 |*1000 Polytopes Collision Simulation Start Up*|*1000 Polytopes Collision Simulation After Stabilizing*|
 
-The repository also includes a physics simulation visualizer demonstrating the algorithms in action. Two visualization options are available: **OpenGL** (recommended, faster) and **Raylib** (legacy).
+The repository includes a real-time physics simulation visualizer demonstrating collision detection with thousands of polytopes at 60 FPS. The simulation employs **spatial grid subdivision** for broad-phase culling, dynamically generating collision pairs each frame to minimize unnecessary GJK computations. Two visualization options are available: **OpenGL** (recommended, faster) and **Raylib** (legacy).
 
 ### OpenGL Version (Recommended)
 
@@ -242,10 +242,11 @@ gjk_visualizer_opengl.exe
 - **Q/E** - Up/Down
 - **Mouse** - Rotate view (hold left button)
 - **Scroll** - Zoom
-- **SPACE** - Reset simulation
 - **F** - Toggle wireframe
 - **R** - Reset camera
 - **ESC** - Exit
+
+**Configuration**: Edit `visualization/sim_config.h` to adjust simulation parameters (object count, grid size, physics constants).
 
 ### Raylib Version (Legacy)
 

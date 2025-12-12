@@ -40,5 +40,4 @@ gjk_visualizer_gpu_only.exe
 - **Q/E** - Up/Down
 - **Mouse** - Rotate view (hold left button)
 - **Scroll** - Zoom
-- **SPACE** - Reset simulation
 - **W key** - Toggle wireframe (OpenGL only)
