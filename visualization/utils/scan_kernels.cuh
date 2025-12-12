@@ -168,3 +168,51 @@ __host__ inline int ilog2ceil(int n) {
     }
     return log;
 }
+
+// ============================================================================
+// RECURSIVE MULTI-BLOCK SCAN (for large arrays > 1024 elements)
+// ============================================================================
+
+// Forward declaration for recursion
+void recursive_scan(int n, int* d_out, const int* d_in);
+
+// Recursive multi-block exclusive scan for large arrays
+// Can handle arbitrary array sizes by recursively scanning block sums
+void recursive_scan(int n, int* d_out, const int* d_in) {
+    const int BLOCK_SIZE_SCAN = 512;  // Fixed block size for scan
+    int B = 2 * BLOCK_SIZE_SCAN;       // Elements per block (1024)
+    int numBlocks = (n + B - 1) / B;   // Number of blocks needed
+
+    int sharedMemBytes = (B + CONFLICT_FREE_OFFSET(B)) * sizeof(int);
+    int num_blocks_next_power_2 = 1 << ilog2ceil(numBlocks);
+
+    // Allocate block sums
+    int* blockSums = nullptr;
+    cudaMalloc((void**)&blockSums, num_blocks_next_power_2 * sizeof(int));
+
+    // Zero-pad if needed
+    if (num_blocks_next_power_2 > numBlocks) {
+        cudaMemset(blockSums + numBlocks, 0,
+                   (num_blocks_next_power_2 - numBlocks) * sizeof(int));
+    }
+
+    // Multi-block scan kernel (same as multi_block_scan_kernel but stores block sums)
+    multi_block_scan_kernel<<<numBlocks, BLOCK_SIZE_SCAN, sharedMemBytes>>>(
+        n, B, d_out, d_in, blockSums);
+
+    // If more than one block, recursively scan block sums and add them back
+    if (numBlocks > 1) {
+        int* blockIncr = nullptr;
+        cudaMalloc((void**)&blockIncr, num_blocks_next_power_2 * sizeof(int));
+
+        // Recursively scan the block sums
+        recursive_scan(num_blocks_next_power_2, blockIncr, blockSums);
+
+        // Add scanned block sums back to results
+        uniform_add_kernel<<<numBlocks, B / 2>>>(n, d_out, blockIncr, B);
+
+        cudaFree(blockIncr);
+    }
+
+    cudaFree(blockSums);
+}

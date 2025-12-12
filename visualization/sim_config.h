@@ -5,20 +5,20 @@
 // SHARED SIMULATION CONFIGURATION
 // ============================================================================
 
-#define NUM_OBJECTS 1000           // Number of physics objects
+#define NUM_OBJECTS 2000           // Number of physics objects
 #define MAX_PAIRS (NUM_OBJECTS * 50)  // Preallocated pair buffer (avg 50 neighbors per object with broad-phase)
 
 // Kernel launch configuration
 #define BLOCK_SIZE 256
 
 // Spatial grid configuration for broad-phase culling
-#define SPATIAL_GRID_SIZE 20              // Grid divisions per axis (20x20x20 = 8000 cells)
-#define MAX_OBJECTS_PER_CELL 128           // Max objects per cell
+#define SPATIAL_GRID_SIZE 30              // Grid divisions per axis (30x30x30 = 27000 cells)
+#define MAX_OBJECTS_PER_CELL 256          // Max objects per cell (increased for 2000 objects)
 
 // Spatial configuration (scales with number of objects)
 #define BOUNDARY_SCALE_FACTOR 0.08f  // Boundary = num_objects * scale_factor
 #define MIN_BOUNDARY_SIZE 10.0f
-#define MAX_BOUNDARY_SIZE 100.0f
+#define MAX_BOUNDARY_SIZE 100.0f  // Increased to accommodate more objects
 
 // Physics parameters
 #define GRAVITY_Y -9.80665f

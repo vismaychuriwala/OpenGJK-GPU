@@ -13,12 +13,23 @@
 extern "C" {
 #endif
 
+// CUDA error checking function
+void checkCUDAError(const char *msg, int line = -1) {
+    cudaError_t err = cudaGetLastError();
+    if (cudaSuccess != err) {
+        if (line >= 0) {
+            fprintf(stderr, "Line %d: ", line);
+        }
+        fprintf(stderr, "Cuda error: %s: %s.\n", msg, cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
+}
+
 // GPU Physics Object (mirrored on device)
+// Removed initial_position and initial_velocity to save memory (24 bytes per object)
 typedef struct {
     Vector3f position;
     Vector3f velocity;
-    Vector3f initial_position;
-    Vector3f initial_velocity;
     float mass;
     float radius;
 } GPU_PhysicsObject;
@@ -55,7 +66,7 @@ struct GPU_GJK_Context {
 
     // GPU-owned simulation state
     GPU_PhysicsObject* d_objects;     // Device array of physics objects
-    GPU_PhysicsObject* h_objects;     // Host copy for initialization/reset
+    GPU_PhysicsObject* h_objects;     // Host copy for initialization only (freed after sync)
 
     // Collision pair indices
     int* d_collision_pairs;           // Device array [num_pairs * 2]
@@ -422,35 +433,66 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
 
     // Allocate pinned host memory for fast GPU->CPU transfer
     cudaMallocHost(&ctx->h_positions, sizeof(Vector3f) * max_objects);
+    checkCUDAError("cudaMallocHost h_positions");
 
     // Allocate GPU memory for physics objects
     cudaMalloc(&ctx->d_objects, sizeof(GPU_PhysicsObject) * max_objects);
+    checkCUDAError("cudaMalloc d_objects");
+
     cudaMalloc(&ctx->d_collision_pairs, sizeof(int) * max_pairs * 2);
+    checkCUDAError("cudaMalloc d_collision_pairs");
 
     // Allocate buffer pool
     ctx->buffer_pool = (GPU_Buffer_Pool*)malloc(sizeof(GPU_Buffer_Pool));
+    if (!ctx->buffer_pool) {
+        fprintf(stderr, "Failed to allocate buffer pool\n");
+        return false;
+    }
     ctx->buffer_pool->max_pairs = max_pairs;
 
     // Allocate persistent GPU buffers for collision detection
     cudaMalloc(&ctx->buffer_pool->d_local_coords, sizeof(gkFloat) * max_objects * 12 * 3);
+    checkCUDAError("cudaMalloc d_local_coords");
+
     cudaMalloc(&ctx->buffer_pool->d_all_coords, sizeof(gkFloat) * max_objects * 12 * 3);
+    checkCUDAError("cudaMalloc d_all_coords");
+
     cudaMalloc(&ctx->buffer_pool->d_polytopes1, sizeof(gkPolytope) * max_pairs);
+    checkCUDAError("cudaMalloc d_polytopes1");
+
     cudaMalloc(&ctx->buffer_pool->d_polytopes2, sizeof(gkPolytope) * max_pairs);
+    checkCUDAError("cudaMalloc d_polytopes2");
+
     cudaMalloc(&ctx->buffer_pool->d_simplices, sizeof(gkSimplex) * max_pairs);
+    checkCUDAError("cudaMalloc d_simplices");
+
     cudaMalloc(&ctx->buffer_pool->d_distances, sizeof(gkFloat) * max_pairs);
+    checkCUDAError("cudaMalloc d_distances");
 
     // Allocate spatial grid for broad-phase culling
     int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
     cudaMalloc(&ctx->d_grid, sizeof(GridCell) * total_cells);
-    cudaMalloc(&ctx->d_pair_counts, sizeof(int) * max_objects);
-    cudaMalloc(&ctx->d_pair_offsets, sizeof(int) * max_objects);
+    checkCUDAError("cudaMalloc d_grid");
+
+    // Allocate pair count/offset buffers with power-of-2 size for scan algorithm
+    int scan_buffer_size = next_power_of_2(max_objects);
+    cudaMalloc(&ctx->d_pair_counts, sizeof(int) * scan_buffer_size);
+    checkCUDAError("cudaMalloc d_pair_counts");
+
+    cudaMalloc(&ctx->d_pair_offsets, sizeof(int) * scan_buffer_size);
+    checkCUDAError("cudaMalloc d_pair_offsets");
     ctx->h_total_pairs = 0;
+
+    printf("Allocated scan buffers: %d elements (rounded up from %d)\n",
+           scan_buffer_size, max_objects);
 
     ctx->initialized = true;
     printf("GPU simulation context initialized (max_objects=%d, max_pairs=%d)\n",
            max_objects, max_pairs);
-    printf("Spatial grid: %dx%dx%d = %d cells\n",
-           SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, total_cells);
+    printf("Spatial grid: %dx%dx%d = %d cells (%.2f MB)\n",
+           SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, total_cells,
+           (sizeof(GridCell) * total_cells) / (1024.0f * 1024.0f));
+    printf("Grid cell capacity: %d objects per cell\n", MAX_OBJECTS_PER_CELL);
 
     return true;
 }
@@ -484,8 +526,11 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
     // Free pinned host memory
     if (ctx->h_positions) cudaFreeHost(ctx->h_positions);
 
-    // Free host memory
-    if (ctx->h_objects) free(ctx->h_objects);
+    // Free host memory (should already be freed after sync, but check just in case)
+    if (ctx->h_objects) {
+        free(ctx->h_objects);
+        ctx->h_objects = NULL;
+    }
 
     free(ctx);
     *context = NULL;
@@ -501,11 +546,9 @@ bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
     if (!context || !shape) return false;
     if (object_id < 0 || object_id >= context->max_objects) return false;
 
-    // Store physics object on host
+    // Store physics object on host (removed initial_position and initial_velocity)
     context->h_objects[object_id].position = position;
     context->h_objects[object_id].velocity = velocity;
-    context->h_objects[object_id].initial_position = position;
-    context->h_objects[object_id].initial_velocity = velocity;
     context->h_objects[object_id].mass = mass;
     context->h_objects[object_id].radius = radius;
 
@@ -524,6 +567,7 @@ bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
                h_local_verts,
                sizeof(gkFloat) * num_verts * 3,
                cudaMemcpyHostToDevice);
+    checkCUDAError("cudaMemcpy register object vertices", __LINE__);
     free(h_local_verts);
 
     if (object_id + 1 > context->num_objects) {
@@ -574,11 +618,13 @@ bool gpu_gjk_set_collision_pairs(GPU_GJK_Context* context, int* pairs, int num_p
     cudaMemcpy(context->d_collision_pairs, pairs,
                sizeof(int) * num_pairs * 2,
                cudaMemcpyHostToDevice);
+    checkCUDAError("cudaMemcpy collision pairs", __LINE__);
 
     // Copy initial object states to GPU
     cudaMemcpy(context->d_objects, context->h_objects,
                sizeof(GPU_PhysicsObject) * context->num_objects,
                cudaMemcpyHostToDevice);
+    checkCUDAError("cudaMemcpy object states", __LINE__);
 
     // Initialize polytopes ONCE (no longer done per-frame!)
     int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -589,7 +635,9 @@ bool gpu_gjk_set_collision_pairs(GPU_GJK_Context* context, int* pairs, int num_p
         context->buffer_pool->d_polytopes2,
         num_pairs,
         12);  // All shapes are icosahedrons with 12 vertices
+    checkCUDAError("init_polytopes_once_kernel (set_collision_pairs)", __LINE__);
     cudaDeviceSynchronize();
+    checkCUDAError("cudaDeviceSynchronize (set_collision_pairs)", __LINE__);
 
     printf("Set %d collision pairs on GPU (polytopes initialized)\n", num_pairs);
     return true;
@@ -630,6 +678,7 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
     // Step 1: Physics update (parallel per object)
     int objBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
     physics_update_kernel<<<objBlocks, BLOCK_SIZE>>>(context->d_objects, num_objs, *params);
+    checkCUDAError("physics_update_kernel", __LINE__);
 
     // Step 2: Transform local vertices to world space (world = local + position)
     // Total work: num_objs * 12 vertices per object
@@ -640,6 +689,7 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
         context->buffer_pool->d_local_coords,
         context->buffer_pool->d_all_coords,
         num_objs);
+    checkCUDAError("transform_to_world_kernel", __LINE__);
 
     // Step 3: Initialize polytopes for current pairs (pairs change each frame with dynamic culling)
     if (num_pairs > 0) {
@@ -651,6 +701,7 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
             context->buffer_pool->d_polytopes2,
             num_pairs,
             12);  // All shapes are icosahedrons with 12 vertices
+        checkCUDAError("init_polytopes_once_kernel", __LINE__);
     }
 
     // Step 4: Batched GJK collision detection
@@ -667,6 +718,7 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
             context->buffer_pool->d_simplices,
             context->buffer_pool->d_distances,
             num_pairs);
+        checkCUDAError("compute_minimum_distance (GJK)", __LINE__);
 
         // Step 5: Fused collision check + response
         int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -676,6 +728,7 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
             params->collisionEpsilon,
             num_pairs,
             num_objs);
+        checkCUDAError("check_and_respond_kernel", __LINE__);
     }
 
     // No sync needed - GPU->CPU transfer in get_render_data will implicitly sync
@@ -698,32 +751,15 @@ bool gpu_gjk_get_render_data(GPU_GJK_Context* context, GPU_RenderData* data)
                  sizeof(Vector3f),                        // width (bytes to copy per row)
                  num_objs,                                // height (number of rows = objects)
                  cudaMemcpyDeviceToHost);
+    checkCUDAError("cudaMemcpy2D get_render_data", __LINE__);
 
     data->positions = context->h_positions;
     data->is_colliding = NULL;  // No longer tracking per-object collision flags
     data->num_objects = num_objs;
-
     return true;
 }
 
-bool gpu_gjk_reset_simulation(GPU_GJK_Context* context)
-{
-    if (!context || !context->initialized) return false;
-
-    // Reset objects to initial state on host
-    for (int i = 0; i < context->num_objects; i++) {
-        context->h_objects[i].position = context->h_objects[i].initial_position;
-        context->h_objects[i].velocity = context->h_objects[i].initial_velocity;
-    }
-
-    // Copy to GPU
-    cudaMemcpy(context->d_objects, context->h_objects,
-               sizeof(GPU_PhysicsObject) * context->num_objects,
-               cudaMemcpyHostToDevice);
-
-    printf("GPU simulation reset to initial state\n");
-    return true;
-}
+// Removed gpu_gjk_reset_simulation to save memory (no initial_position/velocity needed)
 
 bool gpu_gjk_sync_objects_to_device(GPU_GJK_Context* context)
 {
@@ -732,6 +768,15 @@ bool gpu_gjk_sync_objects_to_device(GPU_GJK_Context* context)
     cudaMemcpy(context->d_objects, context->h_objects,
                sizeof(GPU_PhysicsObject) * context->num_objects,
                cudaMemcpyHostToDevice);
+    checkCUDAError("cudaMemcpy sync_objects_to_device", __LINE__);
+
+    // Free host copy after syncing - no longer needed (saves 32 bytes × num_objects)
+    if (context->h_objects) {
+        free(context->h_objects);
+        context->h_objects = NULL;
+        printf("Freed host object buffer (saved %zu KB)\n",
+               (sizeof(GPU_PhysicsObject) * context->num_objects) / 1024);
+    }
 
     return true;
 }
@@ -746,35 +791,57 @@ int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_P
     // Step 1: Clear spatial grid (use cudaMemset for efficiency)
     int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
     cudaMemset(context->d_grid, 0, sizeof(GridCell) * total_cells);
+    checkCUDAError("cudaMemset d_grid", __LINE__);
 
     // Step 2: Insert objects into spatial grid
     int objBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
     insert_objects_kernel<<<objBlocks, BLOCK_SIZE>>>(
         context->d_objects, num_objs, context->d_grid,
         cell_size, params->boundarySize);
+    checkCUDAError("insert_objects_kernel", __LINE__);
 
     // Step 2.5: Clear pair counts (prevents garbage values in tail threads)
     cudaMemset(context->d_pair_counts, 0, sizeof(int) * num_objs);
+    checkCUDAError("cudaMemset d_pair_counts", __LINE__);
 
     // Step 3: Count pairs per object (Pass 1)
     count_pairs_kernel<<<objBlocks, BLOCK_SIZE>>>(
         context->d_objects, num_objs, context->d_grid,
         cell_size, params->boundarySize, context->d_pair_counts);
+    checkCUDAError("count_pairs_kernel", __LINE__);
 
     // Step 4: Prefix sum to get write offsets
-    // For simplicity with small N (300), use single-block scan
+    // Note: d_pair_counts and d_pair_offsets were allocated with power-of-2 size at init
+    // Use single-block scan for small arrays, multi-block for larger ones
     int n_pow2 = next_power_of_2(num_objs);
-    int blockSize = n_pow2 / 2;  // Need n/2 threads for scan
-    if (blockSize > 512) blockSize = 512;  // Clamp to reasonable size
 
-    int sharedMemSize = (n_pow2 + CONFLICT_FREE_OFFSET(n_pow2)) * sizeof(int);
-    block_scan_kernel<<<1, blockSize, sharedMemSize>>>(
-        num_objs, context->d_pair_offsets, context->d_pair_counts, nullptr);
+    if (num_objs <= 1024) {
+        // Single-block scan (fast for small arrays)
+        int blockSize = n_pow2 / 2;  // Need n/2 threads for scan
+        if (blockSize > 512) blockSize = 512;
+
+        int sharedMemSize = (n_pow2 + CONFLICT_FREE_OFFSET(n_pow2)) * sizeof(int);
+        block_scan_kernel<<<1, blockSize, sharedMemSize>>>(
+            num_objs, context->d_pair_offsets, context->d_pair_counts, nullptr);
+        checkCUDAError("block_scan_kernel (prefix sum)", __LINE__);
+    } else {
+        // Multi-block recursive scan for large arrays (>1024 elements)
+        // Zero-pad the tail if num_objs is not a power of 2
+        if (n_pow2 > num_objs) {
+            cudaMemset(context->d_pair_counts + num_objs, 0, (n_pow2 - num_objs) * sizeof(int));
+            checkCUDAError("cudaMemset pad pair_counts", __LINE__);
+        }
+
+        recursive_scan(n_pow2, context->d_pair_offsets, context->d_pair_counts);
+        checkCUDAError("recursive_scan (multi-block prefix sum)", __LINE__);
+    }
 
     // Step 5: Get total pair count (last offset + last count)
     int h_last_offset, h_last_count;
     cudaMemcpy(&h_last_offset, context->d_pair_offsets + num_objs - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    checkCUDAError("cudaMemcpy h_last_offset", __LINE__);
     cudaMemcpy(&h_last_count, context->d_pair_counts + num_objs - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    checkCUDAError("cudaMemcpy h_last_count", __LINE__);
     context->h_total_pairs = h_last_offset + h_last_count;
     context->num_pairs = context->h_total_pairs;
 
@@ -792,6 +859,7 @@ int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_P
             cell_size, params->boundarySize,
             context->d_pair_offsets, context->d_collision_pairs,
             context->max_pairs);
+        checkCUDAError("generate_pairs_kernel", __LINE__);
     }
 
     return context->num_pairs;

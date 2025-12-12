@@ -44,9 +44,6 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
 // Get rendering data (copies minimal data from GPU to CPU)
 bool gpu_gjk_get_render_data(GPU_GJK_Context* context, GPU_RenderData* data);
 
-// Reset simulation to initial state
-bool gpu_gjk_reset_simulation(GPU_GJK_Context* context);
-
 // Sync registered objects to GPU (call after all objects are registered)
 bool gpu_gjk_sync_objects_to_device(GPU_GJK_Context* context);
 

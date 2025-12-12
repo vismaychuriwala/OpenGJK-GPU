@@ -239,7 +239,6 @@ int main(void) {
     std::printf("Delta time: %.4f (%.1f FPS target)\n", DELTA_TIME, 1.0f/DELTA_TIME);
     std::printf("Gravity: %.2f\n", GRAVITY_Y);
     std::printf("\n=== CONTROLS ===\n");
-    std::printf("SPACE: Reset simulation\n");
     std::printf("WASD/QE: Move camera (world coordinates)\n");
     std::printf("Arrow Keys: Rotate camera\n");
     std::printf("Left Mouse: Drag to rotate\n");
@@ -269,15 +268,7 @@ int main(void) {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
-        // Reset simulation
-        if (IsKeyPressed(GLFW_KEY_SPACE)) {
-            #ifdef USE_CUDA
-            if (mode == GJKMode::GPU && gpu_ctx) {
-                gpu_gjk_reset_simulation(gpu_ctx);
-                std::printf("Simulation Reset!\n");
-            }
-            #endif
-        }
+        // Reset simulation removed to save memory (no initial state storage)
 
         // Reset camera
         if (IsKeyPressed(GLFW_KEY_R)) {
