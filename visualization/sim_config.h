@@ -12,8 +12,8 @@
 #define BLOCK_SIZE 256
 
 // Spatial grid configuration for broad-phase culling
-#define SPATIAL_GRID_SIZE 30              // Grid divisions per axis (30x30x30 = 27000 cells)
-#define MAX_OBJECTS_PER_CELL 256          // Max objects per cell (increased for 2000 objects)
+#define SPATIAL_GRID_SIZE 30              // Grid divisions per axis
+#define MAX_OBJECTS_PER_CELL 256          // Max objects per cell
 
 // Spatial configuration (scales with number of objects)
 #define BOUNDARY_SCALE_FACTOR 0.08f  // Boundary = num_objects * scale_factor

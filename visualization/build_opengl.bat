@@ -3,6 +3,26 @@ echo ================================================
 echo Building OpenGJK Physics Simulation - OpenGL Version
 echo ================================================
 
+REM Parse command line arguments
+set BUILD_TYPE=Release
+if "%1"=="--debug" (
+    set BUILD_TYPE=Debug
+    echo Build Configuration: DEBUG
+) else (
+    echo Build Configuration: RELEASE
+)
+
+REM Set compiler flags based on build type
+if "%BUILD_TYPE%"=="Debug" (
+    set CL_FLAGS=/MDd /Od /Zi
+    set NVCC_FLAGS=/MDd /Od /Zi
+    set LINK_FLAGS=/DEBUG
+) else (
+    set CL_FLAGS=/MD /O2
+    set NVCC_FLAGS=/MD /O2
+    set LINK_FLAGS=
+)
+
 REM Set paths to dependencies
 set CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0
 set GLFW_PATH=C:\glfw-3.4.bin.WIN64
@@ -41,7 +61,7 @@ if %errorlevel% equ 0 (
 )
 echo.
 echo Step 1: Compiling GLAD OpenGL loader...
-cl /c /MD ^
+cl /c %CL_FLAGS% ^
     /I"%GLAD_PATH%\include" ^
     "%GLAD_PATH%\src\glad.c" ^
     /Fo:build\glad.obj
@@ -53,7 +73,7 @@ if errorlevel 1 (
 
 echo.
 echo Step 2: Compiling input handling module...
-cl /c /MD /EHsc /std:c++17 ^
+cl /c %CL_FLAGS% /EHsc /std:c++17 ^
     /I"%GLFW_PATH%\include" ^
     /I"%GLAD_PATH%\include" ^
     rendering\input.cpp ^
@@ -66,7 +86,7 @@ if errorlevel 1 (
 
 echo.
 echo Step 3: Compiling camera module...
-cl /c /MD /EHsc /std:c++17 ^
+cl /c %CL_FLAGS% /EHsc /std:c++17 ^
     /I"%GLFW_PATH%\include" ^
     /I"%GLM_INCL%" ^
     /I"%GLAD_PATH%\include" ^
@@ -80,7 +100,7 @@ if errorlevel 1 (
 
 echo.
 echo Step 4: Compiling OpenGL renderer...
-cl /c /MD /EHsc /std:c++17 ^
+cl /c %CL_FLAGS% /EHsc /std:c++17 ^
     /I"%GLAD_PATH%\include" ^
     /I"%GLM_INCL%" ^
     rendering\opengl_renderer.cpp ^
@@ -94,7 +114,7 @@ if errorlevel 1 (
 echo.
 echo Step 5: Compiling CUDA physics kernel (GPU GJK)...
 nvcc -allow-unsupported-compiler -arch=%GPU_ARCH% -c ^
-    -Xcompiler "/MD" ^
+    -Xcompiler "%NVCC_FLAGS%" ^
     ..\GJK\gpu\openGJK.cu ^
     -I"%CUDA_PATH%\include" ^
     -I"..\GJK\gpu" ^
@@ -110,7 +130,7 @@ if errorlevel 1 (
 echo.
 echo Step 6: Compiling CUDA physics integration...
 nvcc -allow-unsupported-compiler -arch=%GPU_ARCH% -c ^
-    -Xcompiler "/MD" ^
+    -Xcompiler "%NVCC_FLAGS%" ^
     integrate_final_gjk.cu ^
     -I"%CUDA_PATH%\include" ^
     -I"..\GJK\gpu" ^
@@ -125,7 +145,7 @@ if errorlevel 1 (
 
 echo.
 echo Step 7: Compiling CPU GJK (fallback)...
-cl /c /MD ^
+cl /c %CL_FLAGS% ^
     /I"..\GJK\cpu" ^
     ..\GJK\cpu\openGJK.c ^
     /Fo:build\openGJK.obj
@@ -137,7 +157,7 @@ if errorlevel 1 (
 
 echo.
 echo Step 8: Compiling GJK integration layer...
-cl /c /MD /DUSE_CUDA ^
+cl /c %CL_FLAGS% /DUSE_CUDA ^
     /I"%CUDA_PATH%\include" ^
     /I"..\GJK\cpu" ^
     gjk_integration.c ^
@@ -150,7 +170,7 @@ if errorlevel 1 (
 
 echo.
 echo Step 9: Compiling main OpenGL application...
-cl /c /MD /EHsc /std:c++17 /DUSE_CUDA ^
+cl /c %CL_FLAGS% /EHsc /std:c++17 /DUSE_CUDA ^
     /I"%GLFW_PATH%\include" ^
     /I"%GLAD_PATH%\include" ^
     /I"%GLM_INCL%" ^
@@ -167,7 +187,7 @@ if errorlevel 1 (
 
 echo.
 echo Step 10: Linking final executable...
-link /OUT:gjk_visualizer_opengl.exe ^
+link %LINK_FLAGS% /OUT:gjk_visualizer_opengl.exe ^
     build\main_opengl.obj ^
     build\glad.obj ^
     build\input.obj ^
@@ -191,10 +211,14 @@ if errorlevel 1 (
 
 echo.
 echo ================================================
-echo Build successful!
+echo Build successful! [%BUILD_TYPE%]
 echo Executable: gjk_visualizer_opengl.exe
 echo ================================================
 echo.
 echo To run the simulation:
 echo     gjk_visualizer_opengl.exe
+echo.
+echo Usage:
+echo     build_opengl.bat        - Build optimized release version (default)
+echo     build_opengl.bat --debug - Build debug version with symbols
 echo.
