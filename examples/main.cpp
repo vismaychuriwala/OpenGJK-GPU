@@ -281,7 +281,7 @@ main() {
   free(gpu_distances);
   free(warm_up_gpu_distances);
 
-  printf("\Validation Testing complete!\n");
+  //printf("\Validation Testing complete!\n");
 
 #if SAVE_PERFORMANCE_DATA_TO_FILE
   // Run spread of performance testing for csv file output

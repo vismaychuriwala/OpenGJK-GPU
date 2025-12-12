@@ -20,7 +20,7 @@ namespace GJK {
             return timer;
         }
 
-        void computeDistances(int n,
+        void computeDistances(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -111,7 +111,7 @@ namespace GJK {
             cudaFree(d_coord2);
         }
 
-        void computeGJKAndEPA(int n,
+        void computeGJKAndEPA(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -274,7 +274,7 @@ namespace GJK {
             cudaFree(d_coord2);
         }
 
-        void computeCollisionInformation(int n,
+        void computeCollisionInformation(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
@@ -532,9 +532,9 @@ namespace GJK {
         }
 
         void testing(const int* numPolytopesArray,
-                     int numPolytopesArraySize,
+                     const int numPolytopesArraySize,
                      const int* numVerticesArray,
-                     int numVerticesArraySize,
+                     const int numVerticesArraySize,
                      const char* outputFile) {
             
             if (numPolytopesArray == nullptr || numVerticesArray == nullptr || outputFile == nullptr) {
@@ -545,8 +545,7 @@ namespace GJK {
             // Open CSV file to write results to
             FILE* fp = nullptr;
 #ifdef WIN32
-            errno_t err;
-            if ((err = fopen_s(&fp, outputFile, "w")) != 0) {
+            if (fopen_s(&fp, outputFile, "w") != 0) {
 #else
             if ((fp = fopen(outputFile, "w")) == NULL) {
 #endif
@@ -650,7 +649,7 @@ namespace GJK {
                     float gpu_time_avg = gpu_time_sum / NUM_RUNS;
 
                     // Write average results to CSV
-                    fprintf(fp, "%d,%d,%.6f,%.6f,%.6f\n", 
+                    fprintf(fp, "%d,%d,%.6f,%.6f\n", 
                             numPolytopes, numVertices, cpu_time_avg, gpu_time_avg);
                 }
             }

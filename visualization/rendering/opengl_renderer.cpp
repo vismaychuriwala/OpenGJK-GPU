@@ -128,7 +128,7 @@ GLuint create_shader_program(const char* vert_path, const char* frag_path) {
 bool renderer_init(OpenGLRenderer* renderer, int max_objects) {
     std::memset(renderer, 0, sizeof(OpenGLRenderer));
     renderer->num_instances = max_objects;
-    renderer->wireframe_enabled = true;
+    renderer->wireframe_enabled = false;
 
     // Load shaders
     renderer->sphere_solid_shader.program_id =
