@@ -5,7 +5,7 @@
 // SHARED SIMULATION CONFIGURATION
 // ============================================================================
 
-#define NUM_OBJECTS 2000           // Number of physics objects
+#define NUM_OBJECTS 1000           // Number of physics objects
 #define MAX_PAIRS (NUM_OBJECTS * 50)  // Preallocated pair buffer (avg 50 neighbors per object with broad-phase)
 
 // Kernel launch configuration
