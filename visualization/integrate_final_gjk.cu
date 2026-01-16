@@ -25,13 +25,76 @@ void checkCUDAError(const char *msg, int line = -1) {
     }
 }
 
+// ============================================================================
+// QUATERNION MATH DEVICE FUNCTIONS
+// ============================================================================
+
+__device__ Quaternion quat_normalize(Quaternion q) {
+    float len = sqrtf(q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z);
+    if (len < 1e-8f) {
+        Quaternion identity = {1.0f, 0.0f, 0.0f, 0.0f};
+        return identity;
+    }
+    Quaternion result = {q.w/len, q.x/len, q.y/len, q.z/len};
+    return result;
+}
+
+__device__ Quaternion quat_multiply(Quaternion a, Quaternion b) {
+    Quaternion result = {
+        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z,
+        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
+    };
+    return result;
+}
+
+__device__ Vector3f quat_rotate_vector(Quaternion q, Vector3f v) {
+    // v' = v + 2*cross(q.xyz, cross(q.xyz, v) + q.w*v)
+    Vector3f u = {q.x, q.y, q.z};
+    float s = q.w;
+
+    // First cross: cross(u, v)
+    Vector3f uv = {
+        u.y*v.z - u.z*v.y,
+        u.z*v.x - u.x*v.z,
+        u.x*v.y - u.y*v.x
+    };
+
+    // Second term: cross(u, uv) + s*v
+    Vector3f uuv = {
+        u.y*uv.z - u.z*uv.y,
+        u.z*uv.x - u.x*uv.z,
+        u.x*uv.y - u.y*uv.x
+    };
+
+    Vector3f result = {
+        v.x + 2.0f * (uuv.x + s*uv.x),
+        v.y + 2.0f * (uuv.y + s*uv.y),
+        v.z + 2.0f * (uuv.z + s*uv.z)
+    };
+    return result;
+}
+
+__device__ Vector3f vector_cross(Vector3f a, Vector3f b) {
+    Vector3f result = {
+        a.y*b.z - a.z*b.y,
+        a.z*b.x - a.x*b.z,
+        a.x*b.y - a.y*b.x
+    };
+    return result;
+}
+
 // GPU Physics Object (mirrored on device)
 // Removed initial_position and initial_velocity to save memory (24 bytes per object)
 typedef struct {
     Vector3f position;
     Vector3f velocity;
+    Quaternion orientation;        // Rotation state (unit quaternion)
+    Vector3f angular_velocity;     // Angular velocity (radians/sec)
     float mass;
     float radius;
+    float inertia;                 // Moment of inertia
 } GPU_PhysicsObject;
 
 // Spatial grid cell - stores object IDs in this cell
@@ -53,6 +116,11 @@ struct GPU_Buffer_Pool {
     gkPolytope* d_polytopes2;  // Device array [max_pairs] - second polytope of each pair
     gkSimplex* d_simplices;    // Device array [max_pairs]
     gkFloat* d_distances;      // Device array [max_pairs]
+
+    // EPA witness point buffers for rotation/torque
+    gkFloat* d_witness1;       // Device array [max_pairs * 3] - contact points on body 1
+    gkFloat* d_witness2;       // Device array [max_pairs * 3] - contact points on body 2
+    gkFloat* d_contact_normals;// Device array [max_pairs * 3] - collision normals
 };
 
 // GPU GJK Context - owns all simulation state
@@ -99,6 +167,7 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
 
     GPU_PhysicsObject* obj = &objects[i];
 
+    // LINEAR MOTION
     // Update velocity with gravity
     obj->velocity.x += params.gravity.x * params.deltaTime;
     obj->velocity.y += params.gravity.y * params.deltaTime;
@@ -108,6 +177,30 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
     obj->position.x += obj->velocity.x * params.deltaTime;
     obj->position.y += obj->velocity.y * params.deltaTime;
     obj->position.z += obj->velocity.z * params.deltaTime;
+
+    // ANGULAR MOTION
+    // Integrate angular velocity into orientation: dq/dt = 0.5 * omega_quat * q
+    float wx = obj->angular_velocity.x;
+    float wy = obj->angular_velocity.y;
+    float wz = obj->angular_velocity.z;
+    float half_dt = 0.5f * params.deltaTime;
+
+    Quaternion omega_quat = {0.0f, wx, wy, wz};  // Pure quaternion from angular velocity
+    Quaternion dq = quat_multiply(omega_quat, obj->orientation);
+
+    // Update orientation: q_new = q + dt * dq/dt
+    obj->orientation.w += half_dt * dq.w;
+    obj->orientation.x += half_dt * dq.x;
+    obj->orientation.y += half_dt * dq.y;
+    obj->orientation.z += half_dt * dq.z;
+
+    // Renormalize quaternion to prevent drift
+    obj->orientation = quat_normalize(obj->orientation);
+
+    // Apply angular damping
+    obj->angular_velocity.x *= ANGULAR_DAMPING;
+    obj->angular_velocity.y *= ANGULAR_DAMPING;
+    obj->angular_velocity.z *= ANGULAR_DAMPING;
 
     // Boundary collisions (all axes use same boundary size)
     float boundary = params.boundarySize;
@@ -338,70 +431,133 @@ __global__ void generate_pairs_kernel(GPU_PhysicsObject* objects,
 // COLLISION DETECTION AND RESPONSE KERNELS
 // ============================================================================
 
-// CUDA kernel: Fused collision check and response (eliminates intermediate bool array)
-// Checks distance against epsilon and immediately applies collision response if colliding
-__global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
-                                         int* pairs,
-                                         gkFloat* distances,
-                                         float epsilon,
-                                         int num_pairs,
-                                         int num_objects)
+// CUDA kernel: Collision response with rotation and torque using EPA witness points
+__global__ void check_and_respond_with_rotation_kernel(
+    GPU_PhysicsObject* objects,
+    int* pairs,
+    gkFloat* distances,
+    gkFloat* witness1,      // Contact points on body 1
+    gkFloat* witness2,      // Contact points on body 2
+    gkFloat* normals,       // Contact normals
+    float epsilon,
+    int num_pairs,
+    int num_objects)
 {
     int p = blockIdx.x * blockDim.x + threadIdx.x;
     if (p >= num_pairs) return;
 
-    // Inline collision check - early exit if no collision
-    if (fabsf(distances[p]) > epsilon) return;
+    // Check collision - distance near 0 means collision (GJK) or penetration (EPA gives negative)
+    // Accept both cases: distance <= epsilon OR distance is negative (penetration)
+    if (distances[p] > epsilon) return;
 
     int idA = pairs[p * 2 + 0];
     int idB = pairs[p * 2 + 1];
 
-    // Bounds check to prevent phantom collisions from invalid pair IDs
     if (idA < 0 || idA >= num_objects || idB < 0 || idB >= num_objects) return;
 
     GPU_PhysicsObject* obj1 = &objects[idA];
     GPU_PhysicsObject* obj2 = &objects[idB];
 
-    // Calculate collision normal (obj2 - obj1, same as CPU code)
-    float dx = obj2->position.x - obj1->position.x;
-    float dy = obj2->position.y - obj1->position.y;
-    float dz = obj2->position.z - obj1->position.z;
-    float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+    // Get witness points (contact points)
+    Vector3f contact1 = {
+        witness1[p * 3 + 0],
+        witness1[p * 3 + 1],
+        witness1[p * 3 + 2]
+    };
 
-    if (dist < 0.0001f) return;  // Avoid division by zero
+    Vector3f contact2 = {
+        witness2[p * 3 + 0],
+        witness2[p * 3 + 1],
+        witness2[p * 3 + 2]
+    };
 
-    // Normalize collision normal
-    float nx = dx / dist;
-    float ny = dy / dist;
-    float nz = dz / dist;
+    // Get contact normal (from obj1 to obj2)
+    Vector3f normal = {
+        normals[p * 3 + 0],
+        normals[p * 3 + 1],
+        normals[p * 3 + 2]
+    };
 
-    // Relative velocity
-    float relVx = obj2->velocity.x - obj1->velocity.x;
-    float relVy = obj2->velocity.y - obj1->velocity.y;
-    float relVz = obj2->velocity.z - obj1->velocity.z;
+    // Normalize (EPA should provide normalized, but safety check)
+    float nlen = sqrtf(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z);
+    if (nlen < 1e-6f) return;
+    normal.x /= nlen; normal.y /= nlen; normal.z /= nlen;
+
+    // Moment arms (contact point - center of mass)
+    Vector3f r1 = {
+        contact1.x - obj1->position.x,
+        contact1.y - obj1->position.y,
+        contact1.z - obj1->position.z
+    };
+
+    Vector3f r2 = {
+        contact2.x - obj2->position.x,
+        contact2.y - obj2->position.y,
+        contact2.z - obj2->position.z
+    };
+
+    // Relative velocity at contact point
+    // v_rel = (v2 + w2 × r2) - (v1 + w1 × r1)
+    Vector3f w1_cross_r1 = vector_cross(obj1->angular_velocity, r1);
+    Vector3f w2_cross_r2 = vector_cross(obj2->angular_velocity, r2);
+
+    Vector3f v1_at_contact = {
+        obj1->velocity.x + w1_cross_r1.x,
+        obj1->velocity.y + w1_cross_r1.y,
+        obj1->velocity.z + w1_cross_r1.z
+    };
+
+    Vector3f v2_at_contact = {
+        obj2->velocity.x + w2_cross_r2.x,
+        obj2->velocity.y + w2_cross_r2.y,
+        obj2->velocity.z + w2_cross_r2.z
+    };
+
+    Vector3f v_rel = {
+        v2_at_contact.x - v1_at_contact.x,
+        v2_at_contact.y - v1_at_contact.y,
+        v2_at_contact.z - v1_at_contact.z
+    };
 
     // Velocity along normal
-    float velAlongNormal = relVx * nx + relVy * ny + relVz * nz;
+    float v_rel_n = v_rel.x * normal.x + v_rel.y * normal.y + v_rel.z * normal.z;
 
-    // Don't resolve if objects are moving apart
-    if (velAlongNormal > 0.0f) return;
+    // Don't resolve if separating
+    if (v_rel_n > 0.0f) return;
 
-    // Collision impulse (elastic collision)
-    float j = -(1.0f + RESTITUTION) * velAlongNormal;
-    j /= (1.0f / obj1->mass + 1.0f / obj2->mass);
+    // Compute impulse magnitude with rotation
+    // j = -(1 + e) * v_rel_n / (1/m1 + 1/m2 + ((r1 × n)²/I1) + ((r2 × n)²/I2))
+    Vector3f r1_cross_n = vector_cross(r1, normal);
+    Vector3f r2_cross_n = vector_cross(r2, normal);
 
-    // Apply impulse
-    float impulseX = j * nx;
-    float impulseY = j * ny;
-    float impulseZ = j * nz;
+    float angular_factor1 = (r1_cross_n.x*r1_cross_n.x + r1_cross_n.y*r1_cross_n.y + r1_cross_n.z*r1_cross_n.z) / obj1->inertia;
+    float angular_factor2 = (r2_cross_n.x*r2_cross_n.x + r2_cross_n.y*r2_cross_n.y + r2_cross_n.z*r2_cross_n.z) / obj2->inertia;
 
-    obj1->velocity.x -= impulseX / obj1->mass;
-    obj1->velocity.y -= impulseY / obj1->mass;
-    obj1->velocity.z -= impulseZ / obj1->mass;
+    float j = -(1.0f + RESTITUTION) * v_rel_n;
+    j /= (1.0f/obj1->mass + 1.0f/obj2->mass + angular_factor1 + angular_factor2);
 
-    obj2->velocity.x += impulseX / obj2->mass;
-    obj2->velocity.y += impulseY / obj2->mass;
-    obj2->velocity.z += impulseZ / obj2->mass;
+    // Apply linear impulse
+    Vector3f impulse = {j * normal.x, j * normal.y, j * normal.z};
+
+    obj1->velocity.x -= impulse.x / obj1->mass;
+    obj1->velocity.y -= impulse.y / obj1->mass;
+    obj1->velocity.z -= impulse.z / obj1->mass;
+
+    obj2->velocity.x += impulse.x / obj2->mass;
+    obj2->velocity.y += impulse.y / obj2->mass;
+    obj2->velocity.z += impulse.z / obj2->mass;
+
+    // Apply angular impulse (torque = r × impulse)
+    Vector3f torque1 = vector_cross(r1, impulse);
+    Vector3f torque2 = vector_cross(r2, impulse);
+
+    obj1->angular_velocity.x -= torque1.x / obj1->inertia;
+    obj1->angular_velocity.y -= torque1.y / obj1->inertia;
+    obj1->angular_velocity.z -= torque1.z / obj1->inertia;
+
+    obj2->angular_velocity.x += torque2.x / obj2->inertia;
+    obj2->angular_velocity.y += torque2.y / obj2->inertia;
+    obj2->angular_velocity.z += torque2.z / obj2->inertia;
 }
 
 // ============================================================================
@@ -469,6 +625,16 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
     cudaMalloc(&ctx->buffer_pool->d_distances, sizeof(gkFloat) * max_pairs);
     checkCUDAError("cudaMalloc d_distances");
 
+    // Allocate EPA witness point buffers for rotation/torque
+    cudaMalloc(&ctx->buffer_pool->d_witness1, sizeof(gkFloat) * max_pairs * 3);
+    checkCUDAError("cudaMalloc d_witness1");
+
+    cudaMalloc(&ctx->buffer_pool->d_witness2, sizeof(gkFloat) * max_pairs * 3);
+    checkCUDAError("cudaMalloc d_witness2");
+
+    cudaMalloc(&ctx->buffer_pool->d_contact_normals, sizeof(gkFloat) * max_pairs * 3);
+    checkCUDAError("cudaMalloc d_contact_normals");
+
     // Allocate spatial grid for broad-phase culling
     int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
     cudaMalloc(&ctx->d_grid, sizeof(GridCell) * total_cells);
@@ -520,6 +686,9 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
         cudaFree(ctx->buffer_pool->d_polytopes2);
         cudaFree(ctx->buffer_pool->d_simplices);
         cudaFree(ctx->buffer_pool->d_distances);
+        cudaFree(ctx->buffer_pool->d_witness1);
+        cudaFree(ctx->buffer_pool->d_witness2);
+        cudaFree(ctx->buffer_pool->d_contact_normals);
         free(ctx->buffer_pool);
     }
 
@@ -541,6 +710,7 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
 bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
                              const GJK_Shape* shape,
                              Vector3f position, Vector3f velocity,
+                             Quaternion orientation, Vector3f angular_velocity,
                              float mass, float radius)
 {
     if (!context || !shape) return false;
@@ -549,8 +719,11 @@ bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
     // Store physics object on host (removed initial_position and initial_velocity)
     context->h_objects[object_id].position = position;
     context->h_objects[object_id].velocity = velocity;
+    context->h_objects[object_id].orientation = orientation;
+    context->h_objects[object_id].angular_velocity = angular_velocity;
     context->h_objects[object_id].mass = mass;
     context->h_objects[object_id].radius = radius;
+    context->h_objects[object_id].inertia = INERTIA_ICOSAHEDRON * mass * radius * radius;
 
     // Store local-space vertex offsets in consolidated buffer
     int num_verts = shape->num_vertices;
@@ -644,7 +817,7 @@ bool gpu_gjk_set_collision_pairs(GPU_GJK_Context* context, int* pairs, int num_p
 }
 
 // CUDA kernel: Transform local vertices to world space
-// Recalculates world = local + position each frame (keeps vertices in sync with object position)
+// Recalculates world = rotate(local) + position each frame (keeps vertices in sync with object)
 __global__ void transform_to_world_kernel(GPU_PhysicsObject* objects,
                                           gkFloat* local_coords,
                                           gkFloat* world_coords,
@@ -659,13 +832,23 @@ __global__ void transform_to_world_kernel(GPU_PhysicsObject* objects,
     if (obj_id >= num_objects) return;
     if (vert_id >= 12) return;  // Icosahedron has 12 vertices
 
-    // Calculate offsets for this vertex
+    GPU_PhysicsObject* obj = &objects[obj_id];
     int vertex_offset = (obj_id * 12 + vert_id) * 3;
 
-    // Transform: world = local + position
-    world_coords[vertex_offset + 0] = local_coords[vertex_offset + 0] + objects[obj_id].position.x;
-    world_coords[vertex_offset + 1] = local_coords[vertex_offset + 1] + objects[obj_id].position.y;
-    world_coords[vertex_offset + 2] = local_coords[vertex_offset + 2] + objects[obj_id].position.z;
+    // Get local vertex
+    Vector3f local_vert = {
+        local_coords[vertex_offset + 0],
+        local_coords[vertex_offset + 1],
+        local_coords[vertex_offset + 2]
+    };
+
+    // Apply rotation first, then translation
+    Vector3f rotated = quat_rotate_vector(obj->orientation, local_vert);
+
+    // Transform to world space: world = rotate(local) + position
+    world_coords[vertex_offset + 0] = rotated.x + obj->position.x;
+    world_coords[vertex_offset + 1] = rotated.y + obj->position.y;
+    world_coords[vertex_offset + 2] = rotated.z + obj->position.z;
 }
 
 bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* params)
@@ -720,15 +903,49 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
             num_pairs);
         checkCUDAError("compute_minimum_distance (GJK)", __LINE__);
 
-        // Step 5: Fused collision check + response
-        int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        check_and_respond_kernel<<<pairBlocks, BLOCK_SIZE>>>(
-            context->d_objects, context->d_collision_pairs,
+        // Step 5: EPA - Compute witness points and contact normals for rotation
+        // EPA uses 32 threads per collision (full warp)
+        const int epaThreadsPerCollision = 32;
+        int epaBlocks = (num_pairs + epaThreadsPerCollision - 1) / epaThreadsPerCollision;
+
+        compute_epa<<<epaBlocks, epaThreadsPerCollision>>>(
+            context->buffer_pool->d_polytopes1,
+            context->buffer_pool->d_polytopes2,
+            context->buffer_pool->d_simplices,
             context->buffer_pool->d_distances,
+            context->buffer_pool->d_witness1,
+            context->buffer_pool->d_witness2,
+            context->buffer_pool->d_contact_normals,
+            num_pairs);
+        checkCUDAError("compute_epa (EPA)", __LINE__);
+
+        // DEBUG: Print first few distances to see what EPA is producing
+        static int debug_counter = 0;
+        if (debug_counter++ % 60 == 0 && num_pairs > 0) {
+            gkFloat h_distances[10];
+            int check_count = num_pairs < 10 ? num_pairs : 10;
+            cudaMemcpy(h_distances, context->buffer_pool->d_distances,
+                      sizeof(gkFloat) * check_count, cudaMemcpyDeviceToHost);
+            printf("DEBUG: First %d distances after EPA: ", check_count);
+            for (int i = 0; i < check_count; i++) {
+                printf("%.3f ", h_distances[i]);
+            }
+            printf("\n");
+        }
+
+        // Step 6: Collision response with rotation and torque
+        int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        check_and_respond_with_rotation_kernel<<<pairBlocks, BLOCK_SIZE>>>(
+            context->d_objects,
+            context->d_collision_pairs,
+            context->buffer_pool->d_distances,
+            context->buffer_pool->d_witness1,
+            context->buffer_pool->d_witness2,
+            context->buffer_pool->d_contact_normals,
             params->collisionEpsilon,
             num_pairs,
             num_objs);
-        checkCUDAError("check_and_respond_kernel", __LINE__);
+        checkCUDAError("check_and_respond_with_rotation_kernel", __LINE__);
     }
 
     // No sync needed - GPU->CPU transfer in get_render_data will implicitly sync

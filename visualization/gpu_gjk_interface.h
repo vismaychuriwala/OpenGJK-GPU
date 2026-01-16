@@ -6,6 +6,11 @@
 extern "C" {
 #endif
 
+// Quaternion type for 3D rotation
+typedef struct {
+    float w, x, y, z;  // w is scalar part
+} Quaternion;
+
 // Forward declaration only - no struct definition
 typedef struct GPU_GJK_Context GPU_GJK_Context;
 
@@ -33,6 +38,7 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context);
 bool gpu_gjk_register_object(GPU_GJK_Context* context, int object_id,
                              const GJK_Shape* shape,
                              Vector3f position, Vector3f velocity,
+                             Quaternion orientation, Vector3f angular_velocity,
                              float mass, float radius);
 
 // Set collision pairs (call once at startup)

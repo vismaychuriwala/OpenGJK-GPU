@@ -27,6 +27,8 @@
 #define DAMPING_COEFF 0.95f
 #define COLLISION_EPSILON 0.1f
 #define RESTITUTION 0.8f
+#define ANGULAR_DAMPING 0.98f       // Air resistance for rotation
+#define INERTIA_ICOSAHEDRON 0.4f    // I = 0.4 * mass * radius^2 (approximate)
 
 // Helper macro to compute boundary size based on object count
 #define COMPUTE_BOUNDARY(num_objects) \

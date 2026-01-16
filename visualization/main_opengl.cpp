@@ -198,7 +198,14 @@ int main(void) {
             vel.y = objects[i].velocity[1];
             vel.z = objects[i].velocity[2];
 
+            // Identity quaternion (no initial rotation)
+            Quaternion orientation = {1.0f, 0.0f, 0.0f, 0.0f};
+
+            // Zero angular velocity (not spinning initially)
+            Vector3f angular_vel = {0.0f, 0.0f, 0.0f};
+
             gpu_gjk_register_object(gpu_ctx, i, &gjk_shapes[i], pos, vel,
+                                   orientation, angular_vel,
                                    objects[i].mass, objects[i].radius);
         }
 
