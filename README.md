@@ -4,9 +4,9 @@ CUDA implementation of [openGJK](https://github.com/MattiaMontanari/openGJK) and
 
 **Contributors:** [Marcus Hedlund](https://github.com/mhedlund7), [Vismay Churiwala](https://vismaychuriwala.com/), [Cindy Wei](https://www.linkedin.com/in/cindy-wei-7ba778227/?utm_source=share&utm_campaign=share_via&utm_content=profile&utm_medium=ios_app)
 
-https://github.com/user-attachments/assets/62ae9925-616c-447a-969d-25487e2ee11c
+https://github.com/user-attachments/assets/70eb00b7-2d5a-4ff5-84ec-ee096b90c1f6
 
-*1000 Polytopes Collision Simulation at 60 FPS*
+*Real time 1000 Polytopes Collision Simulation, check out the 20,000 polytopes demo [here](#visualization)*
 ## Overview
 
 OpenGJK-GPU provides efficient GPU-accelerated implementations of the **GJK (Gilbert-Johnson-Keerthi)** and **EPA (Expanding Polytope Algorithm)** algorithms for collision detection between convex polytopes.
@@ -197,9 +197,9 @@ Performance benchmarks demonstrate significant GPU acceleration across varying p
 
 ## Visualization
 
-https://github.com/user-attachments/assets/70eb00b7-2d5a-4ff5-84ec-ee096b90c1f6
+https://github.com/user-attachments/assets/62ae9925-616c-447a-969d-25487e2ee11c
 
-*20,000 Polytopes Collision Simulation at 60 FPS - demonstrating the algorithm's scalability*
+*20,000 Polytopes Collision Simulation at 60 FPS*
 
 The repository includes a real-time physics simulation visualizer demonstrating collision detection with thousands of polytopes at 60 FPS. The simulation employs **spatial grid subdivision** for broad-phase culling, dynamically generating collision pairs each frame to minimize unnecessary GJK computations. Two visualization options are available: **OpenGL** (recommended, faster) and **Raylib** (legacy).
 
