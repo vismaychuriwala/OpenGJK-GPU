@@ -239,6 +239,65 @@ main() {
          simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
   printf("================================================================================\n");
 
+  /* Test indexed API: Interlace polytopes into single array */
+  printf("\n");
+  printf("================================================================================\n");
+  printf("                        TESTING INDEXED API                                     \n");
+  printf("================================================================================\n");
+
+  // Create interlaced polytope array (polytopes[2*i] and polytopes[2*i+1] form pair i)
+  gkPolytope* indexed_polytopes = (gkPolytope*)malloc(2 * NUM_POLYTOPES * sizeof(gkPolytope));
+  for (int i = 0; i < NUM_POLYTOPES; i++) {
+    indexed_polytopes[2*i] = polytopes1[i];     // Even indices: first polytope of pair
+    indexed_polytopes[2*i+1] = polytopes2[i];   // Odd indices: second polytope of pair
+  }
+
+  // Create collision pairs
+  gkCollisionPair* pairs = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
+  for (int i = 0; i < NUM_POLYTOPES; i++) {
+    pairs[i].idx1 = 2*i;      // First polytope (even index)
+    pairs[i].idx2 = 2*i + 1;  // Second polytope (odd index)
+  }
+
+  // Allocate output arrays for indexed test
+  gkSimplex* indexed_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+  gkFloat* indexed_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+  for (int i = 0; i < NUM_POLYTOPES; i++) {
+    indexed_simplices[i].nvrtx = 0;
+  }
+
+  // Run indexed GJK
+  compute_minimum_distance_indexed(2 * NUM_POLYTOPES, NUM_POLYTOPES,
+                                   indexed_polytopes, pairs,
+                                   indexed_simplices, indexed_distances);
+  float indexed_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+  // Validate indexed results against regular GPU results
+  bool indexed_passed = true;
+  for (int i = 0; i < test_count; i++) {
+    gkFloat diff = fabs(indexed_distances[i] - gpu_distances[i]);
+    if (diff > tolerance) {
+      indexed_passed = false;
+      printf("  Mismatch at index %d: Indexed=%.6f, Regular=%.6f, diff=%.6e\n",
+             i, indexed_distances[i], gpu_distances[i], diff);
+    }
+  }
+
+  printf("Indexed API vs Regular:    ");
+  if (indexed_passed) {
+    printf("\033[32mPASSED\033[0m (first %d results within %.0e tolerance)\n", test_count, tolerance);
+  } else {
+    printf("\033[31mFAILED\033[0m\n");
+  }
+  printf("Indexed GPU time:          %.4f ms\n", indexed_gpu_time);
+  printf("Regular GPU time:          %.4f ms\n", gpu_time);
+  printf("================================================================================\n");
+
+  // Free indexed test memory
+  free(indexed_polytopes);
+  free(pairs);
+  free(indexed_simplices);
+  free(indexed_distances);
 
   /* Free all allocated memory */
   for (int i = 0; i < NUM_POLYTOPES; i++) {

@@ -1697,8 +1697,8 @@ __device__ inline static void support_parallel(gkPolytope* body,
 }
 
 __global__ void compute_minimum_distance_kernel(
-  const gkPolytope* polytypes1,
-  const gkPolytope* polytypes2,
+  const gkPolytope* polytopes1,
+  const gkPolytope* polytopes2,
   gkSimplex* simplices,
   gkFloat* distances,
   const int n) {
@@ -1727,8 +1727,236 @@ __global__ void compute_minimum_distance_kernel(
   // all threads in the half-warp work on the same collision
 
   // Copy to local memory for fast access during iteration
-  gkPolytope bd1 = polytypes1[half_warp_idx];
-  gkPolytope bd2 = polytypes2[half_warp_idx];
+  gkPolytope bd1 = polytopes1[half_warp_idx];
+  gkPolytope bd2 = polytopes2[half_warp_idx];
+  gkSimplex s = simplices[half_warp_idx];
+
+  unsigned int k = 0;                /**< Iteration counter                 */
+  const int mk = 25;                 /**< Maximum number of GJK iterations  */
+  const gkFloat eps_rel = eps_rel22; /**< Tolerance on relative             */
+  const gkFloat eps_tot = eps_tot22; /**< Tolerance on absolute distance    */
+
+  const gkFloat eps_rel2 = eps_rel * eps_rel;
+  unsigned int i;
+  gkFloat w[3];
+  int w_idx[2];
+  gkFloat v[3];
+  gkFloat vminus[3];
+  gkFloat norm2Wmax = 0;
+
+  // Synchronize all threads in the half-warp before starting
+  __syncwarp(half_warp_mask);
+
+  // Initialize search direction
+  v[0] = bd1.coord[0] - bd2.coord[0];
+  v[1] = bd1.coord[1] - bd2.coord[1];
+  v[2] = bd1.coord[2] - bd2.coord[2];
+
+  // Initialize simplex (half warp lead thread sets it up, then shuffles to all threads)
+  if (half_lane_idx == 0) {
+    s.nvrtx = 1;
+    for (int t = 0; t < 3; ++t) {
+      s.vrtx[0][t] = v[t];
+    }
+    s.vrtx_idx[0][0] = 0;
+    s.vrtx_idx[0][1] = 0;
+
+    for (int t = 0; t < 3; ++t) {
+      bd1.s[t] = bd1.coord[t];
+    }
+    bd1.s_idx = 0;
+
+    for (int t = 0; t < 3; ++t) {
+      bd2.s[t] = bd2.coord[t];
+    }
+    bd2.s_idx = 0;
+  }
+
+  __syncwarp(half_warp_mask);
+
+  // Broadcast initial simplex state to all threads from thread 0 of our half-warp
+  s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
+  for (int t = 0; t < 3; ++t) {
+    s.vrtx[0][t] = __shfl_sync(half_warp_mask, s.vrtx[0][t], half_warp_base_thread_idx);
+  }
+  s.vrtx_idx[0][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][0], half_warp_base_thread_idx);
+  s.vrtx_idx[0][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][1], half_warp_base_thread_idx);
+
+  // Broadcast initial support points to all threads (needed for support_parallel)
+  bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
+  bd1.s[1] = __shfl_sync(half_warp_mask, bd1.s[1], half_warp_base_thread_idx);
+  bd1.s[2] = __shfl_sync(half_warp_mask, bd1.s[2], half_warp_base_thread_idx);
+  bd1.s_idx = __shfl_sync(half_warp_mask, bd1.s_idx, half_warp_base_thread_idx);
+  bd2.s[0] = __shfl_sync(half_warp_mask, bd2.s[0], half_warp_base_thread_idx);
+  bd2.s[1] = __shfl_sync(half_warp_mask, bd2.s[1], half_warp_base_thread_idx);
+  bd2.s[2] = __shfl_sync(half_warp_mask, bd2.s[2], half_warp_base_thread_idx);
+  bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
+
+  /* Begin GJK iteration */
+  // Thread 0 controls the loop but all threads participate in parallel operations
+  bool continue_iteration = true;
+
+  while (continue_iteration) {
+    // Broadcast k and s.nvrtx to all threads for loop condition check
+    k = __shfl_sync(half_warp_mask, k, half_warp_base_thread_idx);
+    s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
+
+    // Check loop conditions
+    if (s.nvrtx == 4 || k == mk) {
+      continue_iteration = false;
+      break;
+    }
+
+    if (half_lane_idx == 0) {
+      k++;
+    }
+
+    __syncwarp(half_warp_mask);
+
+    /* Update negative search direction - all threads compute*/
+    // Note: v is already the same on all threads from previous iteration
+    for (int t = 0; t < 3; ++t) {
+      vminus[t] = -v[t];
+    }
+
+    /* Support function - parallelized using all threads */
+    // All threads participate in finding support points for speedup but only thread 0 updates the body
+    support_parallel(&bd1, vminus, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
+    support_parallel(&bd2, v, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
+
+    __syncwarp(half_warp_mask);
+
+    // bd1.s and bd2.s are updated by support_parallel
+    // Broadcast the updated support points to ensure all threads have them
+    bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
+    bd1.s[1] = __shfl_sync(half_warp_mask, bd1.s[1], half_warp_base_thread_idx);
+    bd1.s[2] = __shfl_sync(half_warp_mask, bd1.s[2], half_warp_base_thread_idx);
+    bd1.s_idx = __shfl_sync(half_warp_mask, bd1.s_idx, half_warp_base_thread_idx);
+    bd2.s[0] = __shfl_sync(half_warp_mask, bd2.s[0], half_warp_base_thread_idx);
+    bd2.s[1] = __shfl_sync(half_warp_mask, bd2.s[1], half_warp_base_thread_idx);
+    bd2.s[2] = __shfl_sync(half_warp_mask, bd2.s[2], half_warp_base_thread_idx);
+    bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
+
+    // all threads compute w for witness point computation
+    for (int t = 0; t < 3; ++t) {
+      w[t] = bd1.s[t] - bd2.s[t];
+    }
+    w_idx[0] = bd1.s_idx;
+    w_idx[1] = bd2.s_idx;
+
+    /* Test first exit condition (new point already in simplex/can't move
+     * further) */
+    gkFloat norm2_v = norm2(v);
+    gkFloat exeedtol_rel = (norm2_v - dotProduct(v, w));
+
+    //check exit conditions
+    bool should_break = false;
+    if (exeedtol_rel <= (eps_rel * norm2_v) || exeedtol_rel < eps_tot22) {
+      should_break = true;
+    }
+    if (norm2_v < eps_rel2) {
+      should_break = true;
+    }
+    // if any thread should break, all threads break at same spot
+    if (should_break) {
+      continue_iteration = false;
+      break;
+    }
+
+    /* Add new vertex to simplex - only thread 0 does this then shuffles to all threads*/
+    if (half_lane_idx == 0) {
+      i = s.nvrtx;
+      for (int t = 0; t < 3; ++t) {
+        s.vrtx[i][t] = w[t];
+      }
+      s.vrtx_idx[i][0] = w_idx[0];
+      s.vrtx_idx[i][1] = w_idx[1];
+      s.nvrtx++;
+    }
+
+    // Broadcast updated simplex state
+    s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
+    i = __shfl_sync(half_warp_mask, i, half_warp_base_thread_idx);
+
+    // Broadcast new vertex coordinates to all threads
+    for (int t = 0; t < 3; ++t) {
+      s.vrtx[i][t] = __shfl_sync(half_warp_mask, s.vrtx[i][t], half_warp_base_thread_idx);
+    }
+    s.vrtx_idx[i][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][0], half_warp_base_thread_idx);
+    s.vrtx_idx[i][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][1], half_warp_base_thread_idx);
+
+    __syncwarp(half_warp_mask);
+
+    /* Invoke distance sub-algorithm (warp-parallel wrapper).*/
+    subalgorithm_warp_parallel(&s, v, half_lane_idx, half_warp_mask,
+      half_warp_base_thread_idx);
+
+    /* Test */
+    // All threads compute the same value since s.vrtx is the same on all threads (broadcast earlier)
+    for (int jj = 0; jj < s.nvrtx; jj++) {
+      gkFloat tesnorm = norm2(s.vrtx[jj]);
+      if (tesnorm > norm2Wmax) {
+        norm2Wmax = tesnorm;
+      }
+    }
+
+    // Check exit condition
+    norm2_v = norm2(v);
+    if ((norm2_v <= (eps_tot * eps_tot * norm2Wmax))) {
+      continue_iteration = false;
+    }
+
+    __syncwarp(half_warp_mask);
+  }
+
+  if (half_lane_idx == 0 && k == mk) {
+    // mexPrintf(
+    //     "\n * * * * * * * * * * * * MAXIMUM ITERATION NUMBER REACHED!!!  "
+    //     " * * * * * * * * * * * * * * \n");
+  }
+
+  // Compute witnesses and final distance on first thread only
+  if (half_lane_idx == 0) {
+    compute_witnesses(&bd1, &bd2, &s);
+    distances[half_warp_idx] = gkSqrt(norm2(v));
+    // Write back updated simplex
+    simplices[half_warp_idx] = s;
+  }
+}
+
+__global__ void compute_minimum_distance_indexed_kernel(
+    const gkPolytope* polytopes,
+    const gkCollisionPair* pairs,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    const int n
+) {// Calculate which collision this half-warp handles
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  int half_warp_idx = index / THREADS_PER_COMPUTATION;
+
+  // Get thread indexwithin the warp (0-31) and within the half-warp (0-15)
+  int warp_lane_idx = threadIdx.x % 32;  // Lane ID within warp
+  int half_warp_in_warp = warp_lane_idx / THREADS_PER_COMPUTATION;  // Which half-warp iwe are in (0 or 1)
+  int half_lane_idx = warp_lane_idx % THREADS_PER_COMPUTATION;  // thread idx within half-warp (0-15)
+
+  // Calculate the lead thread index for our half-warp within the warp (0 or 16)
+  // This is the thread that will coordinate the half warp and complete and broadcast computations we only need one thread to do
+  int half_warp_base_thread_idx = half_warp_in_warp * THREADS_PER_COMPUTATION;
+
+  // Create mask for our half-warp (0xFFFF for first half, 0xFFFF0000 for second half) to determine which threads to sync with
+  unsigned int half_warp_mask = (half_warp_in_warp == 0) ? 0xFFFF : 0xFFFF0000;
+
+  if (half_warp_idx >= n) {
+    return;
+  }
+
+  // Each half-warp (16 threads) handles a single GJK computation
+  // all threads in the half-warp work on the same collision
+
+  // Copy to local memory for fast access during iteration
+  gkCollisionPair pair = pairs[half_warp_idx];
+  gkPolytope bd1 = polytopes[pair.idx1];
+  gkPolytope bd2 = polytopes[pair.idx2];
   gkSimplex s = simplices[half_warp_idx];
 
   unsigned int k = 0;                /**< Iteration counter                 */
@@ -3502,6 +3730,78 @@ void free_epa_device_arrays(
     if (d_witness1) cudaFree(d_witness1);
     if (d_witness2) cudaFree(d_witness2);
     if (d_contact_normals) cudaFree(d_contact_normals);
+}
+
+// ============================================================================
+// INDEXED API IMPLEMENTATION
+// ============================================================================
+
+void compute_minimum_distance_indexed(
+    const int num_polytopes,
+    const int num_pairs,
+    const gkPolytope* polytopes,
+    const gkCollisionPair* pairs,
+    gkSimplex* simplices,
+    gkFloat* distances) {
+
+    if (num_pairs <= 0 || num_polytopes <= 0) return;
+
+    // Allocate device memory
+    gkPolytope* d_polytopes = nullptr;
+    gkCollisionPair* d_pairs = nullptr;
+    gkSimplex* d_simplices = nullptr;
+    gkFloat* d_distances = nullptr;
+    gkFloat* d_coords = nullptr;
+
+    // Allocate polytope and pair arrays
+    cudaMalloc(&d_polytopes, num_polytopes * sizeof(gkPolytope));
+    cudaMalloc(&d_pairs, num_pairs * sizeof(gkCollisionPair));
+    cudaMalloc(&d_simplices, num_pairs * sizeof(gkSimplex));
+    cudaMalloc(&d_distances, num_pairs * sizeof(gkFloat));
+
+    // Calculate total coordinates size
+    int total_verts = 0;
+    for (int i = 0; i < num_polytopes; i++) {
+        total_verts += polytopes[i].numpoints;
+    }
+    cudaMalloc(&d_coords, total_verts * 3 * sizeof(gkFloat));
+
+    // Copy coordinates and update polytope pointers
+    gkPolytope* temp_polytopes = (gkPolytope*)malloc(num_polytopes * sizeof(gkPolytope));
+    int coord_offset = 0;
+    for (int i = 0; i < num_polytopes; i++) {
+        temp_polytopes[i] = polytopes[i];
+        temp_polytopes[i].coord = d_coords + coord_offset;
+        cudaMemcpy(temp_polytopes[i].coord, polytopes[i].coord,
+                   polytopes[i].numpoints * 3 * sizeof(gkFloat), cudaMemcpyHostToDevice);
+        coord_offset += polytopes[i].numpoints * 3;
+    }
+
+    // Copy polytope descriptors and pairs
+    cudaMemcpy(d_polytopes, temp_polytopes, num_polytopes * sizeof(gkPolytope), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pairs, pairs, num_pairs * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
+    cudaMemset(d_simplices, 0, num_pairs * sizeof(gkSimplex));
+
+    // Launch kernel - same configuration as regular GJK
+    int blockSize = 256;
+    int collisionsPerBlock = blockSize / THREADS_PER_COMPUTATION;
+    int numBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
+
+    compute_minimum_distance_indexed_kernel<<<numBlocks, blockSize>>>(
+        d_polytopes, d_pairs, d_simplices, d_distances, num_pairs);
+    cudaDeviceSynchronize();
+
+    // Copy results back
+    cudaMemcpy(simplices, d_simplices, num_pairs * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+    cudaMemcpy(distances, d_distances, num_pairs * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+
+    // Free device memory
+    cudaFree(d_polytopes);
+    cudaFree(d_pairs);
+    cudaFree(d_simplices);
+    cudaFree(d_distances);
+    cudaFree(d_coords);
+    free(temp_polytopes);
 }
 
 

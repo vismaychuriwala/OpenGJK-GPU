@@ -14,7 +14,7 @@
 
 /*! @brief Invoke the warp-parallel GJK algorithm to compute the minimum distance between two
  * polytopes using 16 threads per collision. */
-__global__ void compute_minimum_distance_kernel(const gkPolytope* polytypes1, const gkPolytope* polytypes2,
+__global__ void compute_minimum_distance_kernel(const gkPolytope* polytopes1, const gkPolytope* polytopes2,
   gkSimplex* simplices, gkFloat* distances, const int n);
 
 /*! @brief Invoke the warp-parallel EPA algorithm to compute penetration depth and witness points
@@ -275,6 +275,51 @@ void free_epa_device_arrays(
     gkFloat* d_witness1,
     gkFloat* d_witness2,
     gkFloat* d_contact_normals = nullptr
+);
+
+// ============================================================================
+// INDEXED API: For reusable polytopes with index pairs
+// ============================================================================
+
+/**
+ * @brief Index pair specifying which polytopes to check for collision.
+ */
+struct gkCollisionPair {
+    int idx1;  // Index of first polytope
+    int idx2;  // Index of second polytope
+};
+
+/*! @brief Invoke the warp-parallel GJK algorithm using indexed polytope pairs.
+ * Uses 16 threads per collision. Thread i uses pairs[i] to look up polytopes. */
+__global__ void compute_minimum_distance_indexed_kernel(
+    const gkPolytope* polytopes,
+    const gkCollisionPair* pairs,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    const int n
+);
+
+/**
+ * @brief Computes minimum distance using indexed polytope pairs (high-level API).
+ *
+ * Uses a single polytope array with index pairs for collision checks.
+ * More efficient when polytopes are reused in multiple collision tests.
+ * Handles all GPU memory allocation and transfers internally.
+ *
+ * @param num_polytopes Total number of unique polytopes
+ * @param num_pairs     Number of collision pairs to check
+ * @param polytopes     Array of all polytopes (host memory)
+ * @param pairs         Array of index pairs specifying which polytopes to check (host memory)
+ * @param simplices     Array to store resulting simplices (host memory)
+ * @param distances     Array to store distances (host memory)
+ */
+void compute_minimum_distance_indexed(
+    const int num_polytopes,
+    const int num_pairs,
+    const gkPolytope* polytopes,
+    const gkCollisionPair* pairs,
+    gkSimplex* simplices,
+    gkFloat* distances
 );
 
 #endif  // OPENGJK_H__
