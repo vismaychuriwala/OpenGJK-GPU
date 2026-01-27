@@ -829,7 +829,6 @@ __device__ inline static void subalgorithm_warp_parallel(
   s->nvrtx =
     __shfl_sync(half_warp_mask, s->nvrtx, half_warp_base_thread_idx);
 
-  #pragma unroll
   for (int vtx = 0; vtx < s->nvrtx; ++vtx) {
     #pragma unroll
     for (int t = 0; t < 3; ++t) {
@@ -1208,8 +1207,8 @@ __device__ inline static void support_parallel(gkPolytope* body,
   global_maxs = __shfl_sync(half_warp_mask, global_maxs, half_warp_base_thread_idx);
   global_better = __shfl_sync(half_warp_mask, global_better, half_warp_base_thread_idx);
 
-  // Thread 0 in the half-warp updates the body with the best result
-  if (half_lane_idx == 0 && global_better != -1) {
+  // All threads update their local copy (all have identical global_better)
+  if (global_better != -1) {
     body->s[0] = getCoord(body, global_better, 0);
     body->s[1] = getCoord(body, global_better, 1);
     body->s[2] = getCoord(body, global_better, 2);
@@ -1273,49 +1272,26 @@ __global__ void compute_minimum_distance_kernel(
   v[1] = bd1.coord[1] - bd2.coord[1];
   v[2] = bd1.coord[2] - bd2.coord[2];
 
-  // Initialize simplex (half warp lead thread sets it up, then shuffles to all threads)
-  if (half_lane_idx == 0) {
-    s.nvrtx = 1;
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      s.vrtx[0][t] = v[t];
-    }
-    s.vrtx_idx[0][0] = 0;
-    s.vrtx_idx[0][1] = 0;
-
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      bd1.s[t] = bd1.coord[t];
-    }
-    bd1.s_idx = 0;
-
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      bd2.s[t] = bd2.coord[t];
-    }
-    bd2.s_idx = 0;
-  }
-
-  __syncwarp(half_warp_mask);
-
-  // Broadcast initial simplex state to all threads from thread 0 of our half-warp
-  s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
+  // Initialize simplex - all threads compute identical values, no broadcast needed
+  s.nvrtx = 1;
   #pragma unroll
   for (int t = 0; t < 3; ++t) {
-    s.vrtx[0][t] = __shfl_sync(half_warp_mask, s.vrtx[0][t], half_warp_base_thread_idx);
+    s.vrtx[0][t] = v[t];
   }
-  s.vrtx_idx[0][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][0], half_warp_base_thread_idx);
-  s.vrtx_idx[0][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][1], half_warp_base_thread_idx);
+  s.vrtx_idx[0][0] = 0;
+  s.vrtx_idx[0][1] = 0;
 
-  // Broadcast initial support points to all threads (needed for support_parallel)
-  bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
-  bd1.s[1] = __shfl_sync(half_warp_mask, bd1.s[1], half_warp_base_thread_idx);
-  bd1.s[2] = __shfl_sync(half_warp_mask, bd1.s[2], half_warp_base_thread_idx);
-  bd1.s_idx = __shfl_sync(half_warp_mask, bd1.s_idx, half_warp_base_thread_idx);
-  bd2.s[0] = __shfl_sync(half_warp_mask, bd2.s[0], half_warp_base_thread_idx);
-  bd2.s[1] = __shfl_sync(half_warp_mask, bd2.s[1], half_warp_base_thread_idx);
-  bd2.s[2] = __shfl_sync(half_warp_mask, bd2.s[2], half_warp_base_thread_idx);
-  bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
+  #pragma unroll
+  for (int t = 0; t < 3; ++t) {
+    bd1.s[t] = bd1.coord[t];
+  }
+  bd1.s_idx = 0;
+
+  #pragma unroll
+  for (int t = 0; t < 3; ++t) {
+    bd2.s[t] = bd2.coord[t];
+  }
+  bd2.s_idx = 0;
 
   /* Begin GJK iteration */
   // Thread 0 controls the loop but all threads participate in parallel operations
@@ -1332,11 +1308,7 @@ __global__ void compute_minimum_distance_kernel(
       break;
     }
 
-    if (half_lane_idx == 0) {
-      k++;
-    }
-
-    __syncwarp(half_warp_mask);
+    k++;
 
     /* Update negative search direction - all threads compute*/
     // Note: v is already the same on all threads from previous iteration
@@ -1349,19 +1321,6 @@ __global__ void compute_minimum_distance_kernel(
     // All threads participate in finding support points for speedup but only thread 0 updates the body
     support_parallel(&bd1, vminus, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
     support_parallel(&bd2, v, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
-
-    __syncwarp(half_warp_mask);
-
-    // bd1.s and bd2.s are updated by support_parallel
-    // Broadcast the updated support points to ensure all threads have them
-    bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
-    bd1.s[1] = __shfl_sync(half_warp_mask, bd1.s[1], half_warp_base_thread_idx);
-    bd1.s[2] = __shfl_sync(half_warp_mask, bd1.s[2], half_warp_base_thread_idx);
-    bd1.s_idx = __shfl_sync(half_warp_mask, bd1.s_idx, half_warp_base_thread_idx);
-    bd2.s[0] = __shfl_sync(half_warp_mask, bd2.s[0], half_warp_base_thread_idx);
-    bd2.s[1] = __shfl_sync(half_warp_mask, bd2.s[1], half_warp_base_thread_idx);
-    bd2.s[2] = __shfl_sync(half_warp_mask, bd2.s[2], half_warp_base_thread_idx);
-    bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
 
     // all threads compute w for witness point computation
     #pragma unroll
@@ -1390,31 +1349,15 @@ __global__ void compute_minimum_distance_kernel(
       break;
     }
 
-    /* Add new vertex to simplex - only thread 0 does this then shuffles to all threads*/
-    if (half_lane_idx == 0) {
-      i = s.nvrtx;
-      #pragma unroll
-      for (int t = 0; t < 3; ++t) {
-        s.vrtx[i][t] = w[t];
-      }
-      s.vrtx_idx[i][0] = w_idx[0];
-      s.vrtx_idx[i][1] = w_idx[1];
-      s.nvrtx++;
-    }
-
-    // Broadcast updated simplex state
-    s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
-    i = __shfl_sync(half_warp_mask, i, half_warp_base_thread_idx);
-
-    // Broadcast new vertex coordinates to all threads
+    /* Add new vertex to simplex - all threads compute identical values */
+    i = s.nvrtx;
     #pragma unroll
     for (int t = 0; t < 3; ++t) {
-      s.vrtx[i][t] = __shfl_sync(half_warp_mask, s.vrtx[i][t], half_warp_base_thread_idx);
+      s.vrtx[i][t] = w[t];
     }
-    s.vrtx_idx[i][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][0], half_warp_base_thread_idx);
-    s.vrtx_idx[i][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][1], half_warp_base_thread_idx);
-
-    __syncwarp(half_warp_mask);
+    s.vrtx_idx[i][0] = w_idx[0];
+    s.vrtx_idx[i][1] = w_idx[1];
+    s.nvrtx++;
 
     /* Invoke distance sub-algorithm (warp-parallel wrapper).*/
     subalgorithm_warp_parallel(&s, v, half_lane_idx, half_warp_mask,
@@ -1509,49 +1452,26 @@ __global__ void compute_minimum_distance_indexed_kernel(
   v[1] = bd1.coord[1] - bd2.coord[1];
   v[2] = bd1.coord[2] - bd2.coord[2];
 
-  // Initialize simplex (half warp lead thread sets it up, then shuffles to all threads)
-  if (half_lane_idx == 0) {
-    s.nvrtx = 1;
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      s.vrtx[0][t] = v[t];
-    }
-    s.vrtx_idx[0][0] = 0;
-    s.vrtx_idx[0][1] = 0;
-
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      bd1.s[t] = bd1.coord[t];
-    }
-    bd1.s_idx = 0;
-
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      bd2.s[t] = bd2.coord[t];
-    }
-    bd2.s_idx = 0;
-  }
-
-  __syncwarp(half_warp_mask);
-
-  // Broadcast initial simplex state to all threads from thread 0 of our half-warp
-  s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
+  // Initialize simplex - all threads compute identical values, no broadcast needed
+  s.nvrtx = 1;
   #pragma unroll
   for (int t = 0; t < 3; ++t) {
-    s.vrtx[0][t] = __shfl_sync(half_warp_mask, s.vrtx[0][t], half_warp_base_thread_idx);
+    s.vrtx[0][t] = v[t];
   }
-  s.vrtx_idx[0][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][0], half_warp_base_thread_idx);
-  s.vrtx_idx[0][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[0][1], half_warp_base_thread_idx);
+  s.vrtx_idx[0][0] = 0;
+  s.vrtx_idx[0][1] = 0;
 
-  // Broadcast initial support points to all threads (needed for support_parallel)
-  bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
-  bd1.s[1] = __shfl_sync(half_warp_mask, bd1.s[1], half_warp_base_thread_idx);
-  bd1.s[2] = __shfl_sync(half_warp_mask, bd1.s[2], half_warp_base_thread_idx);
-  bd1.s_idx = __shfl_sync(half_warp_mask, bd1.s_idx, half_warp_base_thread_idx);
-  bd2.s[0] = __shfl_sync(half_warp_mask, bd2.s[0], half_warp_base_thread_idx);
-  bd2.s[1] = __shfl_sync(half_warp_mask, bd2.s[1], half_warp_base_thread_idx);
-  bd2.s[2] = __shfl_sync(half_warp_mask, bd2.s[2], half_warp_base_thread_idx);
-  bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
+  #pragma unroll
+  for (int t = 0; t < 3; ++t) {
+    bd1.s[t] = bd1.coord[t];
+  }
+  bd1.s_idx = 0;
+
+  #pragma unroll
+  for (int t = 0; t < 3; ++t) {
+    bd2.s[t] = bd2.coord[t];
+  }
+  bd2.s_idx = 0;
 
   /* Begin GJK iteration */
   // Thread 0 controls the loop but all threads participate in parallel operations
@@ -1568,11 +1488,7 @@ __global__ void compute_minimum_distance_indexed_kernel(
       break;
     }
 
-    if (half_lane_idx == 0) {
-      k++;
-    }
-
-    __syncwarp(half_warp_mask);
+    k++;
 
     /* Update negative search direction - all threads compute*/
     // Note: v is already the same on all threads from previous iteration
@@ -1585,19 +1501,6 @@ __global__ void compute_minimum_distance_indexed_kernel(
     // All threads participate in finding support points for speedup but only thread 0 updates the body
     support_parallel(&bd1, vminus, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
     support_parallel(&bd2, v, half_lane_idx, half_warp_mask, half_warp_base_thread_idx);
-
-    __syncwarp(half_warp_mask);
-
-    // bd1.s and bd2.s are updated by support_parallel
-    // Broadcast the updated support points to ensure all threads have them
-    bd1.s[0] = __shfl_sync(half_warp_mask, bd1.s[0], half_warp_base_thread_idx);
-    bd1.s[1] = __shfl_sync(half_warp_mask, bd1.s[1], half_warp_base_thread_idx);
-    bd1.s[2] = __shfl_sync(half_warp_mask, bd1.s[2], half_warp_base_thread_idx);
-    bd1.s_idx = __shfl_sync(half_warp_mask, bd1.s_idx, half_warp_base_thread_idx);
-    bd2.s[0] = __shfl_sync(half_warp_mask, bd2.s[0], half_warp_base_thread_idx);
-    bd2.s[1] = __shfl_sync(half_warp_mask, bd2.s[1], half_warp_base_thread_idx);
-    bd2.s[2] = __shfl_sync(half_warp_mask, bd2.s[2], half_warp_base_thread_idx);
-    bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
 
     // all threads compute w for witness point computation
     #pragma unroll
@@ -1626,31 +1529,15 @@ __global__ void compute_minimum_distance_indexed_kernel(
       break;
     }
 
-    /* Add new vertex to simplex - only thread 0 does this then shuffles to all threads*/
-    if (half_lane_idx == 0) {
-      i = s.nvrtx;
-      #pragma unroll
-      for (int t = 0; t < 3; ++t) {
-        s.vrtx[i][t] = w[t];
-      }
-      s.vrtx_idx[i][0] = w_idx[0];
-      s.vrtx_idx[i][1] = w_idx[1];
-      s.nvrtx++;
-    }
-
-    // Broadcast updated simplex state
-    s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
-    i = __shfl_sync(half_warp_mask, i, half_warp_base_thread_idx);
-
-    // Broadcast new vertex coordinates to all threads
+    /* Add new vertex to simplex - all threads compute identical values */
+    i = s.nvrtx;
     #pragma unroll
     for (int t = 0; t < 3; ++t) {
-      s.vrtx[i][t] = __shfl_sync(half_warp_mask, s.vrtx[i][t], half_warp_base_thread_idx);
+      s.vrtx[i][t] = w[t];
     }
-    s.vrtx_idx[i][0] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][0], half_warp_base_thread_idx);
-    s.vrtx_idx[i][1] = __shfl_sync(half_warp_mask, s.vrtx_idx[i][1], half_warp_base_thread_idx);
-
-    __syncwarp(half_warp_mask);
+    s.vrtx_idx[i][0] = w_idx[0];
+    s.vrtx_idx[i][1] = w_idx[1];
+    s.nvrtx++;
 
     /* Invoke distance sub-algorithm (warp-parallel wrapper).*/
     subalgorithm_warp_parallel(&s, v, half_lane_idx, half_warp_mask,
