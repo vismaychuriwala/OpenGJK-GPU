@@ -25,51 +25,51 @@
 
 #define select_1ik()                                             \
   s->nvrtx = 3;                                                  \
-  for (t = 0; t < 3; t++) s->vrtx[2][t] = s->vrtx[3][t];         \
-  for (t = 0; t < 2; t++) s->vrtx_idx[2][t] = s->vrtx_idx[3][t]; \
-  for (t = 0; t < 3; t++) s->vrtx[1][t] = si[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = si_idx[t];         \
-  for (t = 0; t < 3; t++) s->vrtx[0][t] = sk[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sk_idx[t];
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[2][t] = s->vrtx[3][t];         \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[2][t] = s->vrtx_idx[3][t]; \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[1][t] = si[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = si_idx[t];         \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[0][t] = sk[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sk_idx[t];
 
 #define select_1ij()                                             \
   s->nvrtx = 3;                                                  \
-  for (t = 0; t < 3; t++) s->vrtx[2][t] = s->vrtx[3][t];         \
-  for (t = 0; t < 2; t++) s->vrtx_idx[2][t] = s->vrtx_idx[3][t]; \
-  for (t = 0; t < 3; t++) s->vrtx[1][t] = si[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = si_idx[t];         \
-  for (t = 0; t < 3; t++) s->vrtx[0][t] = sj[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sj_idx[t];
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[2][t] = s->vrtx[3][t];         \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[2][t] = s->vrtx_idx[3][t]; \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[1][t] = si[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = si_idx[t];         \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[0][t] = sj[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sj_idx[t];
 
 #define select_1jk()                                             \
   s->nvrtx = 3;                                                  \
-  for (t = 0; t < 3; t++) s->vrtx[2][t] = s->vrtx[3][t];         \
-  for (t = 0; t < 2; t++) s->vrtx_idx[2][t] = s->vrtx_idx[3][t]; \
-  for (t = 0; t < 3; t++) s->vrtx[1][t] = sj[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = sj_idx[t];         \
-  for (t = 0; t < 3; t++) s->vrtx[0][t] = sk[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sk_idx[t];
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[2][t] = s->vrtx[3][t];         \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[2][t] = s->vrtx_idx[3][t]; \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[1][t] = sj[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = sj_idx[t];         \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[0][t] = sk[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sk_idx[t];
 
 #define select_1i()                                              \
   s->nvrtx = 2;                                                  \
-  for (t = 0; t < 3; t++) s->vrtx[1][t] = s->vrtx[3][t];         \
-  for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = s->vrtx_idx[3][t]; \
-  for (t = 0; t < 3; t++) s->vrtx[0][t] = si[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = si_idx[t];
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[1][t] = s->vrtx[3][t];         \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = s->vrtx_idx[3][t]; \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[0][t] = si[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = si_idx[t];
 
 #define select_1j()                                              \
   s->nvrtx = 2;                                                  \
-  for (t = 0; t < 3; t++) s->vrtx[1][t] = s->vrtx[3][t];         \
-  for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = s->vrtx_idx[3][t]; \
-  for (t = 0; t < 3; t++) s->vrtx[0][t] = sj[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sj_idx[t];
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[1][t] = s->vrtx[3][t];         \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = s->vrtx_idx[3][t]; \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[0][t] = sj[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sj_idx[t];
 
 #define select_1k()                                              \
   s->nvrtx = 2;                                                  \
-  for (t = 0; t < 3; t++) s->vrtx[1][t] = s->vrtx[3][t];         \
-  for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = s->vrtx_idx[3][t]; \
-  for (t = 0; t < 3; t++) s->vrtx[0][t] = sk[t];                 \
-  for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sk_idx[t];
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[1][t] = s->vrtx[3][t];         \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[1][t] = s->vrtx_idx[3][t]; \
+  _Pragma("unroll") for (t = 0; t < 3; t++) s->vrtx[0][t] = sk[t];                 \
+  _Pragma("unroll") for (t = 0; t < 2; t++) s->vrtx_idx[0][t] = sk_idx[t];
 
 #define getvrtx(point, location)   \
   point[0] = s->vrtx[location][0]; \
@@ -833,18 +833,22 @@ __device__ inline static void S3D_warp_parallel(
     // simplex
     s->nvrtx = 3;
     if (!testPlaneTwo) {  // k = 2;   removes s2
+      #pragma unroll
       for (i = 0; i < 3; i++) {
         s->vrtx[2][i] = s->vrtx[3][i];
       }
+      #pragma unroll
       for (i = 0; i < 2; i++) {
         s->vrtx_idx[2][i] = s->vrtx_idx[3][i];
       }
     }
     else if (!testPlaneThree) {  // k = 1; // removes s3
+      #pragma unroll
       for (i = 0; i < 3; i++) {
         s->vrtx[1][i] = s2[i];
         s->vrtx[2][i] = s->vrtx[3][i];
       }
+      #pragma unroll
       for (i = 0; i < 2; i++) {
         s->vrtx_idx[1][i] = s2_idx[i];
         s->vrtx_idx[2][i] = s->vrtx_idx[3][i];
@@ -852,11 +856,13 @@ __device__ inline static void S3D_warp_parallel(
     }
     else if (!testPlaneFour) {  // k = 0; // removes s4  and no need to
       // reorder
+      #pragma unroll
       for (i = 0; i < 3; i++) {
         s->vrtx[0][i] = s3[i];
         s->vrtx[1][i] = s2[i];
         s->vrtx[2][i] = s->vrtx[3][i];
       }
+      #pragma unroll
       for (i = 0; i < 2; i++) {
         s->vrtx_idx[0][i] = s3_idx[i];
         s->vrtx_idx[1][i] = s2_idx[i];
@@ -1689,6 +1695,7 @@ __device__ inline static void support_parallel(gkPolytope* body,
   int global_better = local_better;
 
   // Reduction tree compare with threads at increasing offsets (power of 2)
+  #pragma unroll
   for (int offset = THREADS_PER_COMPUTATION / 2; offset > 0; offset /= 2) {
     // Get maxs and better index from thread at offset distance
     gkFloat other_maxs = __shfl_down_sync(half_warp_mask, global_maxs, offset);
@@ -2228,6 +2235,7 @@ __device__ inline static void compute_face_normal_distance(EPAPolytope* poly, in
 
   // Compute edge vectors
   gkFloat e0[3], e1[3];
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     e0[i] = v1[i] - v0[i];
     e1[i] = v2[i] - v0[i];
@@ -2239,18 +2247,21 @@ __device__ inline static void compute_face_normal_distance(EPAPolytope* poly, in
 
   if (norm_sq > gkEpsilon * gkEpsilon) {
     gkFloat norm = gkSqrt(norm_sq);
+    #pragma unroll
     for (int i = 0; i < 3; i++) {
       face->normal[i] /= norm;
     }
 
     // Ensure normal points away from centroid (outward from polytope interior)
     gkFloat to_centroid[3];
+    #pragma unroll
     for (int i = 0; i < 3; i++) {
       to_centroid[i] = centroid[i] - v0[i];
     }
 
     // If normal points toward centroid flip it
     if (dotProduct(face->normal, to_centroid) > 0) {
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         face->normal[i] = -face->normal[i];
       }
@@ -2260,6 +2271,7 @@ __device__ inline static void compute_face_normal_distance(EPAPolytope* poly, in
 
     if (face->distance < 0) {
       // Flip normal and distance
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         face->normal[i] = -face->normal[i];
       }
@@ -2280,6 +2292,7 @@ __device__ inline static bool is_face_visible(EPAPolytope* poly, int face_idx, c
 
   gkFloat* v0 = poly->vertices[face->v[0]];
   gkFloat diff[3];
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     diff[i] = point[i] - v0[i];
   }
@@ -2308,6 +2321,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
 
   // Search body1
   for (int i = start_idx; i < body1->numpoints && i < end_idx; i++) {
+    #pragma unroll
     for (int j = 0; j < 3; j++) {
       vrt[j] = getCoord(body1, i, j);
     }
@@ -2321,6 +2335,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
   // Search body2 opposite direction
   gkFloat neg_dir[3] = { -direction[0], -direction[1], -direction[2] };
   for (int i = start_idx; i < body2->numpoints && i < end_idx; i++) {
+    #pragma unroll
     for (int j = 0; j < 3; j++) {
       vrt[j] = getCoord(body2, i, j);
     }
@@ -2332,6 +2347,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
   }
 
   // Parallel reduction for body1
+  #pragma unroll
   for (int offset = 16; offset > 0; offset /= 2) {
     gkFloat other_max = __shfl_down_sync(warp_mask, local_max1, offset);
     int other_best = __shfl_down_sync(warp_mask, local_best1, offset);
@@ -2342,6 +2358,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
   }
 
   // Parallel reduction for body2
+  #pragma unroll
   for (int offset = 16; offset > 0; offset /= 2) {
     gkFloat other_max = __shfl_down_sync(warp_mask, local_max2, offset);
     int other_best = __shfl_down_sync(warp_mask, local_best2, offset);
@@ -2358,6 +2375,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
   // Compute Minkowski difference point
   if (warp_lane_idx == 0 && local_best1 >= 0 && local_best2 >= 0) {
     gkFloat p1[3], p2[3];
+    #pragma unroll
     for (int i = 0; i < 3; i++) {
       p1[i] = getCoord(body1, local_best1, i);
       p2[i] = getCoord(body2, local_best2, i);
@@ -2378,6 +2396,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
 // Initialize EPA polytope from GJK simplex (should be a tetrahedron)
 __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex, gkFloat* centroid) {
   // Clear all faces first
+  #pragma unroll
   for (int i = 0; i < MAX_EPA_FACES; ++i) {
     poly->faces[i].valid = false;
     poly->faces[i].distance = 1e10f;
@@ -2385,7 +2404,9 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
 
   // Copy vertices from simplex
   poly->num_vertices = 4;
+  #pragma unroll
   for (int i = 0; i < 4; i++) {
+    #pragma unroll
     for (int j = 0; j < 3; j++) {
       poly->vertices[i][j] = simplex->vrtx[i][j];
     }
@@ -2395,11 +2416,14 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
 
   // Compute centroid of the tetrahedron
   centroid[0] = centroid[1] = centroid[2] = 0.0f;
+  #pragma unroll
   for (int i = 0; i < 4; i++) {
+    #pragma unroll
     for (int j = 0; j < 3; j++) {
       centroid[j] += poly->vertices[i][j];
     }
   }
+  #pragma unroll
   for (int j = 0; j < 3; j++) {
     centroid[j] /= 4.0f;
   }
@@ -2431,7 +2455,9 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
   poly->faces[3].valid = true;
 
   // Copy vertex indices for witness point computation
+  #pragma unroll
   for (int f = 0; f < 4; f++) {
+    #pragma unroll
     for (int v = 0; v < 3; v++) {
       int vi = poly->faces[f].v[v];
       poly->faces[f].v_idx[v][0] = simplex->vrtx_idx[vi][0];
@@ -2440,12 +2466,14 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
   }
 
   // Compute normals and fix winding
+  #pragma unroll
   for (int f = 0; f < 4; f++) {
     gkFloat* v0 = poly->vertices[poly->faces[f].v[0]];
     gkFloat* v1 = poly->vertices[poly->faces[f].v[1]];
     gkFloat* v2 = poly->vertices[poly->faces[f].v[2]];
 
     gkFloat e0[3], e1[3], normal[3];
+    #pragma unroll
     for (int i = 0; i < 3; i++) {
       e0[i] = v1[i] - v0[i];
       e1[i] = v2[i] - v0[i];
@@ -2454,6 +2482,7 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
 
     // Vector from face to centroid
     gkFloat to_centroid[3];
+    #pragma unroll
     for (int i = 0; i < 3; i++) {
       to_centroid[i] = centroid[i] - v0[i];
     }
@@ -2483,6 +2512,7 @@ __device__ inline static void compute_barycentric_origin(
 
   // Compute vectors
   gkFloat e0[3], e1[3], v0_neg[3];
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     e0[i] = v1[i] - v0[i];
     e1[i] = v2[i] - v0[i];
@@ -2514,6 +2544,7 @@ __device__ inline static void compute_barycentric_origin(
     // Origin projects outside edge v1-v2
     // Project onto edge v1-v2
     gkFloat e12[3], v1_neg[3];
+    #pragma unroll
     for (int i = 0; i < 3; i++) {
       e12[i] = v2[i] - v1[i];
       v1_neg[i] = -v1[i];
@@ -2591,6 +2622,7 @@ __global__ void compute_epa_kernel(
   if (distance > gkEpsilon) {
     if (warp_lane_idx == 0) {
       // Witness points already computed by GJK: todo: witness points seem to be off in testing right now
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         witness1[warp_idx * 3 + i] = simplex.witnesses[0][i];
         witness2[warp_idx * 3 + i] = simplex.witnesses[1][i];
@@ -2598,12 +2630,14 @@ __global__ void compute_epa_kernel(
       // Compute contact normal from witness1 to witness2 (for non-colliding case)
       gkFloat w1_to_w2[3];
       gkFloat norm = 0.0f;
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         w1_to_w2[i] = witness2[warp_idx * 3 + i] - witness1[warp_idx * 3 + i];
         norm += w1_to_w2[i] * w1_to_w2[i];
       }
       norm = gkSqrt(norm);
       if (norm > gkEpsilon) {
+        #pragma unroll
         for (int i = 0; i < 3; i++) {
           contact_normals[warp_idx * 3 + i] = w1_to_w2[i] / norm;
         }
@@ -2660,6 +2694,7 @@ __global__ void compute_epa_kernel(
 
         if (is_new) {
           int idx = simplex.nvrtx;
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             simplex.vrtx[idx][c] = new_vertex[c];
           }
@@ -2670,6 +2705,7 @@ __global__ void compute_epa_kernel(
         else {
           // No new support point means penetration depth effectively zero.
           distances[warp_idx] = 0.0f;
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
             gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
@@ -2679,12 +2715,14 @@ __global__ void compute_epa_kernel(
           // Compute contact normal from witness1 to witness2
           gkFloat w1_to_w2[3];
           gkFloat norm = 0.0f;
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
             norm += w1_to_w2[c] * w1_to_w2[c];
           }
           norm = gkSqrt(norm);
           if (norm > gkEpsilon) {
+            #pragma unroll
             for (int c = 0; c < 3; ++c) {
               contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
             }
@@ -2705,6 +2743,7 @@ __global__ void compute_epa_kernel(
       // Broadcast updated simplex
       simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
       for (int v = 0; v < simplex.nvrtx; v++) {
+        #pragma unroll
         for (int c = 0; c < 3; c++) {
           simplex.vrtx[v][c] = __shfl_sync(warp_mask, simplex.vrtx[v][c], 0);
         }
@@ -2723,6 +2762,7 @@ __global__ void compute_epa_kernel(
 
       if (warp_lane_idx == 0) {
         gkFloat p0[3], p1[3], edge[3];
+        #pragma unroll
         for (int c = 0; c < 3; ++c) {
           p0[c] = simplex.vrtx[0][c];
           p1[c] = simplex.vrtx[1][c];
@@ -2773,6 +2813,7 @@ __global__ void compute_epa_kernel(
 
         if (is_new) {
           int idx = simplex.nvrtx;
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             simplex.vrtx[idx][c] = new_vertex[c];
           }
@@ -2783,6 +2824,7 @@ __global__ void compute_epa_kernel(
         else {
           // No new support point means penetration depth effectively zero.
           distances[warp_idx] = 0.0f;
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
             gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
@@ -2792,12 +2834,14 @@ __global__ void compute_epa_kernel(
           // Compute contact normal from witness1 to witness2
           gkFloat w1_to_w2[3];
           gkFloat norm = 0.0f;
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
             norm += w1_to_w2[c] * w1_to_w2[c];
           }
           norm = gkSqrt(norm);
           if (norm > gkEpsilon) {
+            #pragma unroll
             for (int c = 0; c < 3; ++c) {
               contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
             }
@@ -2818,6 +2862,7 @@ __global__ void compute_epa_kernel(
       // Broadcast updated simplex
       simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
       for (int v = 0; v < simplex.nvrtx; v++) {
+        #pragma unroll
         for (int c = 0; c < 3; c++) {
           simplex.vrtx[v][c] = __shfl_sync(warp_mask, simplex.vrtx[v][c], 0);
         }
@@ -2837,6 +2882,7 @@ __global__ void compute_epa_kernel(
       if (warp_lane_idx == 0) {
         gkFloat p0[3], p1[3], p2[3];
         gkFloat e0[3], e1[3];
+        #pragma unroll
         for (int c = 0; c < 3; ++c) {
           p0[c] = simplex.vrtx[0][c];
           p1[c] = simplex.vrtx[1][c];
@@ -2875,6 +2921,7 @@ __global__ void compute_epa_kernel(
 
         if (is_new) {
           int idx = simplex.nvrtx;
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             simplex.vrtx[idx][c] = new_vertex[c];
           }
@@ -2917,6 +2964,7 @@ __global__ void compute_epa_kernel(
 
           if (is_new) {
             int idx = simplex.nvrtx;
+            #pragma unroll
             for (int c = 0; c < 3; ++c) {
               simplex.vrtx[idx][c] = new_vertex[c];
             }
@@ -2926,6 +2974,7 @@ __global__ void compute_epa_kernel(
           }
           else {
             distances[warp_idx] = 0.0f;
+            #pragma unroll
             for (int c = 0; c < 3; ++c) {
               gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
               gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
@@ -2935,12 +2984,14 @@ __global__ void compute_epa_kernel(
             // Compute contact normal from witness1 to witness2
             gkFloat w1_to_w2[3];
             gkFloat norm = 0.0f;
+            #pragma unroll
             for (int c = 0; c < 3; ++c) {
               w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
               norm += w1_to_w2[c] * w1_to_w2[c];
             }
             norm = gkSqrt(norm);
             if (norm > gkEpsilon) {
+              #pragma unroll
               for (int c = 0; c < 3; ++c) {
                 contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
               }
@@ -2961,6 +3012,7 @@ __global__ void compute_epa_kernel(
       // Broadcast updated simplex
       simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
       for (int v = 0; v < simplex.nvrtx; v++) {
+        #pragma unroll
         for (int c = 0; c < 3; c++) {
           simplex.vrtx[v][c] = __shfl_sync(warp_mask, simplex.vrtx[v][c], 0);
         }
@@ -2976,12 +3028,14 @@ __global__ void compute_epa_kernel(
         // Compute contact normal from witness points if available
         gkFloat w1_to_w2[3];
         gkFloat norm = 0.0f;
+        #pragma unroll
         for (int c = 0; c < 3; ++c) {
           w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
           norm += w1_to_w2[c] * w1_to_w2[c];
         }
         norm = gkSqrt(norm);
         if (norm > gkEpsilon) {
+          #pragma unroll
           for (int c = 0; c < 3; ++c) {
             contact_normals[warp_idx * 3 + c] = w1_to_w2[c] / norm;
           }
@@ -3012,7 +3066,9 @@ __global__ void compute_epa_kernel(
   centroid[1] = __shfl_sync(warp_mask, centroid[1], 0);
   centroid[2] = __shfl_sync(warp_mask, centroid[2], 0);
 
+  #pragma unroll
   for (int i = 0; i < 4; i++) {
+    #pragma unroll
     for (int j = 0; j < 3; j++) {
       poly.vertices[i][j] = __shfl_sync(warp_mask, poly.vertices[i][j], 0);
     }
@@ -3020,7 +3076,9 @@ __global__ void compute_epa_kernel(
     poly.vertex_indices[i][1] = __shfl_sync(warp_mask, poly.vertex_indices[i][1], 0);
   }
 
+  #pragma unroll
   for (int f = 0; f < 4; f++) {
+    #pragma unroll
     for (int v = 0; v < 3; v++) {
       poly.faces[f].v[v] = __shfl_sync(warp_mask, poly.faces[f].v[v], 0);
       poly.faces[f].v_idx[v][0] = __shfl_sync(warp_mask, poly.faces[f].v_idx[v][0], 0);
@@ -3062,6 +3120,7 @@ __global__ void compute_epa_kernel(
         if (source_thread >= 32) source_thread = 31; // Clamp to valid thread index
         
         // Receive face data from the thread that computed it
+        #pragma unroll
         for (int c = 0; c < 3; c++) {
           poly.faces[i].normal[c] = __shfl_sync(warp_mask, poly.faces[i].normal[c], source_thread);
         }
@@ -3083,6 +3142,7 @@ __global__ void compute_epa_kernel(
     }
 
     // Parallel reduction across warp to find global minimum
+    #pragma unroll
     for (int offset = 16; offset > 0; offset /= 2) {
       gkFloat other_dist = __shfl_down_sync(warp_mask, local_closest_distance, offset);
       int other_face = __shfl_down_sync(warp_mask, local_closest_face, offset);
@@ -3140,6 +3200,7 @@ __global__ void compute_epa_kernel(
         int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
         int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
 
+        #pragma unroll
         for (int i = 0; i < 3; i++) {
           witness1[warp_idx * 3 + i] =
             getCoord(bd1, idx0[0], i) * a0 +
@@ -3155,6 +3216,7 @@ __global__ void compute_epa_kernel(
         distances[warp_idx] = -closest_distance;
         
         // Store contact normal (points from polytope1 to polytope2)
+        #pragma unroll
         for (int i = 0; i < 3; i++) {
           contact_normals[warp_idx * 3 + i] = closest->normal[i];
         }
@@ -3193,6 +3255,7 @@ __global__ void compute_epa_kernel(
         int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
         int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
 
+        #pragma unroll
         for (int i = 0; i < 3; i++) {
           witness1[warp_idx * 3 + i] =
             getCoord(bd1, idx0[0], i) * a0 +
@@ -3207,6 +3270,7 @@ __global__ void compute_epa_kernel(
         distances[warp_idx] = -closest_distance;
         
         // Store contact normal (points from polytope1 to polytope2)
+        #pragma unroll
         for (int i = 0; i < 3; i++) {
           contact_normals[warp_idx * 3 + i] = closest->normal[i];
         }
@@ -3218,6 +3282,7 @@ __global__ void compute_epa_kernel(
     int new_vertex_id = -1;
     if (warp_lane_idx == 0) {
       new_vertex_id = poly.num_vertices;
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         poly.vertices[new_vertex_id][i] = new_vertex[i];
       }
@@ -3227,6 +3292,7 @@ __global__ void compute_epa_kernel(
 
       // Update centroid incrementally
       gkFloat n = (gkFloat)poly.num_vertices;
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         centroid[i] = centroid[i] * (n - 1.0f) / n + new_vertex[i] / n;
       }
@@ -3236,6 +3302,7 @@ __global__ void compute_epa_kernel(
 
     // Broadcast new vertex
     new_vertex_id = __shfl_sync(warp_mask, new_vertex_id, 0);
+    #pragma unroll
     for (int i = 0; i < 3; i++) {
       poly.vertices[new_vertex_id][i] = __shfl_sync(warp_mask, poly.vertices[new_vertex_id][i], 0);
     }
@@ -3327,6 +3394,7 @@ __global__ void compute_epa_kernel(
 
         // Find next available face slot
         int new_face_idx = -1;
+        #pragma unroll
         for (int j = 0; j < MAX_EPA_FACES; j++) {
           if (!poly.faces[j].valid) {
             new_face_idx = j;
@@ -3356,6 +3424,7 @@ __global__ void compute_epa_kernel(
         gkFloat* fv2 = poly.vertices[poly.faces[new_face_idx].v[2]];
 
         gkFloat fe0[3], fe1[3], fnormal[3];
+        #pragma unroll
         for (int c = 0; c < 3; c++) {
           fe0[c] = fv1[c] - fv0[c];
           fe1[c] = fv2[c] - fv0[c];
@@ -3364,6 +3433,7 @@ __global__ void compute_epa_kernel(
 
         // Vector from face to centroid
         gkFloat to_cent[3];
+        #pragma unroll
         for (int c = 0; c < 3; c++) {
           to_cent[c] = centroid[c] - fv0[c];
         }
@@ -3398,6 +3468,7 @@ __global__ void compute_epa_kernel(
     for (int i = 0; i < poly.max_face_index; i++) {
       poly.faces[i].valid = __shfl_sync(warp_mask, poly.faces[i].valid ? 1 : 0, 0) != 0;
       if (poly.faces[i].valid) {
+        #pragma unroll
         for (int v = 0; v < 3; v++) {
           poly.faces[i].v[v] = __shfl_sync(warp_mask, poly.faces[i].v[v], 0);
           poly.faces[i].v_idx[v][0] = __shfl_sync(warp_mask, poly.faces[i].v_idx[v][0], 0);
@@ -3439,6 +3510,7 @@ __global__ void compute_epa_kernel(
       int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
       int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
 
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         witness1[warp_idx * 3 + i] =
           getCoord(bd1, idx0[0], i) * a0 +
@@ -3453,6 +3525,7 @@ __global__ void compute_epa_kernel(
       distances[warp_idx] = -closest_distance;
       
       // Store contact normal (points from polytope1 to polytope2)
+      #pragma unroll
       for (int i = 0; i < 3; i++) {
         contact_normals[warp_idx * 3 + i] = closest->normal[i];
       }
@@ -3838,5 +3911,3 @@ void compute_minimum_distance_indexed(
     cudaFree(d_coords);
     free(temp_polytopes);
 }
-
-
