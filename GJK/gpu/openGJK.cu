@@ -166,6 +166,7 @@ __device__ inline static void projectOnLine(const gkFloat* p,
 
   const gkFloat tmp = dotProduct(p, pq) / dotProduct(pq, pq);
 
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     v[i] = p[i] - pq[i] * tmp;
   }
@@ -177,9 +178,11 @@ __device__ inline static void projectOnPlane(const gkFloat* p,
   gkFloat* v) {
   gkFloat n[3], pq[3], pr[3];
 
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     pq[i] = p[i] - q[i];
   }
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     pr[i] = p[i] - r[i];
   }
@@ -187,6 +190,7 @@ __device__ inline static void projectOnPlane(const gkFloat* p,
   crossProduct(pq, pr, n);
   const gkFloat tmp = dotProduct(n, p) / dotProduct(n, n);
 
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     v[i] = n[i] * tmp;
   }
@@ -195,6 +199,7 @@ __device__ inline static void projectOnPlane(const gkFloat* p,
 __device__ inline static int hff1(const gkFloat* p, const gkFloat* q) {
   gkFloat tmp = 0;
 
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     tmp += (p[i] * p[i] - p[i] * q[i]);
   }
@@ -210,9 +215,11 @@ __device__ inline static int hff2(const gkFloat* p, const gkFloat* q,
   gkFloat ntmp[3];
   gkFloat n[3], pq[3], pr[3];
 
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     pq[i] = q[i] - p[i];
   }
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     pr[i] = r[i] - p[i];
   }
@@ -227,9 +234,11 @@ __device__ inline static int hff3(const gkFloat* p, const gkFloat* q,
   const gkFloat* r) {
   gkFloat n[3], pq[3], pr[3];
 
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     pq[i] = q[i] - p[i];
   }
+  #pragma unroll
   for (int i = 0; i < 3; i++) {
     pr[i] = r[i] - p[i];
   }
@@ -1193,7 +1202,9 @@ __device__ inline static void subalgorithm_warp_parallel(
   s->nvrtx =
     __shfl_sync(half_warp_mask, s->nvrtx, half_warp_base_thread_idx);
 
+  #pragma unroll
   for (int vtx = 0; vtx < s->nvrtx; ++vtx) {
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       s->vrtx[vtx][t] =
         __shfl_sync(half_warp_mask, s->vrtx[vtx][t], half_warp_base_thread_idx);
@@ -1209,6 +1220,7 @@ __device__ inline static void W0D(const gkPolytope* bd1, const gkPolytope* bd2,
   gkSimplex* smp) {
   const int idx00 = smp->vrtx_idx[0][0];
   const int idx01 = smp->vrtx_idx[0][1];
+  #pragma unroll
   for (int t = 0; t < 3; t++) {
     smp->witnesses[0][t] = getCoord(bd1, idx00, t);
     smp->witnesses[1][t] = getCoord(bd2, idx01, t);
@@ -1222,6 +1234,7 @@ __device__ inline static void W1D(const gkPolytope* bd1, const gkPolytope* bd2,
   const gkFloat* p = smp->vrtx[0];
   const gkFloat* q = smp->vrtx[1];
 
+  #pragma unroll
   for (int t = 0; t < 3; t++) {
     pq[t] = q[t] - p[t];
     po[t] = -p[t];
@@ -1243,6 +1256,7 @@ __device__ inline static void W1D(const gkPolytope* bd1, const gkPolytope* bd2,
   const int idx01 = smp->vrtx_idx[0][1];
   const int idx10 = smp->vrtx_idx[1][0];
   const int idx11 = smp->vrtx_idx[1][1];
+  #pragma unroll
   for (int t = 0; t < 3; t++) {
     smp->witnesses[0][t] = getCoord(bd1, idx00, t) * a0 + getCoord(bd1, idx10, t) * a1;
     smp->witnesses[1][t] = getCoord(bd2, idx01, t) * a0 + getCoord(bd2, idx11, t) * a1;
@@ -1257,6 +1271,7 @@ __device__ inline static void W2D(const gkPolytope* bd1, const gkPolytope* bd2,
   const gkFloat* q = smp->vrtx[1];
   const gkFloat* r = smp->vrtx[2];
 
+  #pragma unroll
   for (int t = 0; t < 3; t++) {
     pq[t] = q[t] - p[t];
     pr[t] = r[t] - p[t];
@@ -1340,6 +1355,7 @@ __device__ inline static void W2D(const gkPolytope* bd1, const gkPolytope* bd2,
   const int idx11 = smp->vrtx_idx[1][1];
   const int idx20 = smp->vrtx_idx[2][0];
   const int idx21 = smp->vrtx_idx[2][1];
+  #pragma unroll
   for (int t = 0; t < 3; t++) {
     smp->witnesses[0][t] = getCoord(bd1, idx00, t) * a0 + getCoord(bd1, idx10, t) * a1 + getCoord(bd1, idx20, t) * a2;
     smp->witnesses[1][t] = getCoord(bd2, idx01, t) * a0 + getCoord(bd2, idx11, t) * a1 + getCoord(bd2, idx21, t) * a2;
@@ -1355,6 +1371,7 @@ __device__ inline static void W3D(const gkPolytope* bd1, const gkPolytope* bd2,
   const gkFloat* r = smp->vrtx[2];
   const gkFloat* s = smp->vrtx[3];
 
+  #pragma unroll
   for (int t = 0; t < 3; t++) {
     pq[t] = q[t] - p[t];
     pr[t] = r[t] - p[t];
@@ -1475,6 +1492,7 @@ __device__ inline static void W3D(const gkPolytope* bd1, const gkPolytope* bd2,
   const int idx21 = smp->vrtx_idx[2][1];
   const int idx30 = smp->vrtx_idx[3][0];
   const int idx31 = smp->vrtx_idx[3][1];
+  #pragma unroll
   for (int t = 0; t < 3; t++) {
     smp->witnesses[0][t] =
       getCoord(bd1, idx00, t) * a0 + getCoord(bd1, idx10, t) * a1 + getCoord(bd1, idx20, t) * a2 + getCoord(bd1, idx30, t) * a3;
@@ -1655,6 +1673,7 @@ __device__ inline static void support_parallel(gkPolytope* body,
 
   // Each thread searches its assigned range of points
   for (int i = start_idx; i < end_idx; ++i) {
+    #pragma unroll
     for (int j = 0; j < 3; ++j) {
       vrt[j] = getCoord(body, i, j);
     }
@@ -1755,17 +1774,20 @@ __global__ void compute_minimum_distance_kernel(
   // Initialize simplex (half warp lead thread sets it up, then shuffles to all threads)
   if (half_lane_idx == 0) {
     s.nvrtx = 1;
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       s.vrtx[0][t] = v[t];
     }
     s.vrtx_idx[0][0] = 0;
     s.vrtx_idx[0][1] = 0;
 
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       bd1.s[t] = bd1.coord[t];
     }
     bd1.s_idx = 0;
 
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       bd2.s[t] = bd2.coord[t];
     }
@@ -1776,6 +1798,7 @@ __global__ void compute_minimum_distance_kernel(
 
   // Broadcast initial simplex state to all threads from thread 0 of our half-warp
   s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
+  #pragma unroll
   for (int t = 0; t < 3; ++t) {
     s.vrtx[0][t] = __shfl_sync(half_warp_mask, s.vrtx[0][t], half_warp_base_thread_idx);
   }
@@ -1815,6 +1838,7 @@ __global__ void compute_minimum_distance_kernel(
 
     /* Update negative search direction - all threads compute*/
     // Note: v is already the same on all threads from previous iteration
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       vminus[t] = -v[t];
     }
@@ -1838,6 +1862,7 @@ __global__ void compute_minimum_distance_kernel(
     bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
 
     // all threads compute w for witness point computation
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       w[t] = bd1.s[t] - bd2.s[t];
     }
@@ -1866,6 +1891,7 @@ __global__ void compute_minimum_distance_kernel(
     /* Add new vertex to simplex - only thread 0 does this then shuffles to all threads*/
     if (half_lane_idx == 0) {
       i = s.nvrtx;
+      #pragma unroll
       for (int t = 0; t < 3; ++t) {
         s.vrtx[i][t] = w[t];
       }
@@ -1879,6 +1905,7 @@ __global__ void compute_minimum_distance_kernel(
     i = __shfl_sync(half_warp_mask, i, half_warp_base_thread_idx);
 
     // Broadcast new vertex coordinates to all threads
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       s.vrtx[i][t] = __shfl_sync(half_warp_mask, s.vrtx[i][t], half_warp_base_thread_idx);
     }
@@ -1983,17 +2010,20 @@ __global__ void compute_minimum_distance_indexed_kernel(
   // Initialize simplex (half warp lead thread sets it up, then shuffles to all threads)
   if (half_lane_idx == 0) {
     s.nvrtx = 1;
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       s.vrtx[0][t] = v[t];
     }
     s.vrtx_idx[0][0] = 0;
     s.vrtx_idx[0][1] = 0;
 
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       bd1.s[t] = bd1.coord[t];
     }
     bd1.s_idx = 0;
 
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       bd2.s[t] = bd2.coord[t];
     }
@@ -2004,6 +2034,7 @@ __global__ void compute_minimum_distance_indexed_kernel(
 
   // Broadcast initial simplex state to all threads from thread 0 of our half-warp
   s.nvrtx = __shfl_sync(half_warp_mask, s.nvrtx, half_warp_base_thread_idx);
+  #pragma unroll
   for (int t = 0; t < 3; ++t) {
     s.vrtx[0][t] = __shfl_sync(half_warp_mask, s.vrtx[0][t], half_warp_base_thread_idx);
   }
@@ -2043,6 +2074,7 @@ __global__ void compute_minimum_distance_indexed_kernel(
 
     /* Update negative search direction - all threads compute*/
     // Note: v is already the same on all threads from previous iteration
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       vminus[t] = -v[t];
     }
@@ -2066,6 +2098,7 @@ __global__ void compute_minimum_distance_indexed_kernel(
     bd2.s_idx = __shfl_sync(half_warp_mask, bd2.s_idx, half_warp_base_thread_idx);
 
     // all threads compute w for witness point computation
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       w[t] = bd1.s[t] - bd2.s[t];
     }
@@ -2094,6 +2127,7 @@ __global__ void compute_minimum_distance_indexed_kernel(
     /* Add new vertex to simplex - only thread 0 does this then shuffles to all threads*/
     if (half_lane_idx == 0) {
       i = s.nvrtx;
+      #pragma unroll
       for (int t = 0; t < 3; ++t) {
         s.vrtx[i][t] = w[t];
       }
@@ -2107,6 +2141,7 @@ __global__ void compute_minimum_distance_indexed_kernel(
     i = __shfl_sync(half_warp_mask, i, half_warp_base_thread_idx);
 
     // Broadcast new vertex coordinates to all threads
+    #pragma unroll
     for (int t = 0; t < 3; ++t) {
       s.vrtx[i][t] = __shfl_sync(half_warp_mask, s.vrtx[i][t], half_warp_base_thread_idx);
     }
