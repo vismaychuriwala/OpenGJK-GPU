@@ -8,6 +8,10 @@
 #define eps_rel22 (gkFloat) gkEpsilon * 1e4f
 #define eps_tot22 (gkFloat) gkEpsilon * 1e2f
 
+// Threads per computation for parallel kernels
+#define THREADS_PER_COMPUTATION 16  // GJK uses 16 threads (half-warp)
+#define THREADS_PER_EPA 32           // EPA uses 32 threads (full warp)
+
 #define getCoord(body, index, component) body->coord[(index) * 3 + (component)]
 
 #define norm2(a) (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
@@ -1631,9 +1635,6 @@ __device__ inline static void compute_witnesses(const gkPolytope* bd1,
 // Warp Parallel GJK Implementation
 //*******************************************************************************************
 
-// Threads per computation
-#define THREADS_PER_COMPUTATION 16
-
 // Half a warp per polytope-polytope collision
 // Have first thread in group lead the GJK iteration, others for parallel support function calls
 
@@ -1695,7 +1696,7 @@ __device__ inline static void support_parallel(gkPolytope* body,
   }
 }
 
-__global__ void compute_minimum_distance(
+__global__ void compute_minimum_distance_kernel(
   const gkPolytope* polytypes1,
   const gkPolytope* polytypes2,
   gkSimplex* simplices,
@@ -2293,7 +2294,7 @@ typedef struct {
 
 // ENTRY POINT TO EPA CALL
 // Main EPA kernel - one warp per collision
-__global__ void compute_epa(
+__global__ void compute_epa_kernel(
   const gkPolytope* polytopes1,
   const gkPolytope* polytopes2,
   gkSimplex* simplices,
@@ -3196,5 +3197,311 @@ __global__ void compute_epa(
   }
 }
 
+// ============================================================================
+// HIGH-LEVEL API IMPLEMENTATIONS: Automatic memory management
+// ============================================================================
+
+void compute_minimum_distance(
+    const int n,
+    const gkPolytope* bd1,
+    const gkPolytope* bd2,
+    gkSimplex* simplices,
+    gkFloat* distances) {
+
+    if (n <= 0) return;
+
+    // Allocate device memory
+    gkPolytope* d_bd1 = nullptr;
+    gkPolytope* d_bd2 = nullptr;
+    gkFloat* d_coord1 = nullptr;
+    gkFloat* d_coord2 = nullptr;
+    gkSimplex* d_simplices = nullptr;
+    gkFloat* d_distances = nullptr;
+
+    allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
+                                     &d_coord1, &d_coord2, &d_simplices, &d_distances);
+
+    // Launch kernel
+    compute_minimum_distance_device(n, d_bd1, d_bd2, d_simplices, d_distances);
+
+    // Copy results back
+    copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
+
+    // Free device memory
+    free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
+}
+
+void compute_epa(
+    const int n,
+    const gkPolytope* bd1,
+    const gkPolytope* bd2,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    gkFloat* witness1,
+    gkFloat* witness2,
+    gkFloat* contact_normals) {
+
+    if (n <= 0) return;
+
+    // Allocate device memory for GJK inputs
+    gkPolytope* d_bd1 = nullptr;
+    gkPolytope* d_bd2 = nullptr;
+    gkFloat* d_coord1 = nullptr;
+    gkFloat* d_coord2 = nullptr;
+    gkSimplex* d_simplices = nullptr;
+    gkFloat* d_distances = nullptr;
+
+    allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
+                                     &d_coord1, &d_coord2, &d_simplices, &d_distances);
+
+    // Allocate device memory for EPA outputs
+    gkFloat* d_witness1 = nullptr;
+    gkFloat* d_witness2 = nullptr;
+    gkFloat* d_contact_normals = nullptr;
+
+    allocate_epa_device_arrays(n, &d_witness1, &d_witness2,
+                               contact_normals ? &d_contact_normals : nullptr);
+
+    // Copy simplices to device
+    cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
+
+    // Launch EPA kernel
+    compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
+                      d_witness1, d_witness2, d_contact_normals);
+
+    // Copy results back
+    copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
+    copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
+                                 witness1, witness2, contact_normals);
+
+    // Free device memory
+    free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
+    free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
+}
+
+void compute_gjk_epa(
+    const int n,
+    const gkPolytope* bd1,
+    const gkPolytope* bd2,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    gkFloat* witness1,
+    gkFloat* witness2) {
+
+    if (n <= 0) return;
+
+    // Allocate device memory for GJK inputs
+    gkPolytope* d_bd1 = nullptr;
+    gkPolytope* d_bd2 = nullptr;
+    gkFloat* d_coord1 = nullptr;
+    gkFloat* d_coord2 = nullptr;
+    gkSimplex* d_simplices = nullptr;
+    gkFloat* d_distances = nullptr;
+
+    allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
+                                     &d_coord1, &d_coord2, &d_simplices, &d_distances);
+
+    // Allocate device memory for EPA outputs
+    gkFloat* d_witness1 = nullptr;
+    gkFloat* d_witness2 = nullptr;
+    gkFloat* d_contact_normals = nullptr;  // Always allocated but not copied back
+
+    allocate_epa_device_arrays(n, &d_witness1, &d_witness2, &d_contact_normals);
+
+    // Launch GJK kernel
+    compute_minimum_distance_device(n, d_bd1, d_bd2, d_simplices, d_distances);
+
+    // Launch EPA kernel
+    compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
+                      d_witness1, d_witness2, d_contact_normals);
+
+    // Copy results back (contact_normals not copied, pass nullptr for host)
+    copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
+    copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
+                                 witness1, witness2, nullptr);
+
+    // Free device memory
+    free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
+    free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
+}
+
+// ============================================================================
+// MID-LEVEL API IMPLEMENTATIONS: Explicit memory management
+// ============================================================================
+
+void allocate_and_copy_device_arrays(
+    const int n,
+    const gkPolytope* bd1,
+    const gkPolytope* bd2,
+    gkPolytope** d_bd1,
+    gkPolytope** d_bd2,
+    gkFloat** d_coord1,
+    gkFloat** d_coord2,
+    gkSimplex** d_simplices,
+    gkFloat** d_distances) {
+
+    // Allocate device memory for polytope structures
+    cudaMalloc((void**)d_bd1, n * sizeof(gkPolytope));
+    cudaMalloc((void**)d_bd2, n * sizeof(gkPolytope));
+    cudaMalloc((void**)d_simplices, n * sizeof(gkSimplex));
+    cudaMalloc((void**)d_distances, n * sizeof(gkFloat));
+
+    // Initialize simplices to zero (kernel expects clean state)
+    cudaMemset(*d_simplices, 0, n * sizeof(gkSimplex));
+
+    // Calculate total coordinate size needed
+    int total_coords1 = 0;
+    int total_coords2 = 0;
+    for (int i = 0; i < n; i++) {
+        total_coords1 += bd1[i].numpoints * 3;
+        total_coords2 += bd2[i].numpoints * 3;
+    }
+
+    // Allocate concatenated coordinate arrays
+    cudaMalloc((void**)d_coord1, total_coords1 * sizeof(gkFloat));
+    cudaMalloc((void**)d_coord2, total_coords2 * sizeof(gkFloat));
+
+    // Create temporary host arrays with updated pointers
+    gkPolytope* temp_bd1 = new gkPolytope[n];
+    gkPolytope* temp_bd2 = new gkPolytope[n];
+
+    int offset1 = 0;
+    int offset2 = 0;
+    for (int i = 0; i < n; i++) {
+        // Copy polytope metadata
+        temp_bd1[i] = bd1[i];
+        temp_bd2[i] = bd2[i];
+
+        // Copy coordinate data to device
+        int coord_size1 = bd1[i].numpoints * 3 * sizeof(gkFloat);
+        int coord_size2 = bd2[i].numpoints * 3 * sizeof(gkFloat);
+
+        cudaMemcpy(*d_coord1 + offset1, bd1[i].coord, coord_size1, cudaMemcpyHostToDevice);
+        cudaMemcpy(*d_coord2 + offset2, bd2[i].coord, coord_size2, cudaMemcpyHostToDevice);
+
+        // Update pointers to device memory locations
+        temp_bd1[i].coord = *d_coord1 + offset1;
+        temp_bd2[i].coord = *d_coord2 + offset2;
+
+        offset1 += bd1[i].numpoints * 3;
+        offset2 += bd2[i].numpoints * 3;
+    }
+
+    // Copy polytope structures to device
+    cudaMemcpy(*d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
+    cudaMemcpy(*d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
+
+    // Cleanup temporary host arrays
+    delete[] temp_bd1;
+    delete[] temp_bd2;
+}
+
+void allocate_epa_device_arrays(
+    const int n,
+    gkFloat** d_witness1,
+    gkFloat** d_witness2,
+    gkFloat** d_contact_normals) {
+
+    cudaMalloc((void**)d_witness1, n * 3 * sizeof(gkFloat));
+    cudaMalloc((void**)d_witness2, n * 3 * sizeof(gkFloat));
+
+    // ALWAYS allocate contact_normals (EPA kernel writes to it unconditionally)
+    // Caller must provide a valid pointer, we'll only copy back if host pointer is non-null
+    cudaMalloc((void**)d_contact_normals, n * 3 * sizeof(gkFloat));
+}
+
+void compute_minimum_distance_device(
+    const int n,
+    const gkPolytope* d_bd1,
+    const gkPolytope* d_bd2,
+    gkSimplex* d_simplices,
+    gkFloat* d_distances) {
+
+    // Each collision uses 16 threads (half-warp)
+    int blockSize = 256;  // 256 threads = 16 collisions per block
+    int collisionsPerBlock = blockSize / THREADS_PER_COMPUTATION;
+    int numBlocks = (n + collisionsPerBlock - 1) / collisionsPerBlock;
+
+    compute_minimum_distance_kernel<<<numBlocks, blockSize>>>(
+        d_bd1, d_bd2, d_simplices, d_distances, n);
+
+    cudaDeviceSynchronize();
+}
+
+void compute_epa_device(
+    const int n,
+    const gkPolytope* d_bd1,
+    const gkPolytope* d_bd2,
+    gkSimplex* d_simplices,
+    gkFloat* d_distances,
+    gkFloat* d_witness1,
+    gkFloat* d_witness2,
+    gkFloat* d_contact_normals) {
+
+    // Each collision uses 32 threads (one full warp)
+    int blockSize = 256;  // 256 threads = 8 collisions per block
+    int collisionsPerBlock = blockSize / THREADS_PER_EPA;
+    int numBlocks = (n + collisionsPerBlock - 1) / collisionsPerBlock;
+
+    compute_epa_kernel<<<numBlocks, blockSize>>>(
+        d_bd1, d_bd2, d_simplices, d_distances,
+        d_witness1, d_witness2, d_contact_normals, n);
+
+    cudaDeviceSynchronize();
+}
+
+void copy_results_from_device(
+    const int n,
+    const gkSimplex* d_simplices,
+    const gkFloat* d_distances,
+    gkSimplex* simplices,
+    gkFloat* distances) {
+
+    cudaMemcpy(distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    cudaMemcpy(simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+}
+
+void copy_epa_results_from_device(
+    const int n,
+    const gkFloat* d_witness1,
+    const gkFloat* d_witness2,
+    const gkFloat* d_contact_normals,
+    gkFloat* witness1,
+    gkFloat* witness2,
+    gkFloat* contact_normals) {
+
+    cudaMemcpy(witness1, d_witness1, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    cudaMemcpy(witness2, d_witness2, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+
+    if (contact_normals != nullptr && d_contact_normals != nullptr) {
+        cudaMemcpy(contact_normals, d_contact_normals, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    }
+}
+
+void free_device_arrays(
+    gkPolytope* d_bd1,
+    gkPolytope* d_bd2,
+    gkFloat* d_coord1,
+    gkFloat* d_coord2,
+    gkSimplex* d_simplices,
+    gkFloat* d_distances) {
+
+    if (d_bd1) cudaFree(d_bd1);
+    if (d_bd2) cudaFree(d_bd2);
+    if (d_coord1) cudaFree(d_coord1);
+    if (d_coord2) cudaFree(d_coord2);
+    if (d_simplices) cudaFree(d_simplices);
+    if (d_distances) cudaFree(d_distances);
+}
+
+void free_epa_device_arrays(
+    gkFloat* d_witness1,
+    gkFloat* d_witness2,
+    gkFloat* d_contact_normals) {
+
+    if (d_witness1) cudaFree(d_witness1);
+    if (d_witness2) cudaFree(d_witness2);
+    if (d_contact_normals) cudaFree(d_contact_normals);
+}
 
 

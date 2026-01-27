@@ -712,13 +712,13 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
     int gjkBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
 
     if (num_pairs > 0) {
-        compute_minimum_distance<<<gjkBlocks, threadsPerBlock>>>(
+        compute_minimum_distance_kernel<<<gjkBlocks, threadsPerBlock>>>(
             context->buffer_pool->d_polytopes1,  // First polytopes [num_pairs]
             context->buffer_pool->d_polytopes2,  // Second polytopes [num_pairs]
             context->buffer_pool->d_simplices,
             context->buffer_pool->d_distances,
             num_pairs);
-        checkCUDAError("compute_minimum_distance (GJK)", __LINE__);
+        checkCUDAError("compute_minimum_distance_kernel (GJK)", __LINE__);
 
         // Step 5: Fused collision check + response
         int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;

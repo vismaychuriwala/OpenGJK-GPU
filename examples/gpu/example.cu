@@ -27,88 +27,28 @@ namespace GJK {
                             gkFloat* distances) {
             if (n <= 0) return;
 
-            // Device pointers
+            // Use mid-level API with explicit memory management
+            // Allocate device memory
             gkPolytope* d_bd1 = nullptr;
             gkPolytope* d_bd2 = nullptr;
-            gkSimplex* d_simplices = nullptr;
-            gkFloat* d_distances = nullptr;
             gkFloat* d_coord1 = nullptr;
             gkFloat* d_coord2 = nullptr;
+            gkSimplex* d_simplices = nullptr;
+            gkFloat* d_distances = nullptr;
 
-            // Allocate device memory
-            cudaMalloc(&d_bd1, n * sizeof(gkPolytope));
-            cudaMalloc(&d_bd2, n * sizeof(gkPolytope));
-            cudaMalloc(&d_simplices, n * sizeof(gkSimplex));
-            cudaMalloc(&d_distances, n * sizeof(gkFloat));
+            allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
+                                             &d_coord1, &d_coord2, &d_simplices, &d_distances);
 
-            // Calculate total coordinate size needed
-            int total_coords1 = 0;
-            int total_coords2 = 0;
-            for (int i = 0; i < n; i++) {
-                total_coords1 += bd1[i].numpoints * 3;
-                total_coords2 += bd2[i].numpoints * 3;
-            }
-
-            // Allocate coordinate arrays
-            cudaMalloc(&d_coord1, total_coords1 * sizeof(gkFloat));
-            cudaMalloc(&d_coord2, total_coords2 * sizeof(gkFloat));
-
-            // Copy coordinate data and update polytope structures
-            gkPolytope* temp_bd1 = new gkPolytope[n];
-            gkPolytope* temp_bd2 = new gkPolytope[n];
-
-            int offset1 = 0;
-            int offset2 = 0;
-            for (int i = 0; i < n; i++) {
-                // Copy polytope metadata
-                temp_bd1[i] = bd1[i];
-                temp_bd2[i] = bd2[i];
-
-                // Copy coordinate data to device
-                int coord_size1 = bd1[i].numpoints * 3 * sizeof(gkFloat);
-                int coord_size2 = bd2[i].numpoints * 3 * sizeof(gkFloat);
-
-                cudaMemcpy(d_coord1 + offset1, bd1[i].coord, coord_size1, cudaMemcpyHostToDevice);
-                cudaMemcpy(d_coord2 + offset2, bd2[i].coord, coord_size2, cudaMemcpyHostToDevice);
-
-                // Update pointers to device memory locations
-                temp_bd1[i].coord = d_coord1 + offset1;
-                temp_bd2[i].coord = d_coord2 + offset2;
-
-                offset1 += bd1[i].numpoints * 3;
-                offset2 += bd2[i].numpoints * 3;
-            }
-
-            // Copy polytope structures to device
-            cudaMemcpy(d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
-            
-            // Launch kernel with timing
-            // Each collision uses 16 threads (half-warp)
-            // Results in 16 times as many threads as the regular GPU implementationS
-            // Block size should be a multiple of 16
+            // Time only kernel execution
             timer().startGpuTimer();
-            const int THREADS_PER_COMPUTATION = 16;
-            int blockSize = 256;  // 256 threads = 16 collisions per block
-            int collisionsPerBlock = blockSize / THREADS_PER_COMPUTATION;
-            int numBlocks = (n + collisionsPerBlock - 1) / collisionsPerBlock;
-            compute_minimum_distance<<<numBlocks, blockSize>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
+            compute_minimum_distance_device(n, d_bd1, d_bd2, d_simplices, d_distances);
             timer().endGpuTimer();
 
             // Copy results back
-            cudaMemcpy(distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            cudaMemcpy(simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+            copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
 
-            // Free memory
-            delete[] temp_bd1;
-            delete[] temp_bd2;
-            cudaFree(d_bd1);
-            cudaFree(d_bd2);
-            cudaFree(d_simplices);
-            cudaFree(d_distances);
-            cudaFree(d_coord1);
-            cudaFree(d_coord2);
+            // Free device memory
+            free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
         }
 
         void computeGJKAndEPA(const int n,
@@ -121,157 +61,44 @@ namespace GJK {
                             gkFloat* contact_normals = nullptr) {
             if (n <= 0) return;
 
-            // Device pointers
+            // Use mid-level API with explicit memory management
+            // Allocate device memory for GJK
             gkPolytope* d_bd1 = nullptr;
             gkPolytope* d_bd2 = nullptr;
-            gkSimplex* d_simplices = nullptr;
-            gkFloat* d_distances = nullptr;
-            gkFloat* d_witness1 = nullptr;
-            gkFloat* d_witness2 = nullptr;
-            gkFloat* d_contact_normals = nullptr;
             gkFloat* d_coord1 = nullptr;
             gkFloat* d_coord2 = nullptr;
+            gkSimplex* d_simplices = nullptr;
+            gkFloat* d_distances = nullptr;
 
-            // Allocate device memory
-            cudaMalloc(&d_bd1, n * sizeof(gkPolytope));
-            cudaMalloc(&d_bd2, n * sizeof(gkPolytope));
-            cudaMalloc(&d_simplices, n * sizeof(gkSimplex));
-            cudaMalloc(&d_distances, n * sizeof(gkFloat));
-            cudaMalloc(&d_witness1, n * 3 * sizeof(gkFloat));
-            cudaMalloc(&d_witness2, n * 3 * sizeof(gkFloat));
-            if (contact_normals != nullptr) {
-                cudaMalloc(&d_contact_normals, n * 3 * sizeof(gkFloat));
-            }
+            allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
+                                             &d_coord1, &d_coord2, &d_simplices, &d_distances);
 
-            int total_coords1 = 0;
-            int total_coords2 = 0;
-            for (int i = 0; i < n; i++) {
-                total_coords1 += bd1[i].numpoints * 3;
-                total_coords2 += bd2[i].numpoints * 3;
-            }
+            // Allocate device memory for EPA outputs
+            gkFloat* d_witness1 = nullptr;
+            gkFloat* d_witness2 = nullptr;
+            gkFloat* d_contact_normals = nullptr;  // Always allocate but don't copy back
+            allocate_epa_device_arrays(n, &d_witness1, &d_witness2, &d_contact_normals);
 
-            cudaMalloc(&d_coord1, total_coords1 * sizeof(gkFloat));
-            cudaMalloc(&d_coord2, total_coords2 * sizeof(gkFloat));
-
-            gkPolytope* temp_bd1 = new gkPolytope[n];
-            gkPolytope* temp_bd2 = new gkPolytope[n];
-
-            int offset1 = 0;
-            int offset2 = 0;
-            for (int i = 0; i < n; i++) {
-                temp_bd1[i] = bd1[i];
-                temp_bd2[i] = bd2[i];
-
-                int coord_size1 = bd1[i].numpoints * 3 * sizeof(gkFloat);
-                int coord_size2 = bd2[i].numpoints * 3 * sizeof(gkFloat);
-
-                cudaMemcpy(d_coord1 + offset1, bd1[i].coord, coord_size1, cudaMemcpyHostToDevice);
-                cudaMemcpy(d_coord2 + offset2, bd2[i].coord, coord_size2, cudaMemcpyHostToDevice);
-
-                temp_bd1[i].coord = d_coord1 + offset1;
-                temp_bd2[i].coord = d_coord2 + offset2;
-
-                offset1 += bd1[i].numpoints * 3;
-                offset2 += bd2[i].numpoints * 3;
-            }
-
-            // Copy polytope structures to device
-            cudaMemcpy(d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
-            
-            // Launch GJK kernel with timing
+            // Time kernel execution only
             timer().startGpuTimer();
-            const int THREADS_PER_COMPUTATION_GJK = 16;
-            int blockSizeGJK = 256;
-            int collisionsPerBlockGJK = blockSizeGJK / THREADS_PER_COMPUTATION_GJK;
-            int numBlocksGJK = (n + collisionsPerBlockGJK - 1) / collisionsPerBlockGJK;
-            compute_minimum_distance<<<numBlocksGJK, blockSizeGJK>>>(d_bd1, d_bd2, d_simplices, d_distances, n);
-            
-            // Wait for GJK to complete before starting EPA
-            cudaDeviceSynchronize();
-            
-            // Copy GJK results to print them
-            gkFloat* gjk_distances = new gkFloat[n];
-            gkSimplex* gjk_simplices = new gkSimplex[n];
-            gkFloat* gjk_witness1 = new gkFloat[n * 3];
-            gkFloat* gjk_witness2 = new gkFloat[n * 3];
-            
-            cudaMemcpy(gjk_distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            cudaMemcpy(gjk_simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
-            
-            // Copy witness points from simplice
-            for (int i = 0; i < n; i++) {
-                for (int j = 0; j < 3; j++) {
-                    gjk_witness1[i * 3 + j] = gjk_simplices[i].witnesses[0][j];
-                    gjk_witness2[i * 3 + j] = gjk_simplices[i].witnesses[1][j];
-                }
-            }
-            
-            // Print GJK results
-            printf("\n=== GJK Results (before EPA) ===\n");
-            for (int i = 0; i < n; i++) {
-                printf("  Collision %d:\n", i);
-                printf("    Simplex vertices: %d\n", gjk_simplices[i].nvrtx);
-                printf("    Distance: %f\n", gjk_distances[i]);
-                for (int v = 0; v < gjk_simplices[i].nvrtx; v++) {
-                    printf("    Vertex %d: (%.6f, %.6f, %.6f)\n", v,
-                           gjk_simplices[i].vrtx[v][0],
-                           gjk_simplices[i].vrtx[v][1],
-                           gjk_simplices[i].vrtx[v][2]);
-                }
-                printf("    Witness 1: (%.6f, %.6f, %.6f)\n", 
-                       gjk_witness1[i * 3 + 0], gjk_witness1[i * 3 + 1], gjk_witness1[i * 3 + 2]);
-                printf("    Witness 2: (%.6f, %.6f, %.6f)\n", 
-                       gjk_witness2[i * 3 + 0], gjk_witness2[i * 3 + 1], gjk_witness2[i * 3 + 2]);
-            }
-            printf("================================\n\n");
-            
-            // Clean up temporary arrays
-            delete[] gjk_distances;
-            delete[] gjk_simplices;
-            delete[] gjk_witness1;
-            delete[] gjk_witness2;
 
-            // Launch EPA kernel
-            // Each collision uses 32 threads (one warp)
-            const int THREADS_PER_COMPUTATION_EPA = 32;
-            int blockSizeEPA = 256;
-            int collisionsPerBlockEPA = blockSizeEPA / THREADS_PER_COMPUTATION_EPA;
-            int numBlocksEPA = (n + collisionsPerBlockEPA - 1) / collisionsPerBlockEPA;
-            // Use a dummy array if contact_normals is not provided
-            gkFloat* d_normals_to_use = d_contact_normals;
-            if (d_normals_to_use == nullptr) {
-                cudaMalloc(&d_normals_to_use, n * 3 * sizeof(gkFloat));
-            }
-            compute_epa<<<numBlocksEPA, blockSizeEPA>>>(d_bd1, d_bd2, d_simplices, d_distances, d_witness1, d_witness2, d_normals_to_use, n);
+            // Run GJK kernel
+            compute_minimum_distance_device(n, d_bd1, d_bd2, d_simplices, d_distances);
+
+            // Run EPA kernel
+            compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
+                              d_witness1, d_witness2, d_contact_normals);
+
             timer().endGpuTimer();
 
-            cudaMemcpy(distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            cudaMemcpy(simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
-            cudaMemcpy(witness1, d_witness1, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            cudaMemcpy(witness2, d_witness2, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            if (contact_normals != nullptr) {
-                cudaMemcpy(contact_normals, d_contact_normals, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            }
+            // Copy results back (contact_normals not copied, pass nullptr for host)
+            copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
+            copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
+                                        witness1, witness2, nullptr);
 
-            // Free memory
-            delete[] temp_bd1;
-            delete[] temp_bd2;
-            cudaFree(d_bd1);
-            cudaFree(d_bd2);
-            cudaFree(d_simplices);
-            cudaFree(d_distances);
-            cudaFree(d_witness1);
-            cudaFree(d_witness2);
-            if (d_contact_normals != nullptr) {
-                cudaFree(d_contact_normals);
-            }
-            if (d_normals_to_use != nullptr && d_normals_to_use != d_contact_normals) {
-                cudaFree(d_normals_to_use);
-            }
-            cudaFree(d_coord1);
-            cudaFree(d_coord2);
+            // Free device memory
+            free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
+            free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
         }
 
         void computeCollisionInformation(const int n,
@@ -284,114 +111,42 @@ namespace GJK {
                             gkFloat* contact_normals) {
             if (n <= 0) return;
 
-            // Device pointers
+            // Use mid-level API with explicit memory management
+            // Allocate device memory for GJK (assume simplices/distances already set from GJK)
             gkPolytope* d_bd1 = nullptr;
             gkPolytope* d_bd2 = nullptr;
-            gkSimplex* d_simplices = nullptr;
-            gkFloat* d_distances = nullptr;
-            gkFloat* d_witness1 = nullptr;
-            gkFloat* d_witness2 = nullptr;
-            gkFloat* d_contact_normals = nullptr;
             gkFloat* d_coord1 = nullptr;
             gkFloat* d_coord2 = nullptr;
+            gkSimplex* d_simplices = nullptr;
+            gkFloat* d_distances = nullptr;
 
-            // Allocate device memory
-            cudaMalloc(&d_bd1, n * sizeof(gkPolytope));
-            cudaMalloc(&d_bd2, n * sizeof(gkPolytope));
-            cudaMalloc(&d_simplices, n * sizeof(gkSimplex));
-            cudaMalloc(&d_distances, n * sizeof(gkFloat));
-            cudaMalloc(&d_witness1, n * 3 * sizeof(gkFloat));
-            cudaMalloc(&d_witness2, n * 3 * sizeof(gkFloat));
-            if (contact_normals != nullptr) {
-                cudaMalloc(&d_contact_normals, n * 3 * sizeof(gkFloat));
-            }
+            allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
+                                             &d_coord1, &d_coord2, &d_simplices, &d_distances);
 
-            // Calculate total coordinate size needed
-            int total_coords1 = 0;
-            int total_coords2 = 0;
-            for (int i = 0; i < n; i++) {
-                total_coords1 += bd1[i].numpoints * 3;
-                total_coords2 += bd2[i].numpoints * 3;
-            }
-
-            // Allocate coordinate arrays
-            cudaMalloc(&d_coord1, total_coords1 * sizeof(gkFloat));
-            cudaMalloc(&d_coord2, total_coords2 * sizeof(gkFloat));
-
-            // Copy coordinate data and update polytope structures
-            gkPolytope* temp_bd1 = new gkPolytope[n];
-            gkPolytope* temp_bd2 = new gkPolytope[n];
-
-            int offset1 = 0;
-            int offset2 = 0;
-            for (int i = 0; i < n; i++) {
-                // Copy polytope metadata
-                temp_bd1[i] = bd1[i];
-                temp_bd2[i] = bd2[i];
-
-                // Copy coordinate data to device
-                int coord_size1 = bd1[i].numpoints * 3 * sizeof(gkFloat);
-                int coord_size2 = bd2[i].numpoints * 3 * sizeof(gkFloat);
-
-                cudaMemcpy(d_coord1 + offset1, bd1[i].coord, coord_size1, cudaMemcpyHostToDevice);
-                cudaMemcpy(d_coord2 + offset2, bd2[i].coord, coord_size2, cudaMemcpyHostToDevice);
-
-                // Update pointers to device memory locations
-                temp_bd1[i].coord = d_coord1 + offset1;
-                temp_bd2[i].coord = d_coord2 + offset2;
-
-                offset1 += bd1[i].numpoints * 3;
-                offset2 += bd2[i].numpoints * 3;
-            }
-
-            // Copy polytope structures to device
-            cudaMemcpy(d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
             // Copy input simplices and distances to device
             cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
             cudaMemcpy(d_distances, distances, n * sizeof(gkFloat), cudaMemcpyHostToDevice);
-            
-            // Launch EPA kernel
-            // Each collision uses 32 threads (one warp)
+
+            // Allocate device memory for EPA outputs
+            gkFloat* d_witness1 = nullptr;
+            gkFloat* d_witness2 = nullptr;
+            gkFloat* d_contact_normals = nullptr;
+            allocate_epa_device_arrays(n, &d_witness1, &d_witness2, &d_contact_normals);
+
+            // Time only kernel execution
             timer().startGpuTimer();
-            const int THREADS_PER_COMPUTATION_EPA = 32;
-            int blockSizeEPA = 256;
-            int collisionsPerBlockEPA = blockSizeEPA / THREADS_PER_COMPUTATION_EPA;
-            int numBlocksEPA = (n + collisionsPerBlockEPA - 1) / collisionsPerBlockEPA;
-            // Use a dummy array if contact_normals is not provided
-            gkFloat* d_normals_to_use = d_contact_normals;
-            if (d_normals_to_use == nullptr) {
-                cudaMalloc(&d_normals_to_use, n * 3 * sizeof(gkFloat));
-            }
-            compute_epa<<<numBlocksEPA, blockSizeEPA>>>(d_bd1, d_bd2, d_simplices, d_distances, d_witness1, d_witness2, d_normals_to_use, n);
+            compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
+                              d_witness1, d_witness2, d_contact_normals);
             timer().endGpuTimer();
 
             // Copy results back
-            cudaMemcpy(distances, d_distances, n * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            cudaMemcpy(simplices, d_simplices, n * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
-            cudaMemcpy(witness1, d_witness1, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            cudaMemcpy(witness2, d_witness2, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            if (contact_normals != nullptr) {
-                cudaMemcpy(contact_normals, d_contact_normals, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-            }
+            copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
+            copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
+                                        witness1, witness2, contact_normals);
 
-            // Free memory
-            delete[] temp_bd1;
-            delete[] temp_bd2;
-            cudaFree(d_bd1);
-            cudaFree(d_bd2);
-            cudaFree(d_simplices);
-            cudaFree(d_distances);
-            cudaFree(d_witness1);
-            cudaFree(d_witness2);
-            if (d_contact_normals != nullptr) {
-                cudaFree(d_contact_normals);
-            }
-            if (d_normals_to_use != nullptr && d_normals_to_use != d_contact_normals) {
-                cudaFree(d_normals_to_use);
-            }
-            cudaFree(d_coord1);
-            cudaFree(d_coord2);
+            // Free device memory
+            free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
+            free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
         }
 
         /// @brief Generate a polytope with specified number of vertices and random offset
@@ -725,9 +480,9 @@ namespace GJK {
                printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
                
                if (distance < -0.8 && distance > -1.2) {
-                   printf("  PASS: Collision detected, penetration depth valid\n");
+                   printf("  \033[32mPASS\033[0m: Collision detected, penetration depth valid\n");
                } else {
-                   printf("  FAIL: Invalid results\n");
+                   printf("  \033[31mFAIL\033[0m: Invalid results\n");
                }
                printf("\n");
 
@@ -791,9 +546,9 @@ namespace GJK {
                printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
                
                if (distance >= 0 && distance < 0.01f) {
-                   printf(" PASS: Distance near zero as expected\n");
+                   printf(" \033[32mPASS\033[0m: Distance near zero as expected\n");
                } else {
-                   printf(" WARNING: Distance may indicate collision or separation\n");
+                   printf(" \033[33mWARNING\033[0m: Distance may indicate collision or separation\n");
                }
                printf("\n");
 
@@ -857,11 +612,11 @@ namespace GJK {
               printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
               
               if (simplex.nvrtx < 4 && distance > 2.9f && distance < 3.1f) {
-                  printf(" PASS: Correct separation distance\n");
+                  printf(" \033[32mPASS\033[0m: Correct separation distance\n");
               } else if (simplex.nvrtx < 4) {
-                  printf(" WARNING: Distance may be incorrect\n");
+                  printf(" \033[33mWARNING\033[0m: Distance may be incorrect\n");
               } else {
-                  printf(" FAIL: Should not detect collision\n");
+                  printf(" \033[31mFAIL\033[0m: Should not detect collision\n");
               }
               printf("\n");
 
@@ -907,16 +662,16 @@ namespace GJK {
                 // or very small positive (just touching)
                 if (simplex.nvrtx == 4) {
                     if (distance < 0.0f) {
-                        printf("  PASS: Collision detected with penetration depth of %.6f\n", -distance);
+                        printf("  \033[32mPASS\033[0m: Collision detected with penetration depth of %.6f\n", -distance);
                     } else if (distance < 0.1f) {
-                        printf("  PASS: Collision detected (very small distance/penetration)\n");
+                        printf("  \033[32mPASS\033[0m: Collision detected (very small distance/penetration)\n");
                     } else {
-                        printf("  WARNING: Collision detected but distance seems large: %.6f\n", distance);
+                        printf("  \033[33mWARNING\033[0m: Collision detected but distance seems large: %.6f\n", distance);
                     }
                 } else {
-                    printf("  WARNING: Simplex has %d vertices (expected 4 for collision)\n", simplex.nvrtx);
+                    printf("  \033[33mWARNING\033[0m: Simplex has %d vertices (expected 4 for collision)\n", simplex.nvrtx);
                     if (distance > 0.0f) {
-                        printf("  INFO: Polytopes are separated by distance: %.6f\n", distance);
+                        printf("  \033[36mINFO\033[0m: Polytopes are separated by distance: %.6f\n", distance);
                     }
                 }
                 printf("\n");
@@ -1009,14 +764,14 @@ namespace GJK {
                 
                 if (simplex.nvrtx == 4 && valid1 && valid2) {
                     if (distance < 0.0f) {
-                        printf("  PASS: Collision detected with penetration depth of %.6f\n", -distance);
+                        printf("  \033[32mPASS\033[0m: Collision detected with penetration depth of %.6f\n", -distance);
                     } else {
-                        printf("  PASS: Collision detected, witness points valid\n");
+                        printf("  \033[32mPASS\033[0m: Collision detected, witness points valid\n");
                     }
                 } else if (simplex.nvrtx < 4 && distance >= 0.0f) {
-                    printf("  PASS: No collision, separation distance: %.6f\n", distance);
+                    printf("  \033[32mPASS\033[0m: No collision, separation distance: %.6f\n", distance);
                 } else {
-                    printf("  WARNING: Unexpected results\n");
+                    printf("  \033[33mWARNING\033[0m: Unexpected results\n");
                 }
                 printf("\n");
 
@@ -1074,18 +829,18 @@ namespace GJK {
                 
                 if (simplex.nvrtx == 4 && valid1 && valid2) {
                     if (distance < 0.0f) {
-                        printf("  PASS: Collision detected with penetration depth of %.6f\n", -distance);
+                        printf("  \033[32mPASS\033[0m: Collision detected with penetration depth of %.6f\n", -distance);
                         printf("  Expected penetration: ~3.0 units\n");
                     } else if (distance < 0.1f) {
-                        printf("  PASS: Collision detected (very small distance/penetration)\n");
+                        printf("  \033[32mPASS\033[0m: Collision detected (very small distance/penetration)\n");
                     } else {
-                        printf("  WARNING: Collision detected but distance seems large: %.6f\n", distance);
+                        printf("  \033[33mWARNING\033[0m: Collision detected but distance seems large: %.6f\n", distance);
                     }
                 } else if (simplex.nvrtx < 4 && distance >= 0.0f) {
-                    printf("  WARNING: No collision detected, but spheres should overlap\n");
+                    printf("  \033[33mWARNING\033[0m: No collision detected, but spheres should overlap\n");
                     printf("  Separation distance: %.6f\n", distance);
                 } else {
-                    printf("  WARNING: Unexpected results\n");
+                    printf("  \033[33mWARNING\033[0m: Unexpected results\n");
                     if (!valid1) printf("    Witness 1 distance from sphere 1 center: %.6f (expected <= %.2f)\n", dist1, radius);
                     if (!valid2) printf("    Witness 2 distance from sphere 2 center: %.6f (expected <= %.2f)\n", dist2, radius);
                 }
@@ -1153,18 +908,18 @@ namespace GJK {
                 
                 if (simplex.nvrtx == 4 && valid1 && valid2) {
                     if (distance < 0.0f) {
-                        printf("  PASS: Collision detected with penetration depth of %.6f\n", -distance);
+                        printf("  \033[32mPASS\033[0m: Collision detected with penetration depth of %.6f\n", -distance);
                         printf("  Expected penetration: ~3.0 units\n");
                     } else if (distance < 0.1f) {
-                        printf("  PASS: Collision detected (very small distance/penetration)\n");
+                        printf("  \033[32mPASS\033[0m: Collision detected (very small distance/penetration)\n");
                     } else {
-                        printf("  WARNING: Collision detected but distance seems large: %.6f\n", distance);
+                        printf("  \033[33mWARNING\033[0m: Collision detected but distance seems large: %.6f\n", distance);
                     }
                 } else if (simplex.nvrtx < 4 && distance >= 0.0f) {
-                    printf("  WARNING: No collision detected, but spheres should overlap\n");
+                    printf("  \033[33mWARNING\033[0m: No collision detected, but spheres should overlap\n");
                     printf("  Separation distance: %.6f\n", distance);
                 } else {
-                    printf("  WARNING: Unexpected results\n");
+                    printf("  \033[33mWARNING\033[0m: Unexpected results\n");
                     if (!valid1) printf("    Witness 1 distance from sphere 1 center: %.6f (expected <= %.2f)\n", dist1, radius);
                     if (!valid2) printf("    Witness 2 distance from sphere 2 center: %.6f (expected <= %.2f)\n", dist2, radius);
                 }

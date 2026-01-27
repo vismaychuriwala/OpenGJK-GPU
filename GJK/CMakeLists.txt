@@ -14,9 +14,7 @@ list(SORT sources)
 
 source_group(Headers FILES ${headers})
 source_group(Sources FILES ${sources})
-find_package(CCCL REQUIRED)
 add_library(GJK ${sources} ${headers})
-target_link_libraries(GJK CCCL::Thrust)
 
 if(UNIX)
     target_link_libraries(GJK PRIVATE m)
