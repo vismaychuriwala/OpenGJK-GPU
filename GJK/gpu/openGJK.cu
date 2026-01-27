@@ -12,6 +12,10 @@
 #define THREADS_PER_COMPUTATION 16  // GJK uses 16 threads (half-warp)
 #define THREADS_PER_EPA 32           // EPA uses 32 threads (full warp)
 
+// Maximum number of faces in the EPA polytope
+#define MAX_EPA_FACES 128
+#define MAX_EPA_VERTICES (MAX_EPA_FACES + 4)
+
 #define getCoord(body, index, component) body->coord[(index) * 3 + (component)]
 
 #define norm2(a) (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
@@ -1583,11 +1587,6 @@ __global__ void compute_minimum_distance_indexed_kernel(
 
 // Entry point to EPA implementation. 1 Warp per collision.
 
-// Maximum number of faces in the EPA polytope
-#define MAX_EPA_FACES 128
-#define MAX_EPA_VERTICES (MAX_EPA_FACES + 4)
-
-
 // Face structure for EPA polytope
 // Each face is a triangle with 3 vertex indices
 typedef struct {
@@ -2125,6 +2124,7 @@ __global__ void compute_epa_kernel(
 
       // Broadcast updated simplex
       simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
+      #pragma unroll 4
       for (int v = 0; v < simplex.nvrtx; v++) {
         #pragma unroll
         for (int c = 0; c < 3; c++) {
@@ -2183,6 +2183,7 @@ __global__ void compute_epa_kernel(
       if (warp_lane_idx == 0) {
         // Check if this is a new point relative to both existing simplex vertices.
         bool is_new = true;
+        #pragma unroll 4
         for (int vtx = 0; vtx < simplex.nvrtx; ++vtx) {
           gkFloat dx = new_vertex[0] - simplex.vrtx[vtx][0];
           gkFloat dy = new_vertex[1] - simplex.vrtx[vtx][1];
@@ -2244,6 +2245,7 @@ __global__ void compute_epa_kernel(
 
       // Broadcast updated simplex
       simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
+      #pragma unroll 4
       for (int v = 0; v < simplex.nvrtx; v++) {
         #pragma unroll
         for (int c = 0; c < 3; c++) {
@@ -2291,6 +2293,7 @@ __global__ void compute_epa_kernel(
       if (warp_lane_idx == 0) {
         // Check if this is a new point relative to all three existing simplex vertices.
         bool is_new = true;
+        #pragma unroll 4
         for (int vtx = 0; vtx < simplex.nvrtx; ++vtx) {
           gkFloat dx = new_vertex[0] - simplex.vrtx[vtx][0];
           gkFloat dy = new_vertex[1] - simplex.vrtx[vtx][1];
@@ -2334,6 +2337,7 @@ __global__ void compute_epa_kernel(
 
         if (warp_lane_idx == 0) {
           bool is_new = true;
+          #pragma unroll 4
           for (int vtx = 0; vtx < simplex.nvrtx; ++vtx) {
             gkFloat dx = new_vertex[0] - simplex.vrtx[vtx][0];
             gkFloat dy = new_vertex[1] - simplex.vrtx[vtx][1];
@@ -2394,6 +2398,7 @@ __global__ void compute_epa_kernel(
 
       // Broadcast updated simplex
       simplex.nvrtx = __shfl_sync(warp_mask, simplex.nvrtx, 0);
+      #pragma unroll 4
       for (int v = 0; v < simplex.nvrtx; v++) {
         #pragma unroll
         for (int c = 0; c < 3; c++) {
