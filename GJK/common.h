@@ -13,10 +13,12 @@
 #define gkFloat float
 #define gkEpsilon FLT_EPSILON
 #define gkSqrt sqrtf
+#define gkFmax fmaxf
 #else
 #define gkFloat double
 #define gkEpsilon DBL_EPSILON
 #define gkSqrt sqrt
+#define gkFmax fmax
 #endif
 
 /*! @brief Data structure for convex polytopes.

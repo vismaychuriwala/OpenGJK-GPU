@@ -829,7 +829,8 @@ __device__ inline static void subalgorithm_warp_parallel(
   s->nvrtx =
     __shfl_sync(half_warp_mask, s->nvrtx, half_warp_base_thread_idx);
 
-  for (int vtx = 0; vtx < s->nvrtx; ++vtx) {
+  #pragma unroll 4
+  for (int vtx = 0; vtx < 4; ++vtx) {
     #pragma unroll
     for (int t = 0; t < 3; ++t) {
       s->vrtx[vtx][t] =
@@ -1365,10 +1366,10 @@ __global__ void compute_minimum_distance_kernel(
 
     /* Test */
     // All threads compute the same value since s.vrtx is the same on all threads (broadcast earlier)
-    for (int jj = 0; jj < s.nvrtx; jj++) {
-      gkFloat tesnorm = norm2(s.vrtx[jj]);
-      if (tesnorm > norm2Wmax) {
-        norm2Wmax = tesnorm;
+    #pragma unroll 4
+    for (int jj = 0; jj < 4; jj++) {
+      if (jj < s.nvrtx) {
+        norm2Wmax = gkFmax(norm2Wmax, norm2(s.vrtx[jj]));
       }
     }
 
@@ -1545,10 +1546,10 @@ __global__ void compute_minimum_distance_indexed_kernel(
 
     /* Test */
     // All threads compute the same value since s.vrtx is the same on all threads (broadcast earlier)
-    for (int jj = 0; jj < s.nvrtx; jj++) {
-      gkFloat tesnorm = norm2(s.vrtx[jj]);
-      if (tesnorm > norm2Wmax) {
-        norm2Wmax = tesnorm;
+    #pragma unroll 4
+    for (int jj = 0; jj < 4; jj++) {
+      if (jj < s.nvrtx) {
+        norm2Wmax = gkFmax(norm2Wmax, norm2(s.vrtx[jj]));
       }
     }
 
