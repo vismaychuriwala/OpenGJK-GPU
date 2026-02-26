@@ -7,6 +7,8 @@
 #include "examples/gpu/example.h"
 #include "examples/cpu/example.h"
 
+#define EPA_TESTING 1
+
 #define fscanf_s fscanf
 #define M_PI 3.14159265358979323846  /* pi */
 
@@ -326,9 +328,9 @@ main() {
   GJK::GPU::testing(polytopeCounts, sizeof(polytopeCounts) / sizeof(polytopeCounts[0]), vertexCounts, sizeof(vertexCounts) / sizeof(vertexCounts[0]), outputFile.c_str());
 #endif
 
-
+#if EPA_TESTING
   printf("\n");
   GJK::GPU::EPATesting();
-
+#endif
   return (0);
 }

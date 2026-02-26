@@ -1198,19 +1198,14 @@ __device__ inline static void compute_witnesses(const gkPolytope* bd1,
 __device__ inline static void support_parallel(gkPolytope* body,
   const gkFloat* v, int lane_in_group, unsigned int group_mask, int group_leader_lane) {
 
-  // Each thread searches a subset of the total points in the body so they can compute in parallel
-  const int points_per_thread = (body->numpoints + THREADS_PER_GJK - 1) / THREADS_PER_GJK;
-  const int start_idx = lane_in_group * points_per_thread;
-  const int end_idx = (start_idx + points_per_thread < body->numpoints) ?
-    (start_idx + points_per_thread) : body->numpoints;
-
   // Initialize each thead with its current best point
   gkFloat local_maxs = dotProduct(body->s, v);
   int local_better = -1;
   gkFloat vrt[3];
 
-  // Each thread searches its assigned range of points
-  for (int i = start_idx; i < end_idx; ++i) {
+  // Each thread searches every THREADS_PER_GJK-th vertex (strided)
+  // so consecutive threads read consecutive vertices each iteration -> better cache line utilisation
+  for (int i = lane_in_group; i < body->numpoints; i += THREADS_PER_GJK) {
     #pragma unroll
     for (int j = 0; j < 3; ++j) {
       vrt[j] = getCoord(body, i, j);
@@ -1736,22 +1731,15 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
   const gkFloat* direction, gkFloat* result, int* result_idx,
   int warp_lane_idx, unsigned int warp_mask) {
 
-  // Each thread searches a subset of points
-  const int max_points = (body1->numpoints > body2->numpoints) ?
-    body1->numpoints : body2->numpoints;
-  const int points_per_thread = (max_points + 31) / 32;
-  const int start_idx = warp_lane_idx * points_per_thread;
-  const int end_idx = (start_idx + points_per_thread < max_points) ?
-    (start_idx + points_per_thread) : max_points;
-
   gkFloat local_max1 = -1e10f;
   gkFloat local_max2 = -1e10f;
   int local_best1 = -1;
   int local_best2 = -1;
   gkFloat vrt[3];
 
+  // Each thread searches every 32nd vertex (strided) for better cache line utilisation
   // Search body1
-  for (int i = start_idx; i < body1->numpoints && i < end_idx; i++) {
+  for (int i = warp_lane_idx; i < body1->numpoints; i += 32) {
     #pragma unroll
     for (int j = 0; j < 3; j++) {
       vrt[j] = getCoord(body1, i, j);
@@ -1765,7 +1753,7 @@ __device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope
 
   // Search body2 opposite direction
   gkFloat neg_dir[3] = { -direction[0], -direction[1], -direction[2] };
-  for (int i = start_idx; i < body2->numpoints && i < end_idx; i++) {
+  for (int i = warp_lane_idx; i < body2->numpoints; i += 32) {
     #pragma unroll
     for (int j = 0; j < 3; j++) {
       vrt[j] = getCoord(body2, i, j);
