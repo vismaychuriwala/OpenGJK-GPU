@@ -71,7 +71,8 @@ namespace GJK {
                             gkSimplex* simplices,
                             gkFloat* distances,
                             gkFloat* witness1,
-                            gkFloat* witness2);
+                            gkFloat* witness2,
+                            gkFloat* contact_normals = nullptr);
 
 
 

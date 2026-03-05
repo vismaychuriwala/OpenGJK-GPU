@@ -3014,17 +3014,13 @@ void compute_epa(
 
     allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
                                      &d_coord1, &d_coord2, &d_simplices, &d_distances);
+    cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
 
-    // Allocate device memory for EPA outputs
     gkFloat* d_witness1 = nullptr;
     gkFloat* d_witness2 = nullptr;
     gkFloat* d_contact_normals = nullptr;
-
     allocate_epa_device_arrays(n, &d_witness1, &d_witness2,
                                contact_normals ? &d_contact_normals : nullptr);
-
-    // Copy simplices to device
-    cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
 
     // Launch EPA kernel
     compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
@@ -3122,39 +3118,39 @@ void allocate_and_copy_device_arrays(
     cudaMalloc((void**)d_coord1, total_coords1 * sizeof(gkFloat));
     cudaMalloc((void**)d_coord2, total_coords2 * sizeof(gkFloat));
 
-    // Create temporary host arrays with updated pointers
     gkPolytope* temp_bd1 = new gkPolytope[n];
     gkPolytope* temp_bd2 = new gkPolytope[n];
+    gkFloat* staging1 = new gkFloat[total_coords1];
+    gkFloat* staging2 = new gkFloat[total_coords2];
 
     int offset1 = 0;
     int offset2 = 0;
     for (int i = 0; i < n; i++) {
-        // Copy polytope metadata
         temp_bd1[i] = bd1[i];
         temp_bd2[i] = bd2[i];
 
-        // Copy coordinate data to device
-        int coord_size1 = bd1[i].numpoints * 3 * sizeof(gkFloat);
-        int coord_size2 = bd2[i].numpoints * 3 * sizeof(gkFloat);
+        int n1 = bd1[i].numpoints * 3;
+        int n2 = bd2[i].numpoints * 3;
 
-        cudaMemcpy(*d_coord1 + offset1, bd1[i].coord, coord_size1, cudaMemcpyHostToDevice);
-        cudaMemcpy(*d_coord2 + offset2, bd2[i].coord, coord_size2, cudaMemcpyHostToDevice);
+        memcpy(staging1 + offset1, bd1[i].coord, n1 * sizeof(gkFloat));
+        memcpy(staging2 + offset2, bd2[i].coord, n2 * sizeof(gkFloat));
 
-        // Update pointers to device memory locations
         temp_bd1[i].coord = *d_coord1 + offset1;
         temp_bd2[i].coord = *d_coord2 + offset2;
 
-        offset1 += bd1[i].numpoints * 3;
-        offset2 += bd2[i].numpoints * 3;
+        offset1 += n1;
+        offset2 += n2;
     }
 
-    // Copy polytope structures to device
+    cudaMemcpy(*d_coord1, staging1, total_coords1 * sizeof(gkFloat), cudaMemcpyHostToDevice);
+    cudaMemcpy(*d_coord2, staging2, total_coords2 * sizeof(gkFloat), cudaMemcpyHostToDevice);
     cudaMemcpy(*d_bd1, temp_bd1, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
     cudaMemcpy(*d_bd2, temp_bd2, n * sizeof(gkPolytope), cudaMemcpyHostToDevice);
 
-    // Cleanup temporary host arrays
     delete[] temp_bd1;
     delete[] temp_bd2;
+    delete[] staging1;
+    delete[] staging2;
 }
 
 void allocate_epa_device_arrays(
@@ -3165,10 +3161,8 @@ void allocate_epa_device_arrays(
 
     cudaMalloc((void**)d_witness1, n * 3 * sizeof(gkFloat));
     cudaMalloc((void**)d_witness2, n * 3 * sizeof(gkFloat));
-
-    // ALWAYS allocate contact_normals (EPA kernel writes to it unconditionally)
-    // Caller must provide a valid pointer, we'll only copy back if host pointer is non-null
-    cudaMalloc((void**)d_contact_normals, n * 3 * sizeof(gkFloat));
+    if (d_contact_normals)
+        cudaMalloc((void**)d_contact_normals, n * 3 * sizeof(gkFloat));
 }
 
 void compute_minimum_distance_device(
@@ -3299,30 +3293,25 @@ void compute_minimum_distance_indexed(
     }
     cudaMalloc(&d_coords, total_verts * 3 * sizeof(gkFloat));
 
-    // Copy coordinates and update polytope pointers
     gkPolytope* temp_polytopes = (gkPolytope*)malloc(num_polytopes * sizeof(gkPolytope));
+    gkFloat* staging = (gkFloat*)malloc(total_verts * 3 * sizeof(gkFloat));
     int coord_offset = 0;
     for (int i = 0; i < num_polytopes; i++) {
         temp_polytopes[i] = polytopes[i];
+        int n_floats = polytopes[i].numpoints * 3;
+        memcpy(staging + coord_offset, polytopes[i].coord, n_floats * sizeof(gkFloat));
         temp_polytopes[i].coord = d_coords + coord_offset;
-        cudaMemcpy(temp_polytopes[i].coord, polytopes[i].coord,
-                   polytopes[i].numpoints * 3 * sizeof(gkFloat), cudaMemcpyHostToDevice);
-        coord_offset += polytopes[i].numpoints * 3;
+        coord_offset += n_floats;
     }
+    cudaMemcpy(d_coords, staging, total_verts * 3 * sizeof(gkFloat), cudaMemcpyHostToDevice);
+    free(staging);
 
     // Copy polytope descriptors and pairs
     cudaMemcpy(d_polytopes, temp_polytopes, num_polytopes * sizeof(gkPolytope), cudaMemcpyHostToDevice);
     cudaMemcpy(d_pairs, pairs, num_pairs * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
     cudaMemset(d_simplices, 0, num_pairs * sizeof(gkSimplex));
 
-    // Launch kernel - same configuration as regular GJK
-    int blockSize = 256;
-    int collisionsPerBlock = blockSize / THREADS_PER_GJK;
-    int numBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
-
-    compute_minimum_distance_indexed_kernel<<<numBlocks, blockSize>>>(
-        d_polytopes, d_pairs, d_simplices, d_distances, num_pairs);
-    cudaDeviceSynchronize();
+    compute_minimum_distance_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances);
 
     // Copy results back
     cudaMemcpy(simplices, d_simplices, num_pairs * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
@@ -3335,4 +3324,21 @@ void compute_minimum_distance_indexed(
     cudaFree(d_distances);
     cudaFree(d_coords);
     free(temp_polytopes);
+}
+
+void compute_minimum_distance_indexed_device(
+    const int num_pairs,
+    const gkPolytope* d_polytopes,
+    const gkCollisionPair* d_pairs,
+    gkSimplex* d_simplices,
+    gkFloat* d_distances) {
+
+    int blockSize = 256;
+    int collisionsPerBlock = blockSize / THREADS_PER_GJK;
+    int numBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
+
+    compute_minimum_distance_indexed_kernel<<<numBlocks, blockSize>>>(
+        d_polytopes, d_pairs, d_simplices, d_distances, num_pairs);
+
+    cudaDeviceSynchronize();
 }

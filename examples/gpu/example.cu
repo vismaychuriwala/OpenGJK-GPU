@@ -58,7 +58,7 @@ namespace GJK {
                             gkFloat* distances,
                             gkFloat* witness1,
                             gkFloat* witness2,
-                            gkFloat* contact_normals = nullptr) {
+                            gkFloat* contact_normals) {
             if (n <= 0) return;
 
             // Use mid-level API with explicit memory management

@@ -355,4 +355,24 @@ void compute_minimum_distance_indexed(
     gkFloat* distances
 );
 
+/**
+ * @brief Computes minimum distance using indexed polytope pairs (device memory).
+ *
+ * Low-level API that assumes all data is already on the GPU. Launches
+ * compute_minimum_distance_indexed_kernel directly.
+ *
+ * @param num_pairs   Number of collision pairs
+ * @param d_polytopes Device pointer to polytope array
+ * @param d_pairs     Device pointer to collision pairs
+ * @param d_simplices Device pointer to simplex array (output)
+ * @param d_distances Device pointer to distance array (output)
+ */
+void compute_minimum_distance_indexed_device(
+    const int num_pairs,
+    const gkPolytope* d_polytopes,
+    const gkCollisionPair* d_pairs,
+    gkSimplex* d_simplices,
+    gkFloat* d_distances
+);
+
 #endif  // OPENGJK_H__

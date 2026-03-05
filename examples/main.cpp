@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 #include <cuda_runtime.h>
 #include <string>
 
@@ -12,10 +13,17 @@
 #define fscanf_s fscanf
 #define M_PI 3.14159265358979323846  /* pi */
 
-// Test configuration
 #define NUM_POLYTOPES 1000
-#define VERTS_PER_POLYTOPE 1000
+#define RANDOM_VERTS 0
 
+#if RANDOM_VERTS
+  #define MIN_VERTS 100
+  #define MAX_VERTS 2000
+#else
+  #define VERTS_PER_POLYTOPE 1000
+#endif
+
+#define TEST_API 0
 #define SAVE_PERFORMANCE_DATA_TO_FILE 0
 #define OUTPUT_FILE "../data/gpu_performance_results_!.csv"
 
@@ -91,23 +99,36 @@ gkFloat* generatePolytope(int numVerts, gkFloat offsetX, gkFloat offsetY, gkFloa
  */
 int
 main() {
+  srand((unsigned int)time(NULL));
+
   printf("OpenGJK Performance Testing\n");
   printf("============================\n");
   printf("Polytopes: %d\n", NUM_POLYTOPES);
+#if RANDOM_VERTS
+  printf("Vertices per polytope: %d-%d (randomized)\n", MIN_VERTS, MAX_VERTS);
+#else
   printf("Vertices per polytope: %d\n", VERTS_PER_POLYTOPE);
+#endif
 #ifdef USE_32BITS
   printf("Precision: 32-bit (float)\n\n");
 #else
   printf("Precision: 64-bit (double)\n\n");
 #endif
 
-  /* Allocate arrays for all polytope vertex data */
   gkFloat** vrtx1_array = (gkFloat**)malloc(NUM_POLYTOPES * sizeof(gkFloat*));
   gkFloat** vrtx2_array = (gkFloat**)malloc(NUM_POLYTOPES * sizeof(gkFloat*));
+  int* nverts1 = (int*)malloc(NUM_POLYTOPES * sizeof(int));
+  int* nverts2 = (int*)malloc(NUM_POLYTOPES * sizeof(int));
 
-  /* Generate unique polytopes with random offsets */
   for (int i = 0; i < NUM_POLYTOPES; i++) {
-    // Random offset for each polytope pair
+#if RANDOM_VERTS
+    nverts1[i] = MIN_VERTS + rand() % (MAX_VERTS - MIN_VERTS + 1);
+    nverts2[i] = MIN_VERTS + rand() % (MAX_VERTS - MIN_VERTS + 1);
+#else
+    nverts1[i] = VERTS_PER_POLYTOPE;
+    nverts2[i] = VERTS_PER_POLYTOPE;
+#endif
+
     gkFloat offset1_x = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
     gkFloat offset1_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
     gkFloat offset1_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
@@ -116,11 +137,10 @@ main() {
     gkFloat offset2_y = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
     gkFloat offset2_z = ((gkFloat)rand() / RAND_MAX - 0.5f) * 10.0f;
 
-    vrtx1_array[i] = generatePolytope(VERTS_PER_POLYTOPE, offset1_x, offset1_y, offset1_z);
-    vrtx2_array[i] = generatePolytope(VERTS_PER_POLYTOPE, offset2_x, offset2_y, offset2_z);
+    vrtx1_array[i] = generatePolytope(nverts1[i], offset1_x, offset1_y, offset1_z);
+    vrtx2_array[i] = generatePolytope(nverts2[i], offset2_x, offset2_y, offset2_z);
   }
 
-  /* Allocate arrays for polytope pairs */
   gkPolytope* polytopes1 = (gkPolytope*)malloc(NUM_POLYTOPES * sizeof(gkPolytope));
   gkPolytope* polytopes2 = (gkPolytope*)malloc(NUM_POLYTOPES * sizeof(gkPolytope));
   gkSimplex* simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
@@ -130,17 +150,16 @@ main() {
   gkFloat* gpu_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
   gkFloat* warm_up_gpu_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
 
-  /* Initialize polytope pairs with unique data */
   for (int i = 0; i < NUM_POLYTOPES; i++) {
-    polytopes1[i].numpoints = VERTS_PER_POLYTOPE;
+    polytopes1[i].numpoints = nverts1[i];
     polytopes1[i].coord = vrtx1_array[i];
 
-    polytopes2[i].numpoints = VERTS_PER_POLYTOPE;
+    polytopes2[i].numpoints = nverts2[i];
     polytopes2[i].coord = vrtx2_array[i];
 
-    simplices[i].nvrtx = 0;  // Initialize CPU simplex as empty
-    gpu_simplices[i].nvrtx = 0;  // Initialize GPU simplex as empty
-    warm_up_gpu_simplices[i].nvrtx = 0; // Initialize warm up gpu simplices as empty
+    simplices[i].nvrtx = 0;
+    gpu_simplices[i].nvrtx = 0;
+    warm_up_gpu_simplices[i].nvrtx = 0;
   }
 
   /* Warm up GPU to reduce measurement discrepancy */
@@ -241,65 +260,232 @@ main() {
          simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
   printf("================================================================================\n");
 
-  /* Test indexed API: Interlace polytopes into single array */
+#if TEST_API
   printf("\n");
   printf("================================================================================\n");
-  printf("                        TESTING INDEXED API                                     \n");
+  printf("                        TESTING HIGH-LEVEL API                                  \n");
   printf("================================================================================\n");
 
-  // Create interlaced polytope array (polytopes[2*i] and polytopes[2*i+1] form pair i)
-  gkPolytope* indexed_polytopes = (gkPolytope*)malloc(2 * NUM_POLYTOPES * sizeof(gkPolytope));
-  for (int i = 0; i < NUM_POLYTOPES; i++) {
-    indexed_polytopes[2*i] = polytopes1[i];     // Even indices: first polytope of pair
-    indexed_polytopes[2*i+1] = polytopes2[i];   // Odd indices: second polytope of pair
-  }
+  // --- Test 1: computeDistances ---
+  {
+    gkSimplex* t_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*   t_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    for (int i = 0; i < NUM_POLYTOPES; i++) t_simplices[i].nvrtx = 0;
 
-  // Create collision pairs
-  gkCollisionPair* pairs = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
-  for (int i = 0; i < NUM_POLYTOPES; i++) {
-    pairs[i].idx1 = 2*i;      // First polytope (even index)
-    pairs[i].idx2 = 2*i + 1;  // Second polytope (odd index)
-  }
+    GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, t_simplices, t_distances);
+    float t1_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
 
-  // Allocate output arrays for indexed test
-  gkSimplex* indexed_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
-  gkFloat* indexed_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-  for (int i = 0; i < NUM_POLYTOPES; i++) {
-    indexed_simplices[i].nvrtx = 0;
-  }
-
-  // Run indexed GJK
-  compute_minimum_distance_indexed(2 * NUM_POLYTOPES, NUM_POLYTOPES,
-                                   indexed_polytopes, pairs,
-                                   indexed_simplices, indexed_distances);
-  float indexed_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-
-  // Validate indexed results against regular GPU results
-  bool indexed_passed = true;
-  for (int i = 0; i < test_count; i++) {
-    gkFloat diff = fabs(indexed_distances[i] - gpu_distances[i]);
-    if (diff > tolerance) {
-      indexed_passed = false;
-      printf("  Mismatch at index %d: Indexed=%.6f, Regular=%.6f, diff=%.6e\n",
-             i, indexed_distances[i], gpu_distances[i], diff);
+    bool passed = true;
+    for (int i = 0; i < test_count; i++) {
+      if (fabs(t_distances[i] - gpu_distances[i]) > tolerance) { passed = false; break; }
     }
+    printf("computeDistances:                      %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t1_time);
+
+    free(t_simplices);
+    free(t_distances);
   }
 
-  printf("Indexed API vs Regular:    ");
-  if (indexed_passed) {
-    printf("\033[32mPASSED\033[0m (first %d results within %.0e tolerance)\n", test_count, tolerance);
-  } else {
-    printf("\033[31mFAILED\033[0m\n");
+  // --- Test: compute_minimum_distance_indexed ---
+  {
+    gkPolytope*      idx_polytopes = (gkPolytope*)malloc(2 * NUM_POLYTOPES * sizeof(gkPolytope));
+    gkCollisionPair* idx_pairs     = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
+    gkSimplex*       idx_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*         idx_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    for (int i = 0; i < NUM_POLYTOPES; i++) {
+      idx_polytopes[2*i]   = polytopes1[i];
+      idx_polytopes[2*i+1] = polytopes2[i];
+      idx_pairs[i].idx1 = 2*i;
+      idx_pairs[i].idx2 = 2*i+1;
+      idx_simplices[i].nvrtx = 0;
+    }
+
+    GJK::GPU::timer().startGpuTimer();
+    compute_minimum_distance_indexed(2 * NUM_POLYTOPES, NUM_POLYTOPES,
+                                     idx_polytopes, idx_pairs,
+                                     idx_simplices, idx_distances);
+    GJK::GPU::timer().endGpuTimer();
+    float t_idx_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+    bool passed = true;
+    for (int i = 0; i < test_count; i++) {
+      if (fabs(idx_distances[i] - gpu_distances[i]) > tolerance) { passed = false; break; }
+    }
+    printf("compute_minimum_distance_indexed:      %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t_idx_time);
+
+    free(idx_polytopes);
+    free(idx_pairs);
+    free(idx_simplices);
+    free(idx_distances);
   }
-  printf("Indexed GPU time:          %.4f ms\n", indexed_gpu_time);
-  printf("Regular GPU time:          %.4f ms\n", gpu_time);
+
+  // --- Test: compute_minimum_distance_indexed_device ---
+  {
+    gkPolytope*      idx_polytopes = (gkPolytope*)malloc(2 * NUM_POLYTOPES * sizeof(gkPolytope));
+    gkCollisionPair* idx_pairs     = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
+    gkSimplex*       idx_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*         idx_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    for (int i = 0; i < NUM_POLYTOPES; i++) {
+      idx_polytopes[2*i]   = polytopes1[i];
+      idx_polytopes[2*i+1] = polytopes2[i];
+      idx_pairs[i].idx1 = 2*i;
+      idx_pairs[i].idx2 = 2*i+1;
+      idx_simplices[i].nvrtx = 0;
+    }
+
+    // Staging buffer: pack all coords contiguously
+    int total_verts = 0;
+    for (int i = 0; i < 2 * NUM_POLYTOPES; i++) total_verts += idx_polytopes[i].numpoints;
+
+    gkFloat*         d_coords    = nullptr;
+    gkPolytope*      d_polytopes = nullptr;
+    gkCollisionPair* d_pairs     = nullptr;
+    gkSimplex*       d_simplices = nullptr;
+    gkFloat*         d_distances = nullptr;
+
+    cudaMalloc(&d_coords,    total_verts * 3 * sizeof(gkFloat));
+    cudaMalloc(&d_polytopes, 2 * NUM_POLYTOPES * sizeof(gkPolytope));
+    cudaMalloc(&d_pairs,     NUM_POLYTOPES * sizeof(gkCollisionPair));
+    cudaMalloc(&d_simplices, NUM_POLYTOPES * sizeof(gkSimplex));
+    cudaMalloc(&d_distances, NUM_POLYTOPES * sizeof(gkFloat));
+
+    gkPolytope* temp = (gkPolytope*)malloc(2 * NUM_POLYTOPES * sizeof(gkPolytope));
+    gkFloat*    staging = (gkFloat*)malloc(total_verts * 3 * sizeof(gkFloat));
+    int offset = 0;
+    for (int i = 0; i < 2 * NUM_POLYTOPES; i++) {
+      int n = idx_polytopes[i].numpoints * 3;
+      memcpy(staging + offset, idx_polytopes[i].coord, n * sizeof(gkFloat));
+      temp[i] = idx_polytopes[i];
+      temp[i].coord = d_coords + offset;
+      offset += n;
+    }
+    cudaMemcpy(d_coords, staging, total_verts * 3 * sizeof(gkFloat), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_polytopes, temp, 2 * NUM_POLYTOPES * sizeof(gkPolytope), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pairs, idx_pairs, NUM_POLYTOPES * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
+    cudaMemset(d_simplices, 0, NUM_POLYTOPES * sizeof(gkSimplex));
+    free(staging);
+    free(temp);
+
+    GJK::GPU::timer().startGpuTimer();
+    compute_minimum_distance_indexed_device(NUM_POLYTOPES, d_polytopes, d_pairs, d_simplices, d_distances);
+    GJK::GPU::timer().endGpuTimer();
+    float t_idev_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+    cudaMemcpy(idx_simplices, d_simplices, NUM_POLYTOPES * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+    cudaMemcpy(idx_distances, d_distances, NUM_POLYTOPES * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+
+    bool passed = true;
+    for (int i = 0; i < test_count; i++) {
+      if (fabs(idx_distances[i] - gpu_distances[i]) > tolerance) { passed = false; break; }
+    }
+    printf("compute_minimum_distance_indexed_device: %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t_idev_time);
+
+    cudaFree(d_coords);
+    cudaFree(d_polytopes);
+    cudaFree(d_pairs);
+    cudaFree(d_simplices);
+    cudaFree(d_distances);
+    free(idx_polytopes);
+    free(idx_pairs);
+    free(idx_simplices);
+    free(idx_distances);
+  }
+
+  // --- Test 2: computeGJKAndEPA - distances match GJK reference ---
+  gkSimplex* gjkepa_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+  gkFloat*   gjkepa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+  gkFloat*   gjkepa_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+  gkFloat*   gjkepa_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+  for (int i = 0; i < NUM_POLYTOPES; i++) gjkepa_simplices[i].nvrtx = 0;
+
+  GJK::GPU::computeGJKAndEPA(NUM_POLYTOPES, polytopes1, polytopes2,
+                              gjkepa_simplices, gjkepa_distances,
+                              gjkepa_witness1, gjkepa_witness2);
+  float t2_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+  {
+    bool passed = true;
+    for (int i = 0; i < test_count; i++) {
+      if (gpu_distances[i] > tolerance) {
+        // Non-colliding: EPA doesn't change distance, should match GJK
+        if (fabs(gjkepa_distances[i] - gpu_distances[i]) > tolerance) { passed = false; break; }
+      } else {
+        // Colliding: EPA returns negative penetration depth
+        if (gjkepa_distances[i] > tolerance) { passed = false; break; }
+      }
+    }
+    printf("computeGJKAndEPA (distances vs GJK):   %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t2_time);
+  }
+
+  // --- Test 3: computeCollisionInformation - witnesses match computeGJKAndEPA ---
+  {
+    gkSimplex* t_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*   t_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    gkFloat*   t_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   t_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   t_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    for (int i = 0; i < NUM_POLYTOPES; i++) t_simplices[i].nvrtx = 0;
+
+    GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, t_simplices, t_distances);
+    GJK::GPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
+                                          t_simplices, t_distances,
+                                          t_witness1, t_witness2, t_normals);
+    float t3_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+    bool passed = true;
+    for (int i = 0; i < test_count && passed; i++) {
+      for (int d = 0; d < 3; d++) {
+        if (fabs(t_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
+            fabs(t_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
+          passed = false; break;
+        }
+      }
+    }
+    printf("computeCollisionInformation (witnesses): %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t3_time);
+
+    free(t_simplices);
+    free(t_distances);
+    free(t_witness1);
+    free(t_witness2);
+    free(t_normals);
+  }
+
+  // --- Test 4: computeCollisionInformation with nullptr contact_normals ---
+  {
+    gkSimplex* t_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*   t_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    gkFloat*   t_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   t_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    for (int i = 0; i < NUM_POLYTOPES; i++) t_simplices[i].nvrtx = 0;
+
+    GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, t_simplices, t_distances);
+    GJK::GPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
+                                          t_simplices, t_distances,
+                                          t_witness1, t_witness2, nullptr);
+    float t4_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+    bool passed = true;
+    for (int i = 0; i < test_count && passed; i++) {
+      for (int d = 0; d < 3; d++) {
+        if (fabs(t_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
+            fabs(t_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
+          passed = false; break;
+        }
+      }
+    }
+    printf("computeCollisionInformation (nullptr):   %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t4_time);
+
+    free(t_simplices);
+    free(t_distances);
+    free(t_witness1);
+    free(t_witness2);
+  }
+
   printf("================================================================================\n");
 
-  // Free indexed test memory
-  free(indexed_polytopes);
-  free(pairs);
-  free(indexed_simplices);
-  free(indexed_distances);
+  free(gjkepa_simplices);
+  free(gjkepa_distances);
+  free(gjkepa_witness1);
+  free(gjkepa_witness2);
+#endif
 
   /* Free all allocated memory */
   for (int i = 0; i < NUM_POLYTOPES; i++) {
