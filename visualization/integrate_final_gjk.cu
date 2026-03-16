@@ -13,7 +13,6 @@
 extern "C" {
 #endif
 
-// CUDA error checking function
 void checkCUDAError(const char *msg, int line = -1) {
     cudaError_t err = cudaGetLastError();
     if (cudaSuccess != err) {
@@ -25,21 +24,12 @@ void checkCUDAError(const char *msg, int line = -1) {
     }
 }
 
-// GPU Physics Object - position, mass, radius only.
-// Velocity lives in the ping/pong arrays so it can be swapped without touching this struct.
 typedef struct {
     Vector3f position;
     float mass;
     float radius;
 } GPU_PhysicsObject;
 
-// Spatial grid cell - stores object IDs in this cell
-typedef struct {
-    int objects[MAX_OBJECTS_PER_CELL];
-    int count;
-} GridCell;
-
-// Persistent GPU buffer pool
 struct GPU_Buffer_Pool {
     int max_objects;
     int max_pairs;
@@ -51,7 +41,6 @@ struct GPU_Buffer_Pool {
     gkFloat* d_distances;      // [max_pairs]
 };
 
-// GPU GJK Context - owns all simulation state
 struct GPU_GJK_Context {
     bool initialized;
     int device_id;
@@ -60,34 +49,29 @@ struct GPU_GJK_Context {
     int max_pairs;
     int num_pairs;
 
-    GPU_PhysicsObject* d_objects;       // Device array [max_objects] - position/mass/radius
-    GPU_PhysicsObject* h_objects;       // Host copy for init (freed after sync)
+    GPU_PhysicsObject* d_objects;
+    GPU_PhysicsObject* h_objects;
 
-    // Ping-pong velocity buffers.
-    // physics_update writes in-place to vel_ping.
-    // Before collision response: cudaMemcpy vel_pong <- vel_ping (D2D, seeds pong with current state).
-    // check_and_respond reads vel_ping (stable snapshot), atomicAdds impulse deltas to vel_pong.
-    // After response: swap(vel_ping, vel_pong) - free pointer exchange on host.
-    Vector3f* d_vel_A;                  // Device array [max_objects] - velocity buffer A
-    Vector3f* d_vel_B;                  // Device array [max_objects] - velocity buffer B
-    Vector3f* d_vel_ping;               // Points to A or B (current authoritative velocities)
-    Vector3f* d_vel_pong;               // Points to B or A (working buffer for collision response)
+    Vector3f* d_vel_A;
+    Vector3f* d_vel_B;
+    Vector3f* d_vel_ping;
+    Vector3f* d_vel_pong;
 
-    Vector3f* h_velocities;             // Host array for init (freed after sync)
+    Vector3f* h_velocities;
 
-    gkCollisionPair* d_collision_pairs; // Device array [max_pairs]
+    gkCollisionPair* d_collision_pairs;
 
-    Vector3f* h_positions;              // Pinned host array [max_objects] for render readback
+    Vector3f* h_positions;
 
     GPU_Buffer_Pool* buffer_pool;
 
-    GridCell* d_grid;
+    int* d_grid_counts;
+    int* d_grid_objects;
     int* d_pair_counts;
     int* d_pair_offsets;
     int h_total_pairs;
 };
 
-// CUDA kernel: Physics update - integrates velocity and position, handles boundary collisions
 __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
                                       Vector3f* velocities,
                                       int num_objects,
@@ -96,7 +80,6 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_objects) return;
 
-    // Load all needed fields into registers once — avoids repeated global loads
     float px = objects[i].position.x;
     float py = objects[i].position.y;
     float pz = objects[i].position.z;
@@ -106,17 +89,14 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
     float boundary = params.boundarySize;
     float dt = params.deltaTime;
 
-    // Update velocity with gravity
     vel.x += params.gravity.x * dt;
     vel.y += params.gravity.y * dt;
     vel.z += params.gravity.z * dt;
 
-    // Update position
     px += vel.x * dt;
     py += vel.y * dt;
     pz += vel.z * dt;
 
-    // Y-axis boundary
     if (py - radius < -boundary) {
         py = -boundary + radius;
         vel.y = -vel.y * params.dampingCoeff;
@@ -126,19 +106,16 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
         vel.y = -vel.y * params.dampingCoeff;
     }
 
-    // X-axis boundary
     if (fabsf(px) > boundary - radius) {
         vel.x = -vel.x * params.dampingCoeff;
         px = (px > 0.0f) ? boundary - radius : -boundary + radius;
     }
 
-    // Z-axis boundary
     if (fabsf(pz) > boundary - radius) {
         vel.z = -vel.z * params.dampingCoeff;
         pz = (pz > 0.0f) ? boundary - radius : -boundary + radius;
     }
 
-    // Write back only position (mass/radius unchanged) and updated velocity
     objects[i].position.x = px;
     objects[i].position.y = py;
     objects[i].position.z = pz;
@@ -151,7 +128,8 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
 
 __global__ void insert_objects_kernel(GPU_PhysicsObject* objects,
                                       int num_objects,
-                                      GridCell* grid,
+                                      int* grid_counts,
+                                      int* grid_objects,
                                       float cell_size,
                                       float boundary)
 {
@@ -170,15 +148,16 @@ __global__ void insert_objects_kernel(GPU_PhysicsObject* objects,
 
     int cell_idx = cx + cy * SPATIAL_GRID_SIZE + cz * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
 
-    int slot = atomicAdd(&grid[cell_idx].count, 1);
+    int slot = atomicAdd(&grid_counts[cell_idx], 1);
     if (slot < MAX_OBJECTS_PER_CELL) {
-        grid[cell_idx].objects[slot] = obj_id;
+        grid_objects[cell_idx * MAX_OBJECTS_PER_CELL + slot] = obj_id;
     }
 }
 
 __global__ void count_pairs_kernel(GPU_PhysicsObject* objects,
                                    int num_objects,
-                                   GridCell* grid,
+                                   int* grid_counts,
+                                   int* grid_objects,
                                    float cell_size,
                                    float boundary,
                                    int* pair_counts)
@@ -206,10 +185,11 @@ __global__ void count_pairs_kernel(GPU_PhysicsObject* objects,
                 if (nz < 0 || nz >= SPATIAL_GRID_SIZE) continue;
 
                 int cell_idx = nx + ny * SPATIAL_GRID_SIZE + nz * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
-                GridCell* cell = &grid[cell_idx];
+                int cell_count = min(grid_counts[cell_idx], MAX_OBJECTS_PER_CELL);
+                const int* cell_objs = grid_objects + cell_idx * MAX_OBJECTS_PER_CELL;
 
-                for (int i = 0; i < cell->count && i < MAX_OBJECTS_PER_CELL; i++) {
-                    if (cell->objects[i] <= obj_id) continue;
+                for (int i = 0; i < cell_count; i++) {
+                    if (cell_objs[i] <= obj_id) continue;
                     count++;
                 }
             }
@@ -221,7 +201,8 @@ __global__ void count_pairs_kernel(GPU_PhysicsObject* objects,
 
 __global__ void generate_pairs_kernel(GPU_PhysicsObject* objects,
                                       int num_objects,
-                                      GridCell* grid,
+                                      int* grid_counts,
+                                      int* grid_objects,
                                       float cell_size,
                                       float boundary,
                                       int* pair_offsets,
@@ -252,10 +233,11 @@ __global__ void generate_pairs_kernel(GPU_PhysicsObject* objects,
                 if (nz < 0 || nz >= SPATIAL_GRID_SIZE) continue;
 
                 int cell_idx = nx + ny * SPATIAL_GRID_SIZE + nz * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
-                GridCell* cell = &grid[cell_idx];
+                int cell_count = min(grid_counts[cell_idx], MAX_OBJECTS_PER_CELL);
+                const int* cell_objs = grid_objects + cell_idx * MAX_OBJECTS_PER_CELL;
 
-                for (int i = 0; i < cell->count && i < MAX_OBJECTS_PER_CELL; i++) {
-                    int other_id = cell->objects[i];
+                for (int i = 0; i < cell_count; i++) {
+                    int other_id = cell_objs[i];
                     if (other_id <= obj_id) continue;
 
                     int global_pair_idx = write_offset + local_pair_idx;
@@ -274,11 +256,6 @@ __global__ void generate_pairs_kernel(GPU_PhysicsObject* objects,
 // COLLISION DETECTION AND RESPONSE KERNELS
 // ============================================================================
 
-// Reads velocities from vel_ping (stable Jacobi snapshot).
-// Writes impulse deltas to vel_pong via atomicAdd.
-// vel_pong was seeded with a D2D copy of vel_ping before this kernel launched,
-// so after the kernel vel_pong[i] = vel_ping[i] + sum(all impulse deltas for object i).
-// The caller then swaps vel_ping and vel_pong pointers (free on host).
 __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
                                          Vector3f* vel_ping,
                                          Vector3f* vel_pong,
@@ -297,7 +274,6 @@ __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
     int idB = pairs[p].idx2;
     if (idA < 0 || idA >= num_objects || idB < 0 || idB >= num_objects) return;
 
-    // Load full structs into registers — one global read each, avoids re-fetching fields
     GPU_PhysicsObject objA = objects[idA];
     GPU_PhysicsObject objB = objects[idB];
     Vector3f velA = vel_ping[idA];
@@ -321,7 +297,6 @@ __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
 
     if (velAlongNormal > 0.0f) return;
 
-    // Hoist reciprocals — used twice each
     float inv_massA = 1.0f / objA.mass;
     float inv_massB = 1.0f / objB.mass;
     float j = -(1.0f + RESTITUTION) * velAlongNormal / (inv_massA + inv_massB);
@@ -372,7 +347,6 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
     cudaMalloc(&ctx->d_objects, sizeof(GPU_PhysicsObject) * max_objects);
     checkCUDAError("cudaMalloc d_objects");
 
-    // Ping-pong velocity buffers
     cudaMalloc(&ctx->d_vel_A, sizeof(Vector3f) * max_objects);
     checkCUDAError("cudaMalloc d_vel_A");
     cudaMalloc(&ctx->d_vel_B, sizeof(Vector3f) * max_objects);
@@ -403,8 +377,10 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
     checkCUDAError("cudaMalloc d_distances");
 
     int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
-    cudaMalloc(&ctx->d_grid, sizeof(GridCell) * total_cells);
-    checkCUDAError("cudaMalloc d_grid");
+    cudaMalloc(&ctx->d_grid_counts, sizeof(int) * total_cells);
+    checkCUDAError("cudaMalloc d_grid_counts");
+    cudaMalloc(&ctx->d_grid_objects, sizeof(int) * total_cells * MAX_OBJECTS_PER_CELL);
+    checkCUDAError("cudaMalloc d_grid_objects");
 
     int scan_buffer_size = next_power_of_2(max_objects);
     cudaMalloc(&ctx->d_pair_counts, sizeof(int) * scan_buffer_size);
@@ -419,9 +395,10 @@ bool gpu_gjk_init(GPU_GJK_Context** context, int max_objects, int max_pairs)
     ctx->initialized = true;
     printf("GPU simulation context initialized (max_objects=%d, max_pairs=%d)\n",
            max_objects, max_pairs);
-    printf("Spatial grid: %dx%dx%d = %d cells (%.2f MB)\n",
+    printf("Spatial grid: %dx%dx%d = %d cells (counts: %.2f KB, objects: %.2f MB)\n",
            SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, SPATIAL_GRID_SIZE, total_cells,
-           (sizeof(GridCell) * total_cells) / (1024.0f * 1024.0f));
+           (sizeof(int) * total_cells) / 1024.0f,
+           (sizeof(int) * total_cells * MAX_OBJECTS_PER_CELL) / (1024.0f * 1024.0f));
     printf("Grid cell capacity: %d objects per cell\n", MAX_OBJECTS_PER_CELL);
 
     return true;
@@ -437,7 +414,8 @@ void gpu_gjk_cleanup(GPU_GJK_Context** context)
     if (ctx->d_vel_A) cudaFree(ctx->d_vel_A);
     if (ctx->d_vel_B) cudaFree(ctx->d_vel_B);
     if (ctx->d_collision_pairs) cudaFree(ctx->d_collision_pairs);
-    if (ctx->d_grid) cudaFree(ctx->d_grid);
+    if (ctx->d_grid_counts) cudaFree(ctx->d_grid_counts);
+    if (ctx->d_grid_objects) cudaFree(ctx->d_grid_objects);
     if (ctx->d_pair_counts) cudaFree(ctx->d_pair_counts);
     if (ctx->d_pair_offsets) cudaFree(ctx->d_pair_offsets);
 
@@ -517,7 +495,6 @@ __global__ void transform_to_world_kernel(GPU_PhysicsObject* objects,
     int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (obj_id >= num_objects) return;
 
-    // Load position once into registers — old per-vertex launch re-read this 12x per object
     float px = objects[obj_id].position.x;
     float py = objects[obj_id].position.y;
     float pz = objects[obj_id].position.z;
@@ -539,12 +516,10 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
     int num_pairs = context->num_pairs;
     int objBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    // Step 1: Physics update - reads/writes vel_ping in-place, updates positions
     physics_update_kernel<<<objBlocks, BLOCK_SIZE>>>(
         context->d_objects, context->d_vel_ping, num_objs, *params);
     checkCUDAError("physics_update_kernel", __LINE__);
 
-    // Step 2: Transform local vertices to world space (one thread per object)
     int transformBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
     transform_to_world_kernel<<<transformBlocks, BLOCK_SIZE>>>(
         context->d_objects,
@@ -553,7 +528,6 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
         num_objs);
     checkCUDAError("transform_to_world_kernel", __LINE__);
 
-    // Step 3: Batched GJK collision detection
     const int threadsPerCollision = 16;
     const int collisionsPerBlock = 2;
     int gjkBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
@@ -567,13 +541,10 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
             num_pairs);
         checkCUDAError("compute_minimum_distance_indexed_kernel (GJK)", __LINE__);
 
-        // Step 4: Ping-pong collision response
-        // Seed vel_pong with current velocities (D2D copy, fast)
         cudaMemcpy(context->d_vel_pong, context->d_vel_ping,
                    sizeof(Vector3f) * num_objs, cudaMemcpyDeviceToDevice);
         checkCUDAError("cudaMemcpy vel_pong <- vel_ping", __LINE__);
 
-        // All threads read stable vel_ping; atomicAdd impulse deltas onto vel_pong
         int pairBlocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
         check_and_respond_kernel<<<pairBlocks, BLOCK_SIZE>>>(
             context->d_objects,
@@ -586,7 +557,6 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
             num_objs);
         checkCUDAError("check_and_respond_kernel", __LINE__);
 
-        // Swap: pong (with impulses applied) becomes ping for next step
         Vector3f* tmp = context->d_vel_ping;
         context->d_vel_ping = context->d_vel_pong;
         context->d_vel_pong = tmp;
@@ -601,7 +571,6 @@ bool gpu_gjk_get_render_data(GPU_GJK_Context* context, GPU_RenderData* data)
 
     int num_objs = context->num_objects;
 
-    // position is still the first field of GPU_PhysicsObject, stride unchanged
     cudaMemcpy2D(context->h_positions,
                  sizeof(Vector3f),
                  context->d_objects,
@@ -626,8 +595,6 @@ bool gpu_gjk_sync_objects_to_device(GPU_GJK_Context* context)
                cudaMemcpyHostToDevice);
     checkCUDAError("cudaMemcpy sync_objects_to_device", __LINE__);
 
-    // Both buffers initialized to the same starting velocities so the first
-    // swap doesn't introduce a stale frame
     cudaMemcpy(context->d_vel_A, context->h_velocities,
                sizeof(Vector3f) * context->num_objects, cudaMemcpyHostToDevice);
     checkCUDAError("cudaMemcpy vel_A init", __LINE__);
@@ -658,12 +625,12 @@ int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_P
     float cell_size = COMPUTE_CELL_SIZE(params->boundarySize);
 
     int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
-    cudaMemset(context->d_grid, 0, sizeof(GridCell) * total_cells);
-    checkCUDAError("cudaMemset d_grid", __LINE__);
+    cudaMemset(context->d_grid_counts, 0, sizeof(int) * total_cells);
+    checkCUDAError("cudaMemset d_grid_counts", __LINE__);
 
     int objBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
     insert_objects_kernel<<<objBlocks, BLOCK_SIZE>>>(
-        context->d_objects, num_objs, context->d_grid,
+        context->d_objects, num_objs, context->d_grid_counts, context->d_grid_objects,
         cell_size, params->boundarySize);
     checkCUDAError("insert_objects_kernel", __LINE__);
 
@@ -671,7 +638,7 @@ int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_P
     checkCUDAError("cudaMemset d_pair_counts", __LINE__);
 
     count_pairs_kernel<<<objBlocks, BLOCK_SIZE>>>(
-        context->d_objects, num_objs, context->d_grid,
+        context->d_objects, num_objs, context->d_grid_counts, context->d_grid_objects,
         cell_size, params->boundarySize, context->d_pair_counts);
     checkCUDAError("count_pairs_kernel", __LINE__);
 
@@ -709,7 +676,7 @@ int gpu_gjk_update_collision_pairs_dynamic(GPU_GJK_Context* context, const GPU_P
 
     if (context->num_pairs > 0) {
         generate_pairs_kernel<<<objBlocks, BLOCK_SIZE>>>(
-            context->d_objects, num_objs, context->d_grid,
+            context->d_objects, num_objs, context->d_grid_counts, context->d_grid_objects,
             cell_size, params->boundarySize,
             context->d_pair_offsets, context->d_collision_pairs,
             context->max_pairs);
