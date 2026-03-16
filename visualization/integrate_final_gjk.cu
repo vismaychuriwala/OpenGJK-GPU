@@ -96,45 +96,52 @@ __global__ void physics_update_kernel(GPU_PhysicsObject* objects,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_objects) return;
 
-    GPU_PhysicsObject* obj = &objects[i];
+    // Load all needed fields into registers once — avoids repeated global loads
+    float px = objects[i].position.x;
+    float py = objects[i].position.y;
+    float pz = objects[i].position.z;
+    float radius = objects[i].radius;
     Vector3f vel = velocities[i];
 
+    float boundary = params.boundarySize;
+    float dt = params.deltaTime;
+
     // Update velocity with gravity
-    vel.x += params.gravity.x * params.deltaTime;
-    vel.y += params.gravity.y * params.deltaTime;
-    vel.z += params.gravity.z * params.deltaTime;
+    vel.x += params.gravity.x * dt;
+    vel.y += params.gravity.y * dt;
+    vel.z += params.gravity.z * dt;
 
     // Update position
-    obj->position.x += vel.x * params.deltaTime;
-    obj->position.y += vel.y * params.deltaTime;
-    obj->position.z += vel.z * params.deltaTime;
+    px += vel.x * dt;
+    py += vel.y * dt;
+    pz += vel.z * dt;
 
-    float boundary = params.boundarySize;
-
-    // Y-axis
-    if (obj->position.y - obj->radius < -boundary) {
-        obj->position.y = -boundary + obj->radius;
+    // Y-axis boundary
+    if (py - radius < -boundary) {
+        py = -boundary + radius;
         vel.y = -vel.y * params.dampingCoeff;
     }
-    if (obj->position.y + obj->radius > boundary) {
-        obj->position.y = boundary - obj->radius;
+    if (py + radius > boundary) {
+        py = boundary - radius;
         vel.y = -vel.y * params.dampingCoeff;
     }
 
-    // X-axis
-    if (fabsf(obj->position.x) > boundary - obj->radius) {
+    // X-axis boundary
+    if (fabsf(px) > boundary - radius) {
         vel.x = -vel.x * params.dampingCoeff;
-        obj->position.x = (obj->position.x > 0.0f) ?
-            boundary - obj->radius : -boundary + obj->radius;
+        px = (px > 0.0f) ? boundary - radius : -boundary + radius;
     }
 
-    // Z-axis
-    if (fabsf(obj->position.z) > boundary - obj->radius) {
+    // Z-axis boundary
+    if (fabsf(pz) > boundary - radius) {
         vel.z = -vel.z * params.dampingCoeff;
-        obj->position.z = (obj->position.z > 0.0f) ?
-            boundary - obj->radius : -boundary + obj->radius;
+        pz = (pz > 0.0f) ? boundary - radius : -boundary + radius;
     }
 
+    // Write back only position (mass/radius unchanged) and updated velocity
+    objects[i].position.x = px;
+    objects[i].position.y = py;
+    objects[i].position.z = pz;
     velocities[i] = vel;
 }
 
@@ -290,22 +297,22 @@ __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
     int idB = pairs[p].idx2;
     if (idA < 0 || idA >= num_objects || idB < 0 || idB >= num_objects) return;
 
-    Vector3f posA = objects[idA].position;
-    Vector3f posB = objects[idB].position;
+    // Load full structs into registers — one global read each, avoids re-fetching fields
+    GPU_PhysicsObject objA = objects[idA];
+    GPU_PhysicsObject objB = objects[idB];
     Vector3f velA = vel_ping[idA];
     Vector3f velB = vel_ping[idB];
-    float massA = objects[idA].mass;
-    float massB = objects[idB].mass;
 
-    float dx = posB.x - posA.x;
-    float dy = posB.y - posA.y;
-    float dz = posB.z - posA.z;
+    float dx = objB.position.x - objA.position.x;
+    float dy = objB.position.y - objA.position.y;
+    float dz = objB.position.z - objA.position.z;
     float dist = sqrtf(dx*dx + dy*dy + dz*dz);
     if (dist < 0.0001f) return;
 
-    float nx = dx / dist;
-    float ny = dy / dist;
-    float nz = dz / dist;
+    float inv_dist = 1.0f / dist;
+    float nx = dx * inv_dist;
+    float ny = dy * inv_dist;
+    float nz = dz * inv_dist;
 
     float relVx = velB.x - velA.x;
     float relVy = velB.y - velA.y;
@@ -314,20 +321,22 @@ __global__ void check_and_respond_kernel(GPU_PhysicsObject* objects,
 
     if (velAlongNormal > 0.0f) return;
 
-    float j = -(1.0f + RESTITUTION) * velAlongNormal;
-    j /= (1.0f/massA + 1.0f/massB);
+    // Hoist reciprocals — used twice each
+    float inv_massA = 1.0f / objA.mass;
+    float inv_massB = 1.0f / objB.mass;
+    float j = -(1.0f + RESTITUTION) * velAlongNormal / (inv_massA + inv_massB);
 
     float impulseX = j * nx;
     float impulseY = j * ny;
     float impulseZ = j * nz;
 
-    atomicAdd(&vel_pong[idA].x, -impulseX / massA);
-    atomicAdd(&vel_pong[idA].y, -impulseY / massA);
-    atomicAdd(&vel_pong[idA].z, -impulseZ / massA);
+    atomicAdd(&vel_pong[idA].x, -impulseX * inv_massA);
+    atomicAdd(&vel_pong[idA].y, -impulseY * inv_massA);
+    atomicAdd(&vel_pong[idA].z, -impulseZ * inv_massA);
 
-    atomicAdd(&vel_pong[idB].x,  impulseX / massB);
-    atomicAdd(&vel_pong[idB].y,  impulseY / massB);
-    atomicAdd(&vel_pong[idB].z,  impulseZ / massB);
+    atomicAdd(&vel_pong[idB].x,  impulseX * inv_massB);
+    atomicAdd(&vel_pong[idB].y,  impulseY * inv_massB);
+    atomicAdd(&vel_pong[idB].z,  impulseZ * inv_massB);
 }
 
 // ============================================================================
@@ -505,18 +514,21 @@ __global__ void transform_to_world_kernel(GPU_PhysicsObject* objects,
                                           gkFloat* world_coords,
                                           int num_objects)
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int obj_id = tid / 12;
-    int vert_id = tid % 12;
-
+    int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (obj_id >= num_objects) return;
-    if (vert_id >= 12) return;
 
-    int vertex_offset = (obj_id * 12 + vert_id) * 3;
+    // Load position once into registers — old per-vertex launch re-read this 12x per object
+    float px = objects[obj_id].position.x;
+    float py = objects[obj_id].position.y;
+    float pz = objects[obj_id].position.z;
 
-    world_coords[vertex_offset + 0] = local_coords[vertex_offset + 0] + objects[obj_id].position.x;
-    world_coords[vertex_offset + 1] = local_coords[vertex_offset + 1] + objects[obj_id].position.y;
-    world_coords[vertex_offset + 2] = local_coords[vertex_offset + 2] + objects[obj_id].position.z;
+    int base = obj_id * 12 * 3;
+    for (int v = 0; v < 12; v++) {
+        int offset = base + v * 3;
+        world_coords[offset + 0] = local_coords[offset + 0] + px;
+        world_coords[offset + 1] = local_coords[offset + 1] + py;
+        world_coords[offset + 2] = local_coords[offset + 2] + pz;
+    }
 }
 
 bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* params)
@@ -532,9 +544,8 @@ bool gpu_gjk_step_simulation(GPU_GJK_Context* context, const GPU_PhysicsParams* 
         context->d_objects, context->d_vel_ping, num_objs, *params);
     checkCUDAError("physics_update_kernel", __LINE__);
 
-    // Step 2: Transform local vertices to world space
-    int total_vertices = num_objs * 12;
-    int transformBlocks = (total_vertices + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    // Step 2: Transform local vertices to world space (one thread per object)
+    int transformBlocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
     transform_to_world_kernel<<<transformBlocks, BLOCK_SIZE>>>(
         context->d_objects,
         context->buffer_pool->d_local_coords,
