@@ -153,22 +153,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo Step 7: Compiling CPU GJK (fallback)...
+echo Step 7: Compiling GJK integration layer...
 cl /c %CL_FLAGS% ^
-    /I"..\GJK\cpu" ^
-    ..\GJK\cpu\openGJK.c ^
-    /Fo:build\openGJK.obj
-
-if errorlevel 1 (
-    echo Error: Failed to compile openGJK.c
-    exit /b 1
-)
-
-echo.
-echo Step 8: Compiling GJK integration layer...
-cl /c %CL_FLAGS% /DUSE_CUDA ^
-    /I"%CUDA_PATH%\include" ^
-    /I"..\GJK\cpu" ^
     gjk_integration.c ^
     /Fo:build\gjk_integration.obj
 
@@ -178,13 +164,12 @@ if errorlevel 1 (
 )
 
 echo.
-echo Step 9: Compiling main OpenGL application...
-cl /c %CL_FLAGS% /EHsc /std:c++17 /DUSE_CUDA ^
+echo Step 8: Compiling main OpenGL application...
+cl /c %CL_FLAGS% /EHsc /std:c++17 ^
     /I"%GLFW_PATH%\include" ^
     /I"%GLAD_PATH%\include" ^
     /I"%GLM_INCL%" ^
     /I"%CUDA_PATH%\include" ^
-    /I"..\GJK\cpu" ^
     /I"." ^
     main_opengl.cpp ^
     /Fo:build\main_opengl.obj
@@ -195,7 +180,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo Step 10: Linking final executable...
+echo Step 9: Linking final executable...
 link %LINK_FLAGS% /OUT:gjk_visualizer_opengl.exe ^
     build\main_opengl.obj ^
     build\glad.obj ^
@@ -203,7 +188,6 @@ link %LINK_FLAGS% /OUT:gjk_visualizer_opengl.exe ^
     build\camera.obj ^
     build\opengl_renderer.obj ^
     build\gjk_integration.obj ^
-    build\openGJK.obj ^
     build\gpu_gjk_bridge.obj ^
     build\openGJK_gpu.obj ^
     "%GLFW_PATH%\lib-vc2022\glfw3.lib" ^
