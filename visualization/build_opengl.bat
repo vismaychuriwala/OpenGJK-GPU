@@ -24,7 +24,16 @@ if "%BUILD_TYPE%"=="Debug" (
 )
 
 REM Set paths to dependencies
-set CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0
+REM Auto-detect CUDA installation from nvcc location in PATH
+for /f "delims=" %%i in ('where nvcc 2^>nul') do (
+    set NVCC_EXE=%%i
+    goto :found_nvcc
+)
+echo Error: nvcc not found in PATH. Please install CUDA and add it to PATH.
+exit /b 1
+:found_nvcc
+set CUDA_PATH=%NVCC_EXE:\bin\nvcc.exe=%
+echo Detected CUDA path: %CUDA_PATH%
 set GLFW_PATH=C:\glfw-3.4.bin.WIN64
 set GLM_PATH=C:\glm
 REM Determine actual include dir for GLM (accepts C:\glm\include, C:\glm\glm, or C:\glm)
