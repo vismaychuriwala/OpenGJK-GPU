@@ -12,7 +12,7 @@
 #define BLOCK_SIZE 256
 
 // Spatial grid configuration for broad-phase culling
-#define SPATIAL_GRID_SIZE 30              // Grid divisions per axis
+#define MAX_SPATIAL_GRID_SIZE 30          // Max grid divisions per axis (for allocation)
 #define MAX_OBJECTS_PER_CELL 256          // Max objects per cell
 
 // Spatial configuration (scales with number of objects)
@@ -24,19 +24,13 @@
 #define GRAVITY_Y -9.80665f
 #define FPS 60.0f
 #define DELTA_TIME (1.0f / FPS)
-#define DAMPING_COEFF 0.9f
 #define COLLISION_EPSILON 0.1f
 #define RESTITUTION 0.99f
 #define FRICTION_COEFF 0.2f
-#define ANGULAR_DAMPING 0.999f  // multiplied each physics step (~0.99^60 ≈ 0.55 per second)
+#define ANGULAR_DAMPING 0.999f  // multiplied each physics step
 
 // Helper macro to compute boundary size based on object count
 #define COMPUTE_BOUNDARY(num_objects) \
     fminf(fmaxf(MIN_BOUNDARY_SIZE, (num_objects) * BOUNDARY_SCALE_FACTOR), MAX_BOUNDARY_SIZE)
-
-// Helper macro to compute cell size based on boundary
-// Cell size = (2 * boundary) / grid_size  (boundary is half-extent, so full size is 2*boundary)
-#define COMPUTE_CELL_SIZE(boundary) \
-    ((2.0f * (boundary)) / SPATIAL_GRID_SIZE)
 
 #endif // SIM_CONFIG_H

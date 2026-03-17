@@ -8,7 +8,8 @@ struct Camera3D {
     glm::vec3 position;
     glm::vec3 target;
     glm::vec3 up;
-    float fovy;  // Field of view Y in degrees
+    float fovy;      // Field of view Y in degrees
+    float boundary;  // Simulation half-extent (for near/far clip)
 
     // Cached matrices
     glm::mat4 view_matrix;

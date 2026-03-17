@@ -8,6 +8,7 @@ void camera_init(Camera3D* camera, glm::vec3 position, glm::vec3 target, float f
     camera->target = target;
     camera->up = glm::vec3(0.0f, 1.0f, 0.0f);
     camera->fovy = fovy;
+    camera->boundary = 30.0f;  // default, overwritten by camera_reset
     camera->view_matrix = glm::mat4(1.0f);
     camera->projection_matrix = glm::mat4(1.0f);
 }
@@ -17,8 +18,10 @@ void camera_update_matrices(Camera3D* camera, float aspect_ratio) {
     camera->view_matrix = glm::lookAt(camera->position, camera->target, camera->up);
 
     // Projection matrix
+    float far_clip  = fmaxf(100.0f, fminf(camera->boundary * 4.0f, 50000.0f));
+    float near_clip = fmaxf(0.01f, fminf(far_clip * 0.0001f, 1.0f));
     camera->projection_matrix = glm::perspective(
-        glm::radians(camera->fovy), aspect_ratio, 0.1f, 1000.0f);
+        glm::radians(camera->fovy), aspect_ratio, near_clip, far_clip);
 }
 
 void camera_update_controls(Camera3D* camera, float deltaTime) {
@@ -140,6 +143,7 @@ void camera_update_controls(Camera3D* camera, float deltaTime) {
 }
 
 void camera_reset(Camera3D* camera, float boundary) {
+    camera->boundary = boundary;
     camera->position = glm::vec3(0.0f, boundary * 0.8f, boundary * 1.6f);
     camera->target = glm::vec3(0.0f, -2.0f, 0.0f);
     camera->up = glm::vec3(0.0f, 1.0f, 0.0f);

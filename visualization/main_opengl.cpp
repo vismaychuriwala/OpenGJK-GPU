@@ -153,9 +153,8 @@ int main(void) {
 
     Camera3D camera;
     float boundary = COMPUTE_BOUNDARY(NUM_OBJECTS);
-    glm::vec3 cam_pos(0.0f, boundary * 0.8f, boundary * 1.6f);
-    glm::vec3 cam_target(0.0f, -2.0f, 0.0f);
-    camera_init(&camera, cam_pos, cam_target, 45.0f);
+    camera_init(&camera, glm::vec3(0.0f), glm::vec3(0.0f), 45.0f);
+    camera_reset(&camera, boundary);
 
     // ---- Pre-init: build all CPU data before touching CUDA or GL resources ----
     std::srand((unsigned int)std::time(nullptr));
@@ -198,7 +197,6 @@ int main(void) {
     params.gravity[1]         = GRAVITY_Y;
     params.gravity[2]         = 0.0f;
     params.delta_time         = DELTA_TIME;
-    params.damping            = DAMPING_COEFF;
     params.boundary           = boundary;
     params.collision_epsilon  = COLLISION_EPSILON;
 

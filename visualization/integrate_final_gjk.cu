@@ -72,6 +72,9 @@ static int*              d_grid_objects;
 static gkCollisionPair*  d_collision_pairs;
 static int*              d_pair_counts;
 static int*              d_pair_offsets;
+static int*              d_scan_aux;   // pre-allocated auxiliary buffer for recursive_scan
+static int               g_grid_size;  // runtime grid divisions per axis
+static float             g_cell_size;  // runtime cell size (>= 2 * max_bounding_radius)
 
 // GL interop
 static cudaGraphicsResource_t g_gl_pos_resource  = nullptr;
@@ -208,7 +211,6 @@ __global__ void physics_update_kernel(
     int           num_objects,
     float         dt,
     float         gravity_y,
-    float         damping,
     float         boundary)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -308,9 +310,9 @@ __global__ void physics_update_kernel(
 
     // Quaternion integration from (possibly updated) angular velocity
     float4 dq;
-    dq.x =  0.5f*( omega.x*q.w + omega.z*q.y - omega.y*q.z);
-    dq.y =  0.5f*( omega.y*q.w - omega.z*q.x + omega.x*q.z);
-    dq.z =  0.5f*( omega.z*q.w + omega.y*q.x - omega.x*q.y);
+    dq.x =  0.5f*( omega.x*q.w + omega.y*q.z - omega.z*q.y);
+    dq.y =  0.5f*( omega.y*q.w + omega.z*q.x - omega.x*q.z);
+    dq.z =  0.5f*( omega.z*q.w + omega.x*q.y - omega.y*q.x);
     dq.w =  0.5f*(-omega.x*q.x - omega.y*q.y - omega.z*q.z);
 
     q.x += dq.x * dt; q.y += dq.y * dt; q.z += dq.z * dt; q.w += dq.w * dt;
@@ -326,7 +328,8 @@ __global__ void insert_objects_kernel(
     int*          grid_counts,
     int*          grid_objects,
     float         cell_size,
-    float         boundary)
+    float         boundary,
+    int           grid_size)
 {
     int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (obj_id >= num_objects) return;
@@ -335,11 +338,11 @@ __global__ void insert_objects_kernel(
     int cx = (int)floorf((pos.x + boundary) / cell_size);
     int cy = (int)floorf((pos.y + boundary) / cell_size);
     int cz = (int)floorf((pos.z + boundary) / cell_size);
-    cx = max(0, min(cx, SPATIAL_GRID_SIZE - 1));
-    cy = max(0, min(cy, SPATIAL_GRID_SIZE - 1));
-    cz = max(0, min(cz, SPATIAL_GRID_SIZE - 1));
+    cx = max(0, min(cx, grid_size - 1));
+    cy = max(0, min(cy, grid_size - 1));
+    cz = max(0, min(cz, grid_size - 1));
 
-    int cell_idx = cx + cy * SPATIAL_GRID_SIZE + cz * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+    int cell_idx = cx + cy * grid_size + cz * grid_size * grid_size;
     int slot = atomicAdd(&grid_counts[cell_idx], 1);
     if (slot < MAX_OBJECTS_PER_CELL)
         grid_objects[cell_idx * MAX_OBJECTS_PER_CELL + slot] = obj_id;
@@ -352,24 +355,31 @@ __global__ void count_pairs_kernel(
     const float4* positions,
     float         cell_size,
     float         boundary,
-    int*          pair_counts)
+    int*          pair_counts,
+    int           grid_size)
 {
     int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (obj_id >= num_objects) return;
 
     float4 pos = positions[obj_id];
-    int cx = max(0, min((int)floorf((pos.x + boundary) / cell_size), SPATIAL_GRID_SIZE - 1));
-    int cy = max(0, min((int)floorf((pos.y + boundary) / cell_size), SPATIAL_GRID_SIZE - 1));
-    int cz = max(0, min((int)floorf((pos.z + boundary) / cell_size), SPATIAL_GRID_SIZE - 1));
+    int cx = max(0, min((int)floorf((pos.x + boundary) / cell_size), grid_size - 1));
+    int cy = max(0, min((int)floorf((pos.y + boundary) / cell_size), grid_size - 1));
+    int cz = max(0, min((int)floorf((pos.z + boundary) / cell_size), grid_size - 1));
 
     int count = 0;
     for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
         int nx = cx+dx, ny = cy+dy, nz = cz+dz;
-        if (nx<0||nx>=SPATIAL_GRID_SIZE||ny<0||ny>=SPATIAL_GRID_SIZE||nz<0||nz>=SPATIAL_GRID_SIZE) continue;
-        int cell_idx = nx + ny*SPATIAL_GRID_SIZE + nz*SPATIAL_GRID_SIZE*SPATIAL_GRID_SIZE;
+        if (nx<0||nx>=grid_size||ny<0||ny>=grid_size||nz<0||nz>=grid_size) continue;
+        int cell_idx = nx + ny*grid_size + nz*grid_size*grid_size;
         int cc = min(grid_counts[cell_idx], MAX_OBJECTS_PER_CELL);
-        for (int i = 0; i < cc; i++)
-            if (grid_objects[cell_idx * MAX_OBJECTS_PER_CELL + i] > obj_id) count++;
+        for (int i = 0; i < cc; i++) {
+            int other = grid_objects[cell_idx * MAX_OBJECTS_PER_CELL + i];
+            if (other <= obj_id) continue;
+            float4 opos = positions[other];
+            float dx = pos.x - opos.x, dy = pos.y - opos.y, dz = pos.z - opos.z;
+            float r_sum = pos.w + opos.w;  // w = bounding_radius
+            if (dx*dx + dy*dy + dz*dz < r_sum*r_sum) count++;
+        }
     }
     pair_counts[obj_id] = count;
 }
@@ -383,26 +393,31 @@ __global__ void generate_pairs_kernel(
     float          boundary,
     const int*     pair_offsets,
     gkCollisionPair* pair_buffer,
-    int            max_pairs)
+    int            max_pairs,
+    int            grid_size)
 {
     int obj_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (obj_id >= num_objects) return;
 
     float4 pos = positions[obj_id];
-    int cx = max(0, min((int)floorf((pos.x + boundary) / cell_size), SPATIAL_GRID_SIZE - 1));
-    int cy = max(0, min((int)floorf((pos.y + boundary) / cell_size), SPATIAL_GRID_SIZE - 1));
-    int cz = max(0, min((int)floorf((pos.z + boundary) / cell_size), SPATIAL_GRID_SIZE - 1));
+    int cx = max(0, min((int)floorf((pos.x + boundary) / cell_size), grid_size - 1));
+    int cy = max(0, min((int)floorf((pos.y + boundary) / cell_size), grid_size - 1));
+    int cz = max(0, min((int)floorf((pos.z + boundary) / cell_size), grid_size - 1));
 
     int write_offset = pair_offsets[obj_id];
     int local_idx = 0;
     for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
         int nx = cx+dx, ny = cy+dy, nz = cz+dz;
-        if (nx<0||nx>=SPATIAL_GRID_SIZE||ny<0||ny>=SPATIAL_GRID_SIZE||nz<0||nz>=SPATIAL_GRID_SIZE) continue;
-        int cell_idx = nx + ny*SPATIAL_GRID_SIZE + nz*SPATIAL_GRID_SIZE*SPATIAL_GRID_SIZE;
+        if (nx<0||nx>=grid_size||ny<0||ny>=grid_size||nz<0||nz>=grid_size) continue;
+        int cell_idx = nx + ny*grid_size + nz*grid_size*grid_size;
         int cc = min(grid_counts[cell_idx], MAX_OBJECTS_PER_CELL);
         for (int i = 0; i < cc; i++) {
             int other = grid_objects[cell_idx * MAX_OBJECTS_PER_CELL + i];
             if (other <= obj_id) continue;
+            float4 opos = positions[other];
+            float dx = pos.x - opos.x, dy = pos.y - opos.y, dz = pos.z - opos.z;
+            float r_sum = pos.w + opos.w;
+            if (dx*dx + dy*dy + dz*dz >= r_sum*r_sum) continue;
             int gidx = write_offset + local_idx;
             if (gidx >= max_pairs) return;
             pair_buffer[gidx].idx1 = obj_id;
@@ -634,7 +649,16 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
     CUDA_CHECK(cudaMalloc(&d_simplices,    g_max_pairs * sizeof(gkSimplex)));
     CUDA_CHECK(cudaMalloc(&d_distances,    g_max_pairs * sizeof(gkFloat)));
 
-    int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+    // Compute runtime grid size from max bounding radius
+    float max_br = 0.0f;
+    for (int i = 0; i < num_objects; i++)
+        if (objects[i].bounding_radius > max_br) max_br = objects[i].bounding_radius;
+    float boundary = COMPUTE_BOUNDARY(num_objects);
+    float min_cell = 2.0f * max_br;  // cell must be >= diameter of largest object
+    g_cell_size = fmaxf(min_cell, (2.0f * boundary) / MAX_SPATIAL_GRID_SIZE);
+    g_grid_size = max(1, min((int)(2.0f * boundary / g_cell_size), MAX_SPATIAL_GRID_SIZE));
+
+    int total_cells = g_grid_size * g_grid_size * g_grid_size;
     CUDA_CHECK(cudaMalloc(&d_grid_counts,    total_cells * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_grid_objects,   total_cells * MAX_OBJECTS_PER_CELL * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_collision_pairs, g_max_pairs * sizeof(gkCollisionPair)));
@@ -642,6 +666,12 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
     int scan_size = next_power_of_2(num_objects);
     CUDA_CHECK(cudaMalloc(&d_pair_counts,  scan_size * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_pair_offsets, scan_size * sizeof(int)));
+
+    int aux_size = scan_aux_size(scan_size);
+    if (aux_size > 0)
+        CUDA_CHECK(cudaMalloc(&d_scan_aux, aux_size * sizeof(int)));
+    else
+        d_scan_aux = nullptr;
 
     // Upload
     CUDA_CHECK(cudaMemcpy(d_positions,    h_positions,   num_objects * sizeof(float4), cudaMemcpyHostToDevice));
@@ -700,38 +730,37 @@ void sim_cleanup(void) {
     cudaFree(d_grid_counts); cudaFree(d_grid_objects);
     cudaFree(d_collision_pairs);
     cudaFree(d_pair_counts); cudaFree(d_pair_offsets);
+    if (d_scan_aux) cudaFree(d_scan_aux);
     g_num_objects = 0;
 }
 
 int sim_broad_phase(const PhysicsParams* params) {
     int num_objs = g_num_objects;
-    float cell_size = COMPUTE_CELL_SIZE(params->boundary);
-    int total_cells = SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE * SPATIAL_GRID_SIZE;
+    int total_cells = g_grid_size * g_grid_size * g_grid_size;
     int blocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     CUDA_CHECK(cudaMemset(d_grid_counts, 0, total_cells * sizeof(int)));
 
     insert_objects_kernel<<<blocks, BLOCK_SIZE>>>(
-        d_positions, num_objs, d_grid_counts, d_grid_objects, cell_size, params->boundary);
+        d_positions, num_objs, d_grid_counts, d_grid_objects, g_cell_size, params->boundary, g_grid_size);
     CUDA_CHECK_LAST();
 
     CUDA_CHECK(cudaMemset(d_pair_counts, 0, num_objs * sizeof(int)));
 
     count_pairs_kernel<<<blocks, BLOCK_SIZE>>>(
-        num_objs, d_grid_counts, d_grid_objects, d_positions, cell_size, params->boundary, d_pair_counts);
+        num_objs, d_grid_counts, d_grid_objects, d_positions, g_cell_size, params->boundary, d_pair_counts, g_grid_size);
     CUDA_CHECK_LAST();
 
     int n_pow2 = next_power_of_2(num_objs);
     if (n_pow2 > num_objs)
         CUDA_CHECK(cudaMemset(d_pair_counts + num_objs, 0, (n_pow2 - num_objs) * sizeof(int)));
 
-    if (num_objs <= 1024) {
+    if (n_pow2 <= SCAN_B) {
         int bsz = n_pow2 / 2;
-        if (bsz > 512) bsz = 512;
         int smem = (n_pow2 + CONFLICT_FREE_OFFSET(n_pow2)) * sizeof(int);
-        block_scan_kernel<<<1, bsz, smem>>>(num_objs, d_pair_offsets, d_pair_counts, nullptr);
+        block_scan_kernel<<<1, bsz, smem>>>(n_pow2, d_pair_offsets, d_pair_counts, nullptr);
     } else {
-        recursive_scan(n_pow2, d_pair_offsets, d_pair_counts);
+        recursive_scan(n_pow2, d_pair_offsets, d_pair_counts, d_scan_aux);
     }
     CUDA_CHECK_LAST();
 
@@ -747,7 +776,7 @@ int sim_broad_phase(const PhysicsParams* params) {
     if (g_num_pairs > 0) {
         generate_pairs_kernel<<<blocks, BLOCK_SIZE>>>(
             num_objs, d_grid_counts, d_grid_objects, d_positions,
-            cell_size, params->boundary, d_pair_offsets, d_collision_pairs, g_max_pairs);
+            g_cell_size, params->boundary, d_pair_offsets, d_collision_pairs, g_max_pairs, g_grid_size);
         CUDA_CHECK_LAST();
     }
 
@@ -762,7 +791,7 @@ void sim_step(const PhysicsParams* params) {
     // 1. Integrate physics (position, angular velocity → quaternion, boundary friction)
     physics_update_kernel<<<obj_blocks, BLOCK_SIZE>>>(
         d_positions, d_vel_buf[g_vel_ping], d_ang_buf[g_vel_ping], d_quats, d_inv_inertia,
-        num_objs, params->delta_time, params->gravity[1], params->damping, params->boundary);
+        num_objs, params->delta_time, params->gravity[1], params->boundary);
     CUDA_CHECK_LAST();
 
     // 2. Transform local verts to world space

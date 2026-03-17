@@ -21,7 +21,6 @@ typedef struct {
 typedef struct {
     float gravity[3];
     float delta_time;
-    float damping;
     float boundary;
     float collision_epsilon;
 } PhysicsParams;
