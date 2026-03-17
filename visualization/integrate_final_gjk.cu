@@ -503,23 +503,19 @@ __global__ void collision_response_kernel(
     float wdist = sqrtf(wdx*wdx + wdy*wdy + wdz*wdz);
 
     float nx, ny, nz;
-    float3 contact_pt;
+    float3 rA, rB;
     if (wdist > 0.001f) {
         float inv_wd = 1.0f / wdist;
         nx = wdx * inv_wd; ny = wdy * inv_wd; nz = wdz * inv_wd;
-        contact_pt = make_float3((wAx+wBx)*0.5f, (wAy+wBy)*0.5f, (wAz+wBz)*0.5f);
+        // Use per-shape witness points directly — exact surface-to-center lever arms
+        rA = make_float3(wAx - posA.x, wAy - posA.y, wAz - posA.z);
+        rB = make_float3(wBx - posB.x, wBy - posB.y, wBz - posB.z);
     } else {
         // Witnesses converged (deep penetration) — fall back to center-to-center
         nx = dx * inv_d; ny = dy * inv_d; nz = dz * inv_d;
-        contact_pt = make_float3(
-            posA.x + nx * posA.w,
-            posA.y + ny * posA.w,
-            posA.z + nz * posA.w);
+        rA = make_float3(nx * posA.w, ny * posA.w, nz * posA.w);
+        rB = make_float3(-nx * posB.w, -ny * posB.w, -nz * posB.w);
     }
-
-    // Contact arms (world space)
-    float3 rA = make_float3(contact_pt.x - posA.x, contact_pt.y - posA.y, contact_pt.z - posA.z);
-    float3 rB = make_float3(contact_pt.x - posB.x, contact_pt.y - posB.y, contact_pt.z - posB.z);
 
     // Linear + angular velocity at contact point
     float3 vA_ang = make_float3(omgA.y*rA.z - omgA.z*rA.y,
