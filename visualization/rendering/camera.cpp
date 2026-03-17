@@ -52,9 +52,11 @@ void camera_update_controls(Camera3D* camera, float deltaTime) {
             float horizontalDist = std::sqrt(dx*dx + dz*dz);
             dy = radius * std::sin(newPitch);
             float newHorizontalDist = radius * std::cos(newPitch);
-            float scale = newHorizontalDist / horizontalDist;
-            dx *= scale;
-            dz *= scale;
+            if (horizontalDist > 0.001f) {
+                float scale = newHorizontalDist / horizontalDist;
+                dx *= scale;
+                dz *= scale;
+            }
         }
     }
 
@@ -93,9 +95,11 @@ void camera_update_controls(Camera3D* camera, float deltaTime) {
             float horizontalDist = std::sqrt(dx*dx + dz*dz);
             dy = radius * std::sin(newPitch);
             float newHorizontalDist = radius * std::cos(newPitch);
-            float scale = newHorizontalDist / horizontalDist;
-            dx *= scale;
-            dz *= scale;
+            if (horizontalDist > 0.001f) {
+                float scale = newHorizontalDist / horizontalDist;
+                dx *= scale;
+                dz *= scale;
+            }
         }
     }
 
@@ -104,10 +108,7 @@ void camera_update_controls(Camera3D* camera, float deltaTime) {
     camera->position.y = camera->target.y + dy;
     camera->position.z = camera->target.z + dz;
 
-    // Keyboard movement (WASD controls in world coordinates)
-    // Move both camera and target to pan the view without changing rotation
-    // Speed in units per second (30 units/sec to match Raylib at 60 FPS with 0.5 speed)
-    float moveSpeed = 30.0f;  // units per second
+    float moveSpeed = 30.0f;
     glm::vec3 movement(0.0f);
 
     if (IsKeyDown(GLFW_KEY_W)) movement.z -= moveSpeed * deltaTime;  // Forward in world -Z
@@ -124,23 +125,17 @@ void camera_update_controls(Camera3D* camera, float deltaTime) {
     // Mouse scroll for zoom (move camera toward/away from target)
     float scroll = GetMouseWheelMove();
     if (scroll != 0.0f) {
-        // Calculate direction from camera to target
-        glm::vec3 zoomDir = camera->target - camera->position;
-        float distance = glm::length(zoomDir);
+        glm::vec3 toTarget = camera->target - camera->position;
+        float distance = glm::length(toTarget);
 
-        // Normalize direction
-        if (distance > 0.1f) {  // Prevent division by zero
-            zoomDir = glm::normalize(zoomDir);
+        float zoomSpeed = std::max(distance * 0.1f, 1.0f);
+        float zoomAmount = scroll * zoomSpeed;
 
-            // Zoom speed (scales with current distance for smooth feel)
-            float zoomSpeed = distance * 0.1f;
-            float zoomAmount = scroll * zoomSpeed;
+        const float minDist = 0.1f;
+        if (distance - zoomAmount < minDist)
+            zoomAmount = distance - minDist;
 
-            // Don't zoom too close (min distance = 2 units)
-            if (distance - zoomAmount > 2.0f || zoomAmount < 0.0f) {
-                camera->position += zoomDir * zoomAmount;
-            }
-        }
+        camera->position += glm::normalize(toTarget) * zoomAmount;
     }
 }
 

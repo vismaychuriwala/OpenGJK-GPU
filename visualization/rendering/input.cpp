@@ -20,7 +20,7 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
 }
 
 static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
-    g_input.scroll_offset = yoffset;
+    g_input.scroll_offset += yoffset;
 }
 
 void input_init(GLFWwindow* window) {

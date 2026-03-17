@@ -10,97 +10,113 @@
 #include "rendering/input.h"
 #include "rendering/camera.h"
 #include "rendering/opengl_renderer.h"
+#include "rendering/mesh_builder.h"
 #include "sim_config.h"
-#include "gjk_integration.h"
-#include "gpu_gjk_interface.h"
+#include "sim_api.h"
 
-struct PhysicsObject {
-    float position[3];
-    float velocity[3];
-    float radius;
-    float mass;
-    float color[4];
+static float colors[][4] = {
+    {0.9f, 0.2f, 0.2f, 1.0f},
+    {0.2f, 0.2f, 0.9f, 1.0f},
+    {0.2f, 0.9f, 0.2f, 1.0f},
+    {0.9f, 0.6f, 0.2f, 1.0f},
+    {0.7f, 0.2f, 0.9f, 1.0f},
+    {0.9f, 0.5f, 0.8f, 1.0f},
+    {0.5f, 0.9f, 0.2f, 1.0f},
+    {0.4f, 0.7f, 0.9f, 1.0f},
+    {0.6f, 0.2f, 0.3f, 1.0f},
 };
+static const int NUM_COLORS = sizeof(colors) / sizeof(colors[0]);
 
-void auto_initialize_objects(PhysicsObject* objects, int num_objects) {
-    float colors[][4] = {
-        {0.9f, 0.2f, 0.2f, 1.0f},
-        {0.2f, 0.2f, 0.9f, 1.0f},
-        {0.2f, 0.9f, 0.2f, 1.0f},
-        {0.9f, 0.6f, 0.2f, 1.0f},
-        {0.7f, 0.2f, 0.9f, 1.0f},
-        {0.9f, 0.5f, 0.8f, 1.0f},
-        {0.5f, 0.9f, 0.2f, 1.0f},
-        {0.4f, 0.7f, 0.9f, 1.0f},
-        {0.6f, 0.2f, 0.3f, 1.0f}
-    };
-    int num_colors = sizeof(colors) / sizeof(colors[0]);
+// Shape types, one mesh_id per type (filled at build time)
+enum ShapeType { SHAPE_ICOSAHEDRON = 0, SHAPE_BOX, SHAPE_TETRAHEDRON, SHAPE_OCTAHEDRON, SHAPE_COUNT };
+static int g_mesh_ids[SHAPE_COUNT];
+
+static float* build_gjk_verts(ShapeType type, int* out_count) {
+    switch (type) {
+        case SHAPE_ICOSAHEDRON:  return gen_gjk_icosahedron(out_count);
+        case SHAPE_BOX:          return gen_gjk_box(out_count);
+        case SHAPE_TETRAHEDRON:  return gen_gjk_tetrahedron(out_count);
+        case SHAPE_OCTAHEDRON:   return gen_gjk_octahedron(out_count);
+        default:                 return gen_gjk_icosahedron(out_count);
+    }
+}
+
+static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objects) {
+    // Register all shape types once
+    g_mesh_ids[SHAPE_ICOSAHEDRON] = atlas_add_icosahedron(atlas);
+    g_mesh_ids[SHAPE_BOX]         = atlas_add_box(atlas);
+    g_mesh_ids[SHAPE_TETRAHEDRON] = atlas_add_tetrahedron(atlas);
+    g_mesh_ids[SHAPE_OCTAHEDRON]  = atlas_add_octahedron(atlas);
 
     int grid_size = (int)std::ceil(std::sqrt((double)num_objects));
     float spacing = 3.0f;
     float start_height = 10.0f;
 
     for (int i = 0; i < num_objects; i++) {
-        int row = i / grid_size;
-        int col = i % grid_size;
+        int row = i / grid_size, col = i % grid_size;
+        float x_off = -(grid_size - 1) * spacing * 0.5f;
+        float z_off = -(grid_size - 1) * spacing * 0.5f;
+        float noise = 0.2f;
 
-        float x_offset = -(grid_size - 1) * spacing / 2.0f;
-        float z_offset = -(grid_size - 1) * spacing / 2.0f;
+        auto rn = [&]() { return ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise; };
+        auto rf = [&](float lo, float hi) { return lo + (float)rand() / RAND_MAX * (hi - lo); };
 
-        float noise_scale = 0.2f;
-        float pos_noise_x = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
-        float pos_noise_y = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
-        float pos_noise_z = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        ShapeType shape = (ShapeType)(i % SHAPE_COUNT);
+        float s = rf(0.5f, 1.8f);
 
-        float vel_noise_x = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
-        float vel_noise_y = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
-        float vel_noise_z = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        int gjk_count = 0;
+        float* gjk_verts = build_gjk_verts(shape, &gjk_count);
 
-        float radius = 0.5f + ((float)rand() / RAND_MAX) * 1.3f;
+        float scale[3] = { s, s, s };
+        float br = compute_bounding_radius(gjk_verts, gjk_count, scale);
 
-        objects[i].position[0] = x_offset + col * spacing + pos_noise_x;
-        objects[i].position[1] = start_height + (i % 3) * 2.0f + pos_noise_y;
-        objects[i].position[2] = z_offset + row * spacing + pos_noise_z;
+        objects[i].position[0] = x_off + col * spacing + rn();
+        objects[i].position[1] = start_height + (i % 3) * 2.0f + rn();
+        objects[i].position[2] = z_off + row * spacing + rn();
 
-        objects[i].velocity[0] = ((i % 3) - 1) * 1.0f + vel_noise_x;
-        objects[i].velocity[1] = vel_noise_y;
-        objects[i].velocity[2] = ((i % 2) - 0.5f) * 2.0f + vel_noise_z;
+        objects[i].velocity[0] = ((i % 3) - 1) * 1.0f + rn();
+        objects[i].velocity[1] = rn();
+        objects[i].velocity[2] = ((i % 2) - 0.5f) * 2.0f + rn();
 
-        objects[i].radius = radius;
-        objects[i].mass = radius * radius * radius;
+        objects[i].scale[0] = s;
+        objects[i].scale[1] = s;
+        objects[i].scale[2] = s;
 
-        std::memcpy(objects[i].color, colors[i % num_colors], sizeof(float) * 4);
+        memcpy(objects[i].color, colors[i % NUM_COLORS], sizeof(float) * 4);
+
+        objects[i].mass             = s * s * s;
+        objects[i].bounding_radius  = br;
+        objects[i].gjk_verts        = gjk_verts;
+        objects[i].num_gjk_verts    = gjk_count;
+        objects[i].mesh_id          = g_mesh_ids[shape];
+    }
+}
+
+static void free_scene_gjk_verts(ObjectInitData* objects, int num_objects) {
+    for (int i = 0; i < num_objects; i++) {
+        free(objects[i].gjk_verts);
+        objects[i].gjk_verts = nullptr;
     }
 }
 
 int main(void) {
-    const int screenWidth = 1200;
+    const int screenWidth  = 1200;
     const int screenHeight = 800;
 
-    if (!glfwInit()) {
-        fprintf(stderr, "Failed to initialize GLFW\n");
-        return -1;
-    }
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    if (!glfwInit()) { fprintf(stderr, "Failed to init GLFW\n"); return -1; }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_SAMPLES, 4);
 
     GLFWwindow* window = glfwCreateWindow(screenWidth, screenHeight,
-                                          "Physics Simulation - OpenGL", NULL, NULL);
-    if (!window) {
-        fprintf(stderr, "Failed to create GLFW window\n");
-        glfwTerminate();
-        return -1;
-    }
-
+                                          "Physics Simulation", NULL, NULL);
+    if (!window) { fprintf(stderr, "Failed to create window\n"); glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        fprintf(stderr, "Failed to initialize GLAD\n");
-        return -1;
+        fprintf(stderr, "Failed to init GLAD\n"); return -1;
     }
 
     glEnable(GL_DEPTH_TEST);
@@ -115,136 +131,97 @@ int main(void) {
     glm::vec3 cam_target(0.0f, -2.0f, 0.0f);
     camera_init(&camera, cam_pos, cam_target, 45.0f);
 
-    OpenGLRenderer renderer;
-    if (!renderer_init(&renderer, NUM_OBJECTS)) {
-        fprintf(stderr, "Failed to initialize renderer\n");
-        return -1;
-    }
-
+    // ---- Pre-init: build all CPU data before touching CUDA or GL resources ----
     std::srand((unsigned int)std::time(nullptr));
-    PhysicsObject* objects = new PhysicsObject[NUM_OBJECTS];
-    auto_initialize_objects(objects, NUM_OBJECTS);
+    MeshAtlas      atlas;   atlas_init(&atlas);
+    ObjectInitData* objects = new ObjectInitData[NUM_OBJECTS];
+    build_scene(&atlas, objects, NUM_OBJECTS);
 
-    GPU_GJK_Context* gpu_ctx = nullptr;
-    if (!gpu_gjk_init(&gpu_ctx, NUM_OBJECTS, MAX_PAIRS)) {
-        fprintf(stderr, "GPU initialization failed!\n");
-        return -1;
+    // ---- GL init ----
+
+    // Create the dynamic position buffer (float4 per object) — registered with CUDA in sim_init
+    GLuint gl_pos_buffer;
+    glGenBuffers(1, &gl_pos_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, gl_pos_buffer);
+    glBufferData(GL_ARRAY_BUFFER, NUM_OBJECTS * sizeof(float) * 4, nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    OpenGLRenderer renderer;
+    if (!renderer_init(&renderer, &atlas, objects, NUM_OBJECTS, gl_pos_buffer)) {
+        fprintf(stderr, "Failed to init renderer\n"); return -1;
     }
+    atlas_free(&atlas);  // uploaded to GPU, no longer needed
 
-    GJK_Shape* gjk_shapes = new GJK_Shape[NUM_OBJECTS];
-    for (int i = 0; i < NUM_OBJECTS; i++) {
-        Vector3f pos = { objects[i].position[0], objects[i].position[1], objects[i].position[2] };
-        gjk_shapes[i] = create_sphere_shape(pos, objects[i].radius);
+    // ---- CUDA sim init ----
+    if (!sim_init(objects, NUM_OBJECTS, gl_pos_buffer)) {
+        fprintf(stderr, "Failed to init sim\n"); return -1;
     }
+    free_scene_gjk_verts(objects, NUM_OBJECTS);
+    delete[] objects;
 
-    for (int i = 0; i < NUM_OBJECTS; i++) {
-        Vector3f pos = { objects[i].position[0], objects[i].position[1], objects[i].position[2] };
-        Vector3f vel = { objects[i].velocity[0], objects[i].velocity[1], objects[i].velocity[2] };
-        gpu_gjk_register_object(gpu_ctx, i, &gjk_shapes[i], pos, vel,
-                                objects[i].mass, objects[i].radius);
-    }
+    // ---- Physics params ----
+    PhysicsParams params;
+    params.gravity[0]         = 0.0f;
+    params.gravity[1]         = GRAVITY_Y;
+    params.gravity[2]         = 0.0f;
+    params.delta_time         = DELTA_TIME;
+    params.damping            = DAMPING_COEFF;
+    params.boundary           = boundary;
+    params.collision_epsilon  = COLLISION_EPSILON;
 
-    for (int i = 0; i < NUM_OBJECTS; i++) {
-        free_shape(&gjk_shapes[i]);
-    }
-    delete[] gjk_shapes;
-
-    gpu_gjk_sync_objects_to_device(gpu_ctx);
-
-    GPU_PhysicsParams params;
-    params.gravity = { 0.0f, GRAVITY_Y, 0.0f };
-    params.deltaTime = DELTA_TIME;
-    params.dampingCoeff = DAMPING_COEFF;
-    params.boundarySize = boundary;
-    params.collisionEpsilon = COLLISION_EPSILON;
-
-    double last_time = glfwGetTime();
+    double last_time         = glfwGetTime();
     double last_physics_time = last_time;
-    double last_frame_time = last_time;
-    int frame_count = 0;
-    int fps = 0;
-    int collision_count = 0;
-    double physics_accumulator = 0.0;
+    double last_frame_time   = last_time;
+    int    frame_count       = 0;
+    int    fps               = 0;
+    int    collision_count   = 0;
+    double physics_accum     = 0.0;
 
     while (!glfwWindowShouldClose(window)) {
         frame_count++;
-        double current_time = glfwGetTime();
-        float deltaTime = (float)(current_time - last_frame_time);
-        last_frame_time = current_time;
+        double now       = glfwGetTime();
+        float  deltaTime = (float)(now - last_frame_time);
+        last_frame_time  = now;
 
-        if (current_time - last_time >= 1.0) {
-            fps = frame_count;
-            frame_count = 0;
-            last_time = current_time;
+        if (now - last_time >= 1.0) {
+            fps = frame_count; frame_count = 0; last_time = now;
         }
 
         input_update(window);
 
-        if (IsKeyPressed(GLFW_KEY_ESCAPE)) {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
-        }
-        if (IsKeyPressed(GLFW_KEY_R)) {
-            camera_reset(&camera);
-        }
-        if (IsKeyPressed(GLFW_KEY_F)) {
-            renderer_toggle_wireframe(&renderer);
-        }
+        if (IsKeyPressed(GLFW_KEY_ESCAPE)) glfwSetWindowShouldClose(window, GLFW_TRUE);
+        if (IsKeyPressed(GLFW_KEY_R))      camera_reset(&camera);
 
         camera_update_controls(&camera, deltaTime);
+        camera_update_matrices(&camera, (float)screenWidth / screenHeight);
 
-        float aspect = (float)screenWidth / (float)screenHeight;
-        camera_update_matrices(&camera, aspect);
+        // Physics: fixed timestep
+        physics_accum += now - last_physics_time;
+        last_physics_time = now;
+        if (physics_accum > 0.2) physics_accum = 0.2;
 
-        double current_physics_time = glfwGetTime();
-        physics_accumulator += (current_physics_time - last_physics_time);
-        last_physics_time = current_physics_time;
-
-        if (physics_accumulator > 0.2) physics_accumulator = 0.2;
-
-        while (physics_accumulator >= DELTA_TIME) {
-            collision_count = gpu_gjk_update_collision_pairs_dynamic(gpu_ctx, &params);
-            gpu_gjk_step_simulation(gpu_ctx, &params);
-            physics_accumulator -= DELTA_TIME;
+        while (physics_accum >= DELTA_TIME) {
+            collision_count = sim_broad_phase(&params);
+            sim_step(&params);
+            physics_accum -= DELTA_TIME;
         }
 
-        GPU_RenderData render_data;
-        gpu_gjk_get_render_data(gpu_ctx, &render_data);
-
-        float* positions = (float*)malloc(NUM_OBJECTS * 3 * sizeof(float));
-        float* radii     = (float*)malloc(NUM_OBJECTS * sizeof(float));
-        float* colors    = (float*)malloc(NUM_OBJECTS * 4 * sizeof(float));
-
-        for (int i = 0; i < NUM_OBJECTS; i++) {
-            positions[i * 3 + 0] = render_data.positions[i].x;
-            positions[i * 3 + 1] = render_data.positions[i].y;
-            positions[i * 3 + 2] = render_data.positions[i].z;
-            radii[i] = objects[i].radius;
-            std::memcpy(&colors[i * 4], objects[i].color, sizeof(float) * 4);
-        }
-
-        renderer_update_instances(&renderer, positions, radii, colors, NUM_OBJECTS);
-
-        free(positions);
-        free(radii);
-        free(colors);
+        // Copy positions from CUDA directly into GL buffer (no CPU readback)
+        sim_copy_to_gl();
 
         renderer_draw(&renderer, camera.projection_matrix, camera.view_matrix);
 
-        static int stats_counter = 0;
-        if (++stats_counter % 60 == 0) {
-            std::printf("FPS: %d | Pairs: %d | Objects: %d\n",
-                        fps, collision_count, NUM_OBJECTS);
-        }
+        static int stats = 0;
+        if (++stats % 60 == 0)
+            printf("FPS: %d | Pairs: %d | Objects: %d\n", fps, collision_count, NUM_OBJECTS);
 
         glfwSwapBuffers(window);
     }
 
     renderer_cleanup(&renderer);
-    delete[] objects;
-    gpu_gjk_cleanup(&gpu_ctx);
-
+    glDeleteBuffers(1, &gl_pos_buffer);
+    sim_cleanup();
     glfwDestroyWindow(window);
     glfwTerminate();
-
     return 0;
 }
