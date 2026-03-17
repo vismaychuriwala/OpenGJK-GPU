@@ -1727,7 +1727,7 @@ __device__ inline static bool is_face_visible(EPAPolytope* poly, int face_idx, c
 }
 
 // Parallel support function for EPA basicallly GJK one but only care about minkowski difference point
-__device__ inline static void support_epa_parallel(gkPolytope* body1, gkPolytope* body2,
+__device__ inline static void support_epa_parallel(const gkPolytope* body1, const gkPolytope* body2,
   const gkFloat* direction, gkFloat* result, int* result_idx,
   int warp_lane_idx, unsigned int warp_mask) {
 
@@ -2005,35 +2005,20 @@ typedef struct {
   bool valid;
 } EPAEdge;
 
-// ENTRY POINT TO EPA CALL
-// Main EPA kernel - one warp per collision
-__global__ void compute_epa_kernel(
-  const gkPolytope* polytopes1,
-  const gkPolytope* polytopes2,
-  gkSimplex* simplices,
-  gkFloat* distances,
-  gkFloat* witness1,
-  gkFloat* witness2,
-  gkFloat* contact_normals,
-  const int n) {
-
-  // Calculate which collision this warp handles
-  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-  int warp_idx = index / 32;
-
-  if (warp_idx >= n) {
-    return;
-  }
-
-  // Get thread index within warp (0-31)
+// Core EPA logic
+__device__ void epa_core(
+    const gkPolytope* bd1,
+    const gkPolytope* bd2,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    gkFloat* witness1,
+    gkFloat* witness2,
+    gkFloat* contact_normals,
+    int warp_idx) {
+      // Get thread index within warp (0-31)
   int warp_lane_idx = threadIdx.x % 32;
   unsigned int warp_mask = 0xFFFFFFFF;
 
-  // Copy polytopes to local memory
-  gkPolytope bd1_local = polytopes1[warp_idx];
-  gkPolytope bd2_local = polytopes2[warp_idx];
-  gkPolytope* bd1 = &bd1_local;
-  gkPolytope* bd2 = &bd2_local;
   gkSimplex simplex = simplices[warp_idx];
   gkFloat distance = distances[warp_idx];
 
@@ -2957,6 +2942,63 @@ __global__ void compute_epa_kernel(
     }
   }
 }
+// ENTRY POINT TO EPA CALL
+// Main EPA kernel - one warp per collision
+__global__ void compute_epa_kernel(
+  const gkPolytope* polytopes1,
+  const gkPolytope* polytopes2,
+  gkSimplex* simplices,
+  gkFloat* distances,
+  gkFloat* witness1,
+  gkFloat* witness2,
+  gkFloat* contact_normals,
+  const int n) {
+
+  // Calculate which collision this warp handles
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  int warp_idx = index / 32;
+
+  if (warp_idx >= n) {
+    return;
+  }
+
+  // Copy polytopes to local memory
+  gkPolytope bd1_local = polytopes1[warp_idx];
+  gkPolytope bd2_local = polytopes2[warp_idx];
+  gkPolytope* bd1 = &bd1_local;
+  gkPolytope* bd2 = &bd2_local;
+
+  epa_core(bd1, bd2, simplices, distances, witness1, witness2, contact_normals, warp_idx);
+}
+
+
+// Indexed EPA kernel
+__global__ void compute_epa_kernel_indexed_kernel(
+  const gkPolytope* polytopes,
+  const gkCollisionPair* pairs,
+  gkSimplex* simplices,
+  gkFloat* distances,
+  gkFloat* witness1,
+  gkFloat* witness2,
+  gkFloat* contact_normals,
+  const int n) {
+
+  // Calculate which collision this warp handles
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  int warp_idx = index / 32;
+
+  if (warp_idx >= n) {
+    return;
+  }
+
+  // Copy polytopes to local memory
+  gkPolytope bd1_local = polytopes[pairs[warp_idx].idx1];
+  gkPolytope bd2_local = polytopes[pairs[warp_idx].idx2];
+  gkPolytope* bd1 = &bd1_local;
+  gkPolytope* bd2 = &bd2_local;
+
+  epa_core(bd1, bd2, simplices, distances, witness1, witness2, contact_normals, warp_idx);
+}
 
 // ============================================================================
 // HIGH-LEVEL API IMPLEMENTATIONS: Automatic memory management
@@ -3341,4 +3383,165 @@ void compute_minimum_distance_indexed_device(
         d_polytopes, d_pairs, d_simplices, d_distances, num_pairs);
 
     cudaDeviceSynchronize();
+}
+
+void compute_epa_indexed_device(
+    const int num_pairs,
+    const gkPolytope* d_polytopes,
+    const gkCollisionPair* d_pairs,
+    gkSimplex* d_simplices,
+    gkFloat* d_distances,
+    gkFloat* d_witness1,
+    gkFloat* d_witness2,
+    gkFloat* d_contact_normals) {
+
+    int blockSize = 256;
+    int collisionsPerBlock = blockSize / THREADS_PER_EPA;
+    int numBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
+
+    compute_epa_kernel_indexed_kernel<<<numBlocks, blockSize>>>(
+        d_polytopes, d_pairs, d_simplices, d_distances,
+        d_witness1, d_witness2, d_contact_normals, num_pairs);
+
+    cudaDeviceSynchronize();
+}
+
+// Helper: allocate and copy a single indexed polytope array to device
+static void allocate_and_copy_indexed_polytopes(
+    const int num_polytopes,
+    const gkPolytope* polytopes,
+    gkPolytope** d_polytopes,
+    gkFloat** d_coords) {
+
+    int total_verts = 0;
+    for (int i = 0; i < num_polytopes; i++) total_verts += polytopes[i].numpoints;
+
+    cudaMalloc(d_coords,    total_verts * 3 * sizeof(gkFloat));
+    cudaMalloc(d_polytopes, num_polytopes * sizeof(gkPolytope));
+
+    gkPolytope* temp    = (gkPolytope*)malloc(num_polytopes * sizeof(gkPolytope));
+    gkFloat*    staging = (gkFloat*)malloc(total_verts * 3 * sizeof(gkFloat));
+    int offset = 0;
+    for (int i = 0; i < num_polytopes; i++) {
+        int n = polytopes[i].numpoints * 3;
+        memcpy(staging + offset, polytopes[i].coord, n * sizeof(gkFloat));
+        temp[i]       = polytopes[i];
+        temp[i].coord = *d_coords + offset;
+        offset += n;
+    }
+    cudaMemcpy(*d_coords,    staging,  total_verts * 3 * sizeof(gkFloat), cudaMemcpyHostToDevice);
+    cudaMemcpy(*d_polytopes, temp,     num_polytopes * sizeof(gkPolytope), cudaMemcpyHostToDevice);
+    free(staging);
+    free(temp);
+}
+
+void compute_epa_indexed(
+    const int num_polytopes,
+    const int num_pairs,
+    const gkPolytope* polytopes,
+    const gkCollisionPair* pairs,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    gkFloat* witness1,
+    gkFloat* witness2,
+    gkFloat* contact_normals) {
+
+    if (num_pairs <= 0) return;
+
+    gkPolytope*      d_polytopes = nullptr;
+    gkFloat*         d_coords    = nullptr;
+    gkCollisionPair* d_pairs     = nullptr;
+    gkSimplex*       d_simplices = nullptr;
+    gkFloat*         d_distances = nullptr;
+    gkFloat*         d_witness1  = nullptr;
+    gkFloat*         d_witness2  = nullptr;
+    gkFloat*         d_contact_normals = nullptr;
+
+    allocate_and_copy_indexed_polytopes(num_polytopes, polytopes, &d_polytopes, &d_coords);
+
+    cudaMalloc(&d_pairs,     num_pairs * sizeof(gkCollisionPair));
+    cudaMalloc(&d_simplices, num_pairs * sizeof(gkSimplex));
+    cudaMalloc(&d_distances, num_pairs * sizeof(gkFloat));
+    cudaMalloc(&d_witness1,  num_pairs * 3 * sizeof(gkFloat));
+    cudaMalloc(&d_witness2,  num_pairs * 3 * sizeof(gkFloat));
+    cudaMalloc(&d_contact_normals, num_pairs * 3 * sizeof(gkFloat));
+
+    cudaMemcpy(d_pairs,     pairs,     num_pairs * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_simplices, simplices, num_pairs * sizeof(gkSimplex),       cudaMemcpyHostToDevice);
+    cudaMemcpy(d_distances, distances, num_pairs * sizeof(gkFloat),          cudaMemcpyHostToDevice);
+
+    compute_epa_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances,
+                               d_witness1, d_witness2, d_contact_normals);
+
+    cudaMemcpy(simplices, d_simplices, num_pairs * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+    cudaMemcpy(distances, d_distances, num_pairs * sizeof(gkFloat),   cudaMemcpyDeviceToHost);
+    cudaMemcpy(witness1,  d_witness1,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    cudaMemcpy(witness2,  d_witness2,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    if (contact_normals)
+        cudaMemcpy(contact_normals, d_contact_normals, num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+
+    cudaFree(d_polytopes);
+    cudaFree(d_coords);
+    cudaFree(d_pairs);
+    cudaFree(d_simplices);
+    cudaFree(d_distances);
+    cudaFree(d_witness1);
+    cudaFree(d_witness2);
+    cudaFree(d_contact_normals);
+}
+
+void compute_gjk_epa_indexed(
+    const int num_polytopes,
+    const int num_pairs,
+    const gkPolytope* polytopes,
+    const gkCollisionPair* pairs,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    gkFloat* witness1,
+    gkFloat* witness2,
+    gkFloat* contact_normals) {
+
+    if (num_pairs <= 0) return;
+
+    gkPolytope*      d_polytopes = nullptr;
+    gkFloat*         d_coords    = nullptr;
+    gkCollisionPair* d_pairs     = nullptr;
+    gkSimplex*       d_simplices = nullptr;
+    gkFloat*         d_distances = nullptr;
+    gkFloat*         d_witness1  = nullptr;
+    gkFloat*         d_witness2  = nullptr;
+    gkFloat*         d_contact_normals = nullptr;
+
+    allocate_and_copy_indexed_polytopes(num_polytopes, polytopes, &d_polytopes, &d_coords);
+
+    cudaMalloc(&d_pairs,     num_pairs * sizeof(gkCollisionPair));
+    cudaMalloc(&d_simplices, num_pairs * sizeof(gkSimplex));
+    cudaMalloc(&d_distances, num_pairs * sizeof(gkFloat));
+    cudaMalloc(&d_witness1,  num_pairs * 3 * sizeof(gkFloat));
+    cudaMalloc(&d_witness2,  num_pairs * 3 * sizeof(gkFloat));
+    cudaMalloc(&d_contact_normals, num_pairs * 3 * sizeof(gkFloat));
+
+    cudaMemcpy(d_pairs, pairs, num_pairs * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
+    cudaMemset(d_simplices, 0, num_pairs * sizeof(gkSimplex));
+
+    compute_minimum_distance_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances);
+
+    compute_epa_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances,
+                               d_witness1, d_witness2, d_contact_normals);
+
+    cudaMemcpy(simplices, d_simplices, num_pairs * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
+    cudaMemcpy(distances, d_distances, num_pairs * sizeof(gkFloat),   cudaMemcpyDeviceToHost);
+    cudaMemcpy(witness1,  d_witness1,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    cudaMemcpy(witness2,  d_witness2,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    if (contact_normals)
+        cudaMemcpy(contact_normals, d_contact_normals, num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+
+    cudaFree(d_polytopes);
+    cudaFree(d_coords);
+    cudaFree(d_pairs);
+    cudaFree(d_simplices);
+    cudaFree(d_distances);
+    cudaFree(d_witness1);
+    cudaFree(d_witness2);
+    cudaFree(d_contact_normals);
 }

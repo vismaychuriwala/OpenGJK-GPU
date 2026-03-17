@@ -23,7 +23,7 @@
   #define VERTS_PER_POLYTOPE 1000
 #endif
 
-#define TEST_API 0
+#define TEST_API 1
 #define SAVE_PERFORMANCE_DATA_TO_FILE 0
 #define OUTPUT_FILE "../data/gpu_performance_results_!.csv"
 
@@ -477,6 +477,92 @@ main() {
     free(t_distances);
     free(t_witness1);
     free(t_witness2);
+  }
+
+  // --- Test 5: compute_gjk_epa_indexed - witnesses match gjkepa reference ---
+  {
+    gkPolytope*      idx_polytopes = (gkPolytope*)malloc(2 * NUM_POLYTOPES * sizeof(gkPolytope));
+    gkCollisionPair* idx_pairs     = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
+    gkSimplex*       idx_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*         idx_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    gkFloat*         idx_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*         idx_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    for (int i = 0; i < NUM_POLYTOPES; i++) {
+      idx_polytopes[2*i]   = polytopes1[i];
+      idx_polytopes[2*i+1] = polytopes2[i];
+      idx_pairs[i].idx1 = 2*i;
+      idx_pairs[i].idx2 = 2*i+1;
+    }
+
+    GJK::GPU::timer().startGpuTimer();
+    compute_gjk_epa_indexed(2 * NUM_POLYTOPES, NUM_POLYTOPES,
+                            idx_polytopes, idx_pairs,
+                            idx_simplices, idx_distances,
+                            idx_witness1, idx_witness2);
+    GJK::GPU::timer().endGpuTimer();
+    float t5_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+    bool passed = true;
+    for (int i = 0; i < test_count && passed; i++) {
+      for (int d = 0; d < 3; d++) {
+        if (fabs(idx_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
+            fabs(idx_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
+          passed = false; break;
+        }
+      }
+    }
+    printf("compute_gjk_epa_indexed (witnesses):     %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t5_time);
+
+    free(idx_polytopes);
+    free(idx_pairs);
+    free(idx_simplices);
+    free(idx_distances);
+    free(idx_witness1);
+    free(idx_witness2);
+  }
+
+  // --- Test 6: compute_epa_indexed - witnesses match gjkepa reference ---
+  {
+    gkPolytope*      idx_polytopes = (gkPolytope*)malloc(2 * NUM_POLYTOPES * sizeof(gkPolytope));
+    gkCollisionPair* idx_pairs     = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
+    gkSimplex*       idx_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*         idx_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    gkFloat*         idx_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*         idx_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    for (int i = 0; i < NUM_POLYTOPES; i++) {
+      idx_polytopes[2*i]   = polytopes1[i];
+      idx_polytopes[2*i+1] = polytopes2[i];
+      idx_pairs[i].idx1 = 2*i;
+      idx_pairs[i].idx2 = 2*i+1;
+      idx_simplices[i] = gjkepa_simplices[i];
+      idx_distances[i] = gjkepa_distances[i];
+    }
+
+    GJK::GPU::timer().startGpuTimer();
+    compute_epa_indexed(2 * NUM_POLYTOPES, NUM_POLYTOPES,
+                        idx_polytopes, idx_pairs,
+                        idx_simplices, idx_distances,
+                        idx_witness1, idx_witness2);
+    GJK::GPU::timer().endGpuTimer();
+    float t6_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+    bool passed = true;
+    for (int i = 0; i < test_count && passed; i++) {
+      for (int d = 0; d < 3; d++) {
+        if (fabs(idx_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
+            fabs(idx_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
+          passed = false; break;
+        }
+      }
+    }
+    printf("compute_epa_indexed (witnesses):         %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t6_time);
+
+    free(idx_polytopes);
+    free(idx_pairs);
+    free(idx_simplices);
+    free(idx_distances);
+    free(idx_witness1);
+    free(idx_witness2);
   }
 
   printf("================================================================================\n");
