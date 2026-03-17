@@ -46,10 +46,12 @@ static int g_max_pairs    = 0;
 static int g_total_verts  = 0;
 
 // Physics state
-static float4* d_positions;    // xyz = world pos, w = bounding_radius (constant)
-static float4* d_vel_buf[2];   // xyz = velocity, w = mass (constant)
-static float4* d_quats;        // rotation quaternion (identity for now)
-static float3* d_scales;       // per-axis scale (constant)
+static float4* d_positions;       // xyz = world pos, w = bounding_radius (constant)
+static float4* d_vel_buf[2];      // xyz = velocity, w = mass (constant)
+static float4* d_quats;           // rotation quaternion, updated each step
+static float4* d_ang_buf[2];      // xyz = angular velocity (omega), w = unused
+static float3* d_inv_inertia;     // inverse principal moments in body frame (Ixx,Iyy,Izz)^-1
+static float3* d_scales;          // per-axis scale (constant)
 static int     g_vel_ping = 0;
 static int     g_vel_pong = 1;
 
@@ -72,7 +74,8 @@ static int*              d_pair_counts;
 static int*              d_pair_offsets;
 
 // GL interop
-static cudaGraphicsResource_t g_gl_pos_resource = nullptr;
+static cudaGraphicsResource_t g_gl_pos_resource  = nullptr;
+static cudaGraphicsResource_t g_gl_quat_resource = nullptr;
 
 // ============================================================================
 // Device helpers
@@ -89,6 +92,79 @@ __device__ static inline float3 quat_rotate(float4 q, float3 v) {
         2.0f*dot_uv*u.y + (2.0f*s*s - 1.0f)*v.y + 2.0f*s*cross_uv.y,
         2.0f*dot_uv*u.z + (2.0f*s*s - 1.0f)*v.z + 2.0f*s*cross_uv.z
     );
+}
+
+// Rotate by conjugate (R^T for unit quaternion)
+__device__ static inline float3 quat_rotate_inv(float4 q, float3 v) {
+    return quat_rotate(make_float4(-q.x, -q.y, -q.z, q.w), v);
+}
+
+// Apply friction impulse at a boundary contact.
+// n        : outward surface normal (points away from wall, into the simulation)
+// r        : contact arm in world space (contact_point - object_center)
+// j_n_mag  : magnitude of the already-applied normal impulse
+// inv_mass : 1/m
+// inv_I    : diagonal inverse inertia in body frame
+// q        : current quaternion
+__device__ static void apply_boundary_friction(
+    float3& vel, float3& omega,
+    float3 n, float3 r,
+    float j_n_mag, float inv_mass,
+    float3 inv_I, float4 q)
+{
+    // Velocity at contact point = linear + angular contribution
+    float3 omg_r = make_float3(
+        omega.y*r.z - omega.z*r.y,
+        omega.z*r.x - omega.x*r.z,
+        omega.x*r.y - omega.y*r.x);
+    float3 v_contact = make_float3(vel.x + omg_r.x, vel.y + omg_r.y, vel.z + omg_r.z);
+
+    // Remove normal component to get tangential velocity
+    float v_n = v_contact.x*n.x + v_contact.y*n.y + v_contact.z*n.z;
+    float3 v_tang = make_float3(v_contact.x - v_n*n.x,
+                                v_contact.y - v_n*n.y,
+                                v_contact.z - v_n*n.z);
+
+    float v_t_sq = v_tang.x*v_tang.x + v_tang.y*v_tang.y + v_tang.z*v_tang.z;
+    if (v_t_sq < 1e-6f) return;
+    float v_t_mag = sqrtf(v_t_sq);
+
+    // Tangent direction
+    float inv_vt = 1.0f / v_t_mag;
+    float3 t_dir = make_float3(v_tang.x * inv_vt, v_tang.y * inv_vt, v_tang.z * inv_vt);
+
+    // Angular effective mass: (r × t) · (I^-1 * (r × t))
+    float3 rxt = make_float3(r.y*t_dir.z - r.z*t_dir.y,
+                              r.z*t_dir.x - r.x*t_dir.z,
+                              r.x*t_dir.y - r.y*t_dir.x);
+    float3 rxt_body = quat_rotate_inv(q, rxt);
+    float3 Irxt     = make_float3(inv_I.x*rxt_body.x, inv_I.y*rxt_body.y, inv_I.z*rxt_body.z);
+    float ang_eff   = rxt_body.x*Irxt.x + rxt_body.y*Irxt.y + rxt_body.z*Irxt.z;
+
+    // Coulomb friction: clamp to not exceed impulse needed to stop sliding
+    float j_f_max  = FRICTION_COEFF * j_n_mag;
+    float j_f_stop = v_t_mag / (inv_mass + ang_eff);
+    float j_f_mag  = fminf(j_f_max, j_f_stop);
+
+    float3 j_f = make_float3(-j_f_mag * v_tang.x / v_t_mag,
+                              -j_f_mag * v_tang.y / v_t_mag,
+                              -j_f_mag * v_tang.z / v_t_mag);
+
+    // Linear velocity change
+    vel.x += j_f.x * inv_mass;
+    vel.y += j_f.y * inv_mass;
+    vel.z += j_f.z * inv_mass;
+
+    // Angular velocity change: tau = r × j_f, rotate to body frame, apply inv_I, rotate back
+    float3 tau_world = make_float3(r.y*j_f.z - r.z*j_f.y,
+                                   r.z*j_f.x - r.x*j_f.z,
+                                   r.x*j_f.y - r.y*j_f.x);
+    float3 tau_body  = quat_rotate_inv(q, tau_world);
+    float3 d_omg_body = make_float3(inv_I.x*tau_body.x, inv_I.y*tau_body.y, inv_I.z*tau_body.z);
+    float3 d_omg     = quat_rotate(q, d_omg_body);
+    omega.x += d_omg.x;
+    omega.y += d_omg.y;
+    omega.z += d_omg.z;
 }
 
 // ============================================================================
@@ -124,9 +200,11 @@ __global__ void transform_to_world_kernel(
 }
 
 __global__ void physics_update_kernel(
-    float4*      positions,
-    float4*      velocities,
-    const float3* scales,
+    float4*       positions,
+    float4*       velocities,
+    float4*       ang_vel,
+    float4*       quats,
+    const float3* inv_inertia,
     int           num_objects,
     float         dt,
     float         gravity_y,
@@ -136,29 +214,110 @@ __global__ void physics_update_kernel(
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_objects) return;
 
-    float4 pos = positions[i];   // w = bounding_radius
-    float4 vel = velocities[i];  // w = mass
+    float4 pos   = positions[i];   // w = bounding_radius
+    float4 vel   = velocities[i];  // w = mass
+    float4 q     = quats[i];
+    float3 omega = make_float3(ang_vel[i].x, ang_vel[i].y, ang_vel[i].z);
+    float3 inv_I = inv_inertia[i];
 
-    float br = pos.w;  // world bounding radius (precomputed at init)
+    float br      = pos.w;
+    float inv_mass = 1.0f / vel.w;
 
     vel.y += gravity_y * dt;
     pos.x += vel.x * dt;
     pos.y += vel.y * dt;
     pos.z += vel.z * dt;
 
-    if (pos.y - br < -boundary) { pos.y = -boundary + br; vel.y = -vel.y * damping; }
-    if (pos.y + br >  boundary) { pos.y =  boundary - br; vel.y = -vel.y * damping; }
-    if (pos.x - br < -boundary || pos.x + br > boundary) {
-        vel.x = -vel.x * damping;
-        pos.x = (pos.x > 0.0f) ? boundary - br : -boundary + br;
+    float3 vel3 = make_float3(vel.x, vel.y, vel.z);
+
+    // Floor (y = -boundary), n = (0,1,0), r = (0,-br,0)
+    if (pos.y - br < -boundary) {
+        pos.y = -boundary + br;
+        float v_close = fabsf(vel3.y);
+        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
+        vel3.y = -vel3.y * RESTITUTION;
+        apply_boundary_friction(vel3, omega,
+            make_float3(0.0f,  1.0f, 0.0f),
+            make_float3(0.0f, -br,   0.0f),
+            j_n, inv_mass, inv_I, q);
     }
-    if (pos.z - br < -boundary || pos.z + br > boundary) {
-        vel.z = -vel.z * damping;
-        pos.z = (pos.z > 0.0f) ? boundary - br : -boundary + br;
+    // Ceiling (y = +boundary), n = (0,-1,0), r = (0,+br,0)
+    if (pos.y + br > boundary) {
+        pos.y = boundary - br;
+        float v_close = fabsf(vel3.y);
+        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
+        vel3.y = -vel3.y * RESTITUTION;
+        apply_boundary_friction(vel3, omega,
+            make_float3(0.0f, -1.0f, 0.0f),
+            make_float3(0.0f, +br,   0.0f),
+            j_n, inv_mass, inv_I, q);
+    }
+    // -X wall, n = (1,0,0), r = (-br,0,0)
+    if (pos.x - br < -boundary) {
+        pos.x = -boundary + br;
+        float v_close = fabsf(vel3.x);
+        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
+        vel3.x = -vel3.x * RESTITUTION;
+        apply_boundary_friction(vel3, omega,
+            make_float3( 1.0f, 0.0f, 0.0f),
+            make_float3(-br,   0.0f, 0.0f),
+            j_n, inv_mass, inv_I, q);
+    }
+    // +X wall, n = (-1,0,0), r = (+br,0,0)
+    if (pos.x + br > boundary) {
+        pos.x = boundary - br;
+        float v_close = fabsf(vel3.x);
+        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
+        vel3.x = -vel3.x * RESTITUTION;
+        apply_boundary_friction(vel3, omega,
+            make_float3(-1.0f, 0.0f, 0.0f),
+            make_float3(+br,   0.0f, 0.0f),
+            j_n, inv_mass, inv_I, q);
+    }
+    // -Z wall, n = (0,0,1), r = (0,0,-br)
+    if (pos.z - br < -boundary) {
+        pos.z = -boundary + br;
+        float v_close = fabsf(vel3.z);
+        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
+        vel3.z = -vel3.z * RESTITUTION;
+        apply_boundary_friction(vel3, omega,
+            make_float3(0.0f, 0.0f,  1.0f),
+            make_float3(0.0f, 0.0f, -br),
+            j_n, inv_mass, inv_I, q);
+    }
+    // +Z wall, n = (0,0,-1), r = (0,0,+br)
+    if (pos.z + br > boundary) {
+        pos.z = boundary - br;
+        float v_close = fabsf(vel3.z);
+        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
+        vel3.z = -vel3.z * RESTITUTION;
+        apply_boundary_friction(vel3, omega,
+            make_float3(0.0f, 0.0f, -1.0f),
+            make_float3(0.0f, 0.0f, +br),
+            j_n, inv_mass, inv_I, q);
     }
 
+    vel.x = vel3.x; vel.y = vel3.y; vel.z = vel3.z;
     positions[i]  = pos;
     velocities[i] = vel;
+
+    // Angular damping (air resistance / internal friction)
+    omega.x *= ANGULAR_DAMPING;
+    omega.y *= ANGULAR_DAMPING;
+    omega.z *= ANGULAR_DAMPING;
+
+    // Quaternion integration from (possibly updated) angular velocity
+    float4 dq;
+    dq.x =  0.5f*( omega.x*q.w + omega.z*q.y - omega.y*q.z);
+    dq.y =  0.5f*( omega.y*q.w - omega.z*q.x + omega.x*q.z);
+    dq.z =  0.5f*( omega.z*q.w + omega.y*q.x - omega.x*q.y);
+    dq.w =  0.5f*(-omega.x*q.x - omega.y*q.y - omega.z*q.z);
+
+    q.x += dq.x * dt; q.y += dq.y * dt; q.z += dq.z * dt; q.w += dq.w * dt;
+    float inv_len = rsqrtf(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    quats[i] = make_float4(q.x*inv_len, q.y*inv_len, q.z*inv_len, q.w*inv_len);
+
+    ang_vel[i] = make_float4(omega.x, omega.y, omega.z, 0.0f);
 }
 
 __global__ void insert_objects_kernel(
@@ -257,6 +416,11 @@ __global__ void collision_response_kernel(
     float4*                positions,
     float4*                vel_ping,
     float4*                vel_pong,
+    float4*                ang_ping,
+    float4*                ang_pong,
+    const float4*          quats,
+    const float3*          inv_inertia,
+    const gkSimplex*       simplices,
     const gkCollisionPair* pairs,
     const gkFloat*         distances,
     float                  epsilon,
@@ -273,28 +437,104 @@ __global__ void collision_response_kernel(
 
     float4 posA = positions[idA], posB = positions[idB];
     float4 velA = vel_ping[idA],  velB = vel_ping[idB];
+    float4 qA   = quats[idA],     qB   = quats[idB];
+    float3 omgA = make_float3(ang_ping[idA].x, ang_ping[idA].y, ang_ping[idA].z);
+    float3 omgB = make_float3(ang_ping[idB].x, ang_ping[idB].y, ang_ping[idB].z);
+    float3 iA   = inv_inertia[idA];
+    float3 iB   = inv_inertia[idB];
 
+    // Center-to-center direction (fallback normal)
     float dx = posB.x - posA.x, dy = posB.y - posA.y, dz = posB.z - posA.z;
     float dist = sqrtf(dx*dx + dy*dy + dz*dz);
     if (dist < 0.0001f) return;
-
     float inv_d = 1.0f / dist;
-    float nx = dx*inv_d, ny = dy*inv_d, nz = dz*inv_d;
 
-    float rvx = velB.x - velA.x, rvy = velB.y - velA.y, rvz = velB.z - velA.z;
+    // Contact normal and point from GJK witness points (world space)
+    float wAx = (float)simplices[p].witnesses[0][0];
+    float wAy = (float)simplices[p].witnesses[0][1];
+    float wAz = (float)simplices[p].witnesses[0][2];
+    float wBx = (float)simplices[p].witnesses[1][0];
+    float wBy = (float)simplices[p].witnesses[1][1];
+    float wBz = (float)simplices[p].witnesses[1][2];
+
+    float wdx = wBx - wAx, wdy = wBy - wAy, wdz = wBz - wAz;
+    float wdist = sqrtf(wdx*wdx + wdy*wdy + wdz*wdz);
+
+    float nx, ny, nz;
+    float3 contact_pt;
+    if (wdist > 0.001f) {
+        float inv_wd = 1.0f / wdist;
+        nx = wdx * inv_wd; ny = wdy * inv_wd; nz = wdz * inv_wd;
+        contact_pt = make_float3((wAx+wBx)*0.5f, (wAy+wBy)*0.5f, (wAz+wBz)*0.5f);
+    } else {
+        // Witnesses converged (deep penetration) — fall back to center-to-center
+        nx = dx * inv_d; ny = dy * inv_d; nz = dz * inv_d;
+        contact_pt = make_float3(
+            posA.x + nx * posA.w,
+            posA.y + ny * posA.w,
+            posA.z + nz * posA.w);
+    }
+
+    // Contact arms (world space)
+    float3 rA = make_float3(contact_pt.x - posA.x, contact_pt.y - posA.y, contact_pt.z - posA.z);
+    float3 rB = make_float3(contact_pt.x - posB.x, contact_pt.y - posB.y, contact_pt.z - posB.z);
+
+    // Linear + angular velocity at contact point
+    float3 vA_ang = make_float3(omgA.y*rA.z - omgA.z*rA.y,
+                                 omgA.z*rA.x - omgA.x*rA.z,
+                                 omgA.x*rA.y - omgA.y*rA.x);
+    float3 vB_ang = make_float3(omgB.y*rB.z - omgB.z*rB.y,
+                                 omgB.z*rB.x - omgB.x*rB.z,
+                                 omgB.x*rB.y - omgB.y*rB.x);
+
+    float rvx = (velB.x + vB_ang.x) - (velA.x + vA_ang.x);
+    float rvy = (velB.y + vB_ang.y) - (velA.y + vA_ang.y);
+    float rvz = (velB.z + vB_ang.z) - (velA.z + vA_ang.z);
     float vn = rvx*nx + rvy*ny + rvz*nz;
     if (vn > 0.0f) return;
 
-    float inv_mA = 1.0f / velA.w;  // mass stored in .w
-    float inv_mB = 1.0f / velB.w;
-    float j = -(1.0f + RESTITUTION) * vn / (inv_mA + inv_mB);
+    // Angular contributions to impulse denominator
+    // tA_world = rA × n
+    float3 tA_world = make_float3(rA.y*nz - rA.z*ny, rA.z*nx - rA.x*nz, rA.x*ny - rA.y*nx);
+    // tB_world = rB × n
+    float3 tB_world = make_float3(rB.y*nz - rB.z*ny, rB.z*nx - rB.x*nz, rB.x*ny - rB.y*nx);
 
+    // Rotate to body frame, apply diagonal inverse inertia
+    float3 tA_body = quat_rotate_inv(qA, tA_world);
+    float3 IA_tA   = make_float3(iA.x*tA_body.x, iA.y*tA_body.y, iA.z*tA_body.z);
+    float3 tB_body = quat_rotate_inv(qB, tB_world);
+    float3 IB_tB   = make_float3(iB.x*tB_body.x, iB.y*tB_body.y, iB.z*tB_body.z);
+
+    // Dot product is invariant under rotation — compute in body frame
+    float ang_denom_A = tA_body.x*IA_tA.x + tA_body.y*IA_tA.y + tA_body.z*IA_tA.z;
+    float ang_denom_B = tB_body.x*IB_tB.x + tB_body.y*IB_tB.y + tB_body.z*IB_tB.z;
+
+    float inv_mA = 1.0f / velA.w;
+    float inv_mB = 1.0f / velB.w;
+    float j = -(1.0f + RESTITUTION) * vn / (inv_mA + inv_mB + ang_denom_A + ang_denom_B);
+
+    // Linear impulse
     atomicAdd(&vel_pong[idA].x, -j * nx * inv_mA);
     atomicAdd(&vel_pong[idA].y, -j * ny * inv_mA);
     atomicAdd(&vel_pong[idA].z, -j * nz * inv_mA);
     atomicAdd(&vel_pong[idB].x,  j * nx * inv_mB);
     atomicAdd(&vel_pong[idB].y,  j * ny * inv_mB);
     atomicAdd(&vel_pong[idB].z,  j * nz * inv_mB);
+
+    // Angular impulse: delta_omega = R * (inv_I_body * (R^T * (r × j*n)))
+    // For A: impulse is -j*n (A pushes back), so cross = rA × (-j*n) = -j * tA_world
+    float3 dOmgA_body  = make_float3(-j*IA_tA.x, -j*IA_tA.y, -j*IA_tA.z);
+    float3 dOmgA_world = quat_rotate(qA, dOmgA_body);
+    atomicAdd(&ang_pong[idA].x, dOmgA_world.x);
+    atomicAdd(&ang_pong[idA].y, dOmgA_world.y);
+    atomicAdd(&ang_pong[idA].z, dOmgA_world.z);
+
+    // For B: impulse is +j*n, so cross = rB × (j*n) = j * tB_world
+    float3 dOmgB_body  = make_float3(j*IB_tB.x, j*IB_tB.y, j*IB_tB.z);
+    float3 dOmgB_world = quat_rotate(qB, dOmgB_body);
+    atomicAdd(&ang_pong[idB].x, dOmgB_world.x);
+    atomicAdd(&ang_pong[idB].y, dOmgB_world.y);
+    atomicAdd(&ang_pong[idB].z, dOmgB_world.z);
 }
 
 __global__ void init_polytopes_kernel(
@@ -315,7 +555,13 @@ __global__ void init_polytopes_kernel(
 __global__ void copy_positions_to_gl_kernel(float4* gl_buf, const float4* positions, int num_objects) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_objects) return;
-    gl_buf[i] = positions[i];  // xyz = world pos, w = bounding_radius (unused by GL)
+    gl_buf[i] = positions[i];
+}
+
+__global__ void copy_quats_to_gl_kernel(float4* gl_buf, const float4* quats, int num_objects) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= num_objects) return;
+    gl_buf[i] = quats[i];
 }
 
 // ============================================================================
@@ -326,7 +572,8 @@ __global__ void copy_positions_to_gl_kernel(float4* gl_buf, const float4* positi
 extern "C" {
 #endif
 
-bool sim_init(const ObjectInitData* objects, int num_objects, unsigned int gl_pos_buffer) {
+bool sim_init(const ObjectInitData* objects, int num_objects,
+              unsigned int gl_pos_buffer, unsigned int gl_quat_buffer) {
     g_num_objects = num_objects;
     g_max_pairs   = num_objects * 50;
 
@@ -350,10 +597,12 @@ bool sim_init(const ObjectInitData* objects, int num_objects, unsigned int gl_po
     }
 
     // Build CPU-side physics arrays
-    float4* h_positions = (float4*)malloc(num_objects * sizeof(float4));
-    float4* h_velocities = (float4*)malloc(num_objects * sizeof(float4));
-    float4* h_quats      = (float4*)malloc(num_objects * sizeof(float4));
-    float3* h_scales     = (float3*)malloc(num_objects * sizeof(float3));
+    float4* h_positions    = (float4*)malloc(num_objects * sizeof(float4));
+    float4* h_velocities   = (float4*)malloc(num_objects * sizeof(float4));
+    float4* h_quats        = (float4*)malloc(num_objects * sizeof(float4));
+    float4* h_ang_vel      = (float4*)malloc(num_objects * sizeof(float4));
+    float3* h_inv_inertia  = (float3*)malloc(num_objects * sizeof(float3));
+    float3* h_scales       = (float3*)malloc(num_objects * sizeof(float3));
 
     for (int i = 0; i < num_objects; i++) {
         h_positions[i]  = make_float4(objects[i].position[0], objects[i].position[1],
@@ -361,6 +610,10 @@ bool sim_init(const ObjectInitData* objects, int num_objects, unsigned int gl_po
         h_velocities[i] = make_float4(objects[i].velocity[0], objects[i].velocity[1],
                                       objects[i].velocity[2], objects[i].mass);
         h_quats[i]      = make_float4(0.0f, 0.0f, 0.0f, 1.0f);  // identity
+        h_ang_vel[i]    = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        h_inv_inertia[i] = make_float3(objects[i].inv_inertia[0],
+                                       objects[i].inv_inertia[1],
+                                       objects[i].inv_inertia[2]);
         h_scales[i]     = make_float3(objects[i].scale[0], objects[i].scale[1], objects[i].scale[2]);
     }
 
@@ -369,6 +622,9 @@ bool sim_init(const ObjectInitData* objects, int num_objects, unsigned int gl_po
     CUDA_CHECK(cudaMalloc(&d_vel_buf[0],   num_objects * sizeof(float4)));
     CUDA_CHECK(cudaMalloc(&d_vel_buf[1],   num_objects * sizeof(float4)));
     CUDA_CHECK(cudaMalloc(&d_quats,        num_objects * sizeof(float4)));
+    CUDA_CHECK(cudaMalloc(&d_ang_buf[0],   num_objects * sizeof(float4)));
+    CUDA_CHECK(cudaMalloc(&d_ang_buf[1],   num_objects * sizeof(float4)));
+    CUDA_CHECK(cudaMalloc(&d_inv_inertia,  num_objects * sizeof(float3)));
     CUDA_CHECK(cudaMalloc(&d_scales,       num_objects * sizeof(float3)));
     CUDA_CHECK(cudaMalloc(&d_verts_local,  g_total_verts * sizeof(float3)));
     CUDA_CHECK(cudaMalloc(&d_verts_world,  g_total_verts * sizeof(float3)));
@@ -392,24 +648,31 @@ bool sim_init(const ObjectInitData* objects, int num_objects, unsigned int gl_po
     CUDA_CHECK(cudaMemcpy(d_vel_buf[0],   h_velocities,  num_objects * sizeof(float4), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_vel_buf[1],   h_velocities,  num_objects * sizeof(float4), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_quats,        h_quats,       num_objects * sizeof(float4), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_ang_buf[0],   h_ang_vel,     num_objects * sizeof(float4), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_ang_buf[1],   h_ang_vel,     num_objects * sizeof(float4), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_inv_inertia,  h_inv_inertia, num_objects * sizeof(float3), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_scales,       h_scales,      num_objects * sizeof(float3), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_vert_offsets, h_vert_offsets, num_objects * sizeof(int),   cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_vert_counts,  h_vert_counts,  num_objects * sizeof(int),   cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_verts_local,  h_verts_local,  g_total_verts * 3 * sizeof(float), cudaMemcpyHostToDevice));
 
-    // Init polytope coord pointers (point into d_verts_world)
+    // Init polytope coord pointers
     int blocks = (num_objects + BLOCK_SIZE - 1) / BLOCK_SIZE;
     init_polytopes_kernel<<<blocks, BLOCK_SIZE>>>(
         d_polytopes, d_verts_world, d_vert_offsets, d_vert_counts, num_objects);
     CUDA_CHECK_LAST();
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    // Register GL position buffer with CUDA
+    // Register GL buffers with CUDA
     CUDA_CHECK(cudaGraphicsGLRegisterBuffer(&g_gl_pos_resource,
                                             gl_pos_buffer,
                                             cudaGraphicsRegisterFlagsWriteDiscard));
+    CUDA_CHECK(cudaGraphicsGLRegisterBuffer(&g_gl_quat_resource,
+                                            gl_quat_buffer,
+                                            cudaGraphicsRegisterFlagsWriteDiscard));
 
-    free(h_positions); free(h_velocities); free(h_quats); free(h_scales);
+    free(h_positions); free(h_velocities); free(h_quats);
+    free(h_ang_vel); free(h_inv_inertia); free(h_scales);
     free(h_vert_offsets); free(h_vert_counts); free(h_verts_local);
 
     g_vel_ping = 0; g_vel_pong = 1;
@@ -421,9 +684,15 @@ void sim_cleanup(void) {
         cudaGraphicsUnregisterResource(g_gl_pos_resource);
         g_gl_pos_resource = nullptr;
     }
+    if (g_gl_quat_resource) {
+        cudaGraphicsUnregisterResource(g_gl_quat_resource);
+        g_gl_quat_resource = nullptr;
+    }
     cudaFree(d_positions);
     cudaFree(d_vel_buf[0]); cudaFree(d_vel_buf[1]);
     cudaFree(d_quats);
+    cudaFree(d_ang_buf[0]); cudaFree(d_ang_buf[1]);
+    cudaFree(d_inv_inertia);
     cudaFree(d_scales);
     cudaFree(d_verts_local); cudaFree(d_verts_world);
     cudaFree(d_vert_offsets); cudaFree(d_vert_counts);
@@ -490,9 +759,9 @@ void sim_step(const PhysicsParams* params) {
     int num_pairs = g_num_pairs;
     int obj_blocks  = (num_objs  + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    // 1. Integrate physics
+    // 1. Integrate physics (position, angular velocity → quaternion, boundary friction)
     physics_update_kernel<<<obj_blocks, BLOCK_SIZE>>>(
-        d_positions, d_vel_buf[g_vel_ping], d_scales,
+        d_positions, d_vel_buf[g_vel_ping], d_ang_buf[g_vel_ping], d_quats, d_inv_inertia,
         num_objs, params->delta_time, params->gravity[1], params->damping, params->boundary);
     CUDA_CHECK_LAST();
 
@@ -513,14 +782,18 @@ void sim_step(const PhysicsParams* params) {
             d_polytopes, d_collision_pairs, d_simplices, d_distances, num_pairs);
         CUDA_CHECK_LAST();
 
-        // 4. Collision response (ping → pong)
+        // 4. Collision response (ping → pong, linear + angular)
         CUDA_CHECK(cudaMemcpy(d_vel_buf[g_vel_pong], d_vel_buf[g_vel_ping],
+                              num_objs * sizeof(float4), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(d_ang_buf[g_vel_pong], d_ang_buf[g_vel_ping],
                               num_objs * sizeof(float4), cudaMemcpyDeviceToDevice));
 
         int pair_blocks = (num_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
         collision_response_kernel<<<pair_blocks, BLOCK_SIZE>>>(
             d_positions,
             d_vel_buf[g_vel_ping], d_vel_buf[g_vel_pong],
+            d_ang_buf[g_vel_ping], d_ang_buf[g_vel_pong],
+            d_quats, d_inv_inertia, d_simplices,
             d_collision_pairs, d_distances,
             params->collision_epsilon, num_pairs, num_objs);
         CUDA_CHECK_LAST();
@@ -532,16 +805,23 @@ void sim_step(const PhysicsParams* params) {
 
 void sim_copy_to_gl(void) {
     size_t size;
-    float4* gl_ptr = nullptr;
-
-    CUDA_CHECK(cudaGraphicsMapResources(1, &g_gl_pos_resource, 0));
-    CUDA_CHECK(cudaGraphicsResourceGetMappedPointer((void**)&gl_ptr, &size, g_gl_pos_resource));
-
     int blocks = (g_num_objects + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    copy_positions_to_gl_kernel<<<blocks, BLOCK_SIZE>>>(gl_ptr, d_positions, g_num_objects);
+
+    // Map both resources in a single driver call
+    cudaGraphicsResource_t resources[2] = { g_gl_pos_resource, g_gl_quat_resource };
+    CUDA_CHECK(cudaGraphicsMapResources(2, resources, 0));
+
+    float4* pos_ptr = nullptr;
+    CUDA_CHECK(cudaGraphicsResourceGetMappedPointer((void**)&pos_ptr, &size, g_gl_pos_resource));
+    copy_positions_to_gl_kernel<<<blocks, BLOCK_SIZE>>>(pos_ptr, d_positions, g_num_objects);
     CUDA_CHECK_LAST();
 
-    CUDA_CHECK(cudaGraphicsUnmapResources(1, &g_gl_pos_resource, 0));
+    float4* quat_ptr = nullptr;
+    CUDA_CHECK(cudaGraphicsResourceGetMappedPointer((void**)&quat_ptr, &size, g_gl_quat_resource));
+    copy_quats_to_gl_kernel<<<blocks, BLOCK_SIZE>>>(quat_ptr, d_quats, g_num_objects);
+    CUDA_CHECK_LAST();
+
+    CUDA_CHECK(cudaGraphicsUnmapResources(2, resources, 0));
 }
 
 #ifdef __cplusplus

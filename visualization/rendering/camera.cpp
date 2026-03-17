@@ -139,9 +139,7 @@ void camera_update_controls(Camera3D* camera, float deltaTime) {
     }
 }
 
-void camera_reset(Camera3D* camera) {
-    // Get boundary from sim_config.h (assuming BOUNDARY = 30.0f)
-    float boundary = 30.0f;
+void camera_reset(Camera3D* camera, float boundary) {
     camera->position = glm::vec3(0.0f, boundary * 0.8f, boundary * 1.6f);
     camera->target = glm::vec3(0.0f, -2.0f, 0.0f);
     camera->up = glm::vec3(0.0f, 1.0f, 0.0f);

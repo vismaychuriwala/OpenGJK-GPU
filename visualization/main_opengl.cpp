@@ -62,12 +62,14 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         auto rf = [&](float lo, float hi) { return lo + (float)rand() / RAND_MAX * (hi - lo); };
 
         ShapeType shape = (ShapeType)(i % SHAPE_COUNT);
-        float s = rf(0.5f, 1.8f);
+        float sx = rf(0.5f, 1.8f);
+        float sy = rf(0.5f, 1.8f);
+        float sz = rf(0.5f, 1.8f);
 
         int gjk_count = 0;
         float* gjk_verts = build_gjk_verts(shape, &gjk_count);
 
-        float scale[3] = { s, s, s };
+        float scale[3] = { sx, sy, sz };
         float br = compute_bounding_radius(gjk_verts, gjk_count, scale);
 
         objects[i].position[0] = x_off + col * spacing + rn();
@@ -78,17 +80,41 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         objects[i].velocity[1] = rn();
         objects[i].velocity[2] = ((i % 2) - 0.5f) * 2.0f + rn();
 
-        objects[i].scale[0] = s;
-        objects[i].scale[1] = s;
-        objects[i].scale[2] = s;
+        objects[i].scale[0] = sx;
+        objects[i].scale[1] = sy;
+        objects[i].scale[2] = sz;
 
         memcpy(objects[i].color, colors[i % NUM_COLORS], sizeof(float) * 4);
 
-        objects[i].mass             = s * s * s;
-        objects[i].bounding_radius  = br;
-        objects[i].gjk_verts        = gjk_verts;
-        objects[i].num_gjk_verts    = gjk_count;
-        objects[i].mesh_id          = g_mesh_ids[shape];
+        float mass = sx * sy * sz;
+        objects[i].mass            = mass;
+        objects[i].bounding_radius = br;
+        objects[i].gjk_verts       = gjk_verts;
+        objects[i].num_gjk_verts   = gjk_count;
+        objects[i].mesh_id         = g_mesh_ids[shape];
+
+        // Inverse principal inertia moments in body frame.
+        // All four shapes have isotropic second moment: <x²> = <y²> = <z²> = k
+        // With non-uniform scale: Ixx = mass*k*(sy²+sz²), etc.
+        // k values (derived from polyhedral volume integrals):
+        //   Box          (half-extents ±0.5):   k = 1/12
+        //   Tetrahedron  (unit circumradius 1):  k = 1/15
+        //   Octahedron   (unit circumradius 1):  k = 1/10
+        //   Icosahedron  (unit circumradius 1):  k = (1 + 1/√5) / 10
+        float k;
+        switch (shape) {
+            case SHAPE_BOX:         k = 1.0f / 12.0f; break;
+            case SHAPE_TETRAHEDRON: k = 1.0f / 15.0f; break;
+            case SHAPE_OCTAHEDRON:  k = 1.0f / 10.0f; break;
+            case SHAPE_ICOSAHEDRON: k = (1.0f + 1.0f / std::sqrt(5.0f)) / 10.0f; break;
+            default:                k = 1.0f / 10.0f; break;
+        }
+        float Ixx = mass * k * (sy*sy + sz*sz);
+        float Iyy = mass * k * (sx*sx + sz*sz);
+        float Izz = mass * k * (sx*sx + sy*sy);
+        objects[i].inv_inertia[0] = 1.0f / Ixx;
+        objects[i].inv_inertia[1] = 1.0f / Iyy;
+        objects[i].inv_inertia[2] = 1.0f / Izz;
     }
 }
 
@@ -100,8 +126,8 @@ static void free_scene_gjk_verts(ObjectInitData* objects, int num_objects) {
 }
 
 int main(void) {
-    const int screenWidth  = 1200;
-    const int screenHeight = 800;
+    int screenWidth  = 1200;
+    int screenHeight = 800;
 
     if (!glfwInit()) { fprintf(stderr, "Failed to init GLFW\n"); return -1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -146,14 +172,21 @@ int main(void) {
     glBufferData(GL_ARRAY_BUFFER, NUM_OBJECTS * sizeof(float) * 4, nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
+    // Create the dynamic quaternion buffer (float4 per object) — registered with CUDA in sim_init
+    GLuint gl_quat_buffer;
+    glGenBuffers(1, &gl_quat_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, gl_quat_buffer);
+    glBufferData(GL_ARRAY_BUFFER, NUM_OBJECTS * sizeof(float) * 4, nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
     OpenGLRenderer renderer;
-    if (!renderer_init(&renderer, &atlas, objects, NUM_OBJECTS, gl_pos_buffer)) {
+    if (!renderer_init(&renderer, &atlas, objects, NUM_OBJECTS, gl_pos_buffer, gl_quat_buffer)) {
         fprintf(stderr, "Failed to init renderer\n"); return -1;
     }
     atlas_free(&atlas);  // uploaded to GPU, no longer needed
 
     // ---- CUDA sim init ----
-    if (!sim_init(objects, NUM_OBJECTS, gl_pos_buffer)) {
+    if (!sim_init(objects, NUM_OBJECTS, gl_pos_buffer, gl_quat_buffer)) {
         fprintf(stderr, "Failed to init sim\n"); return -1;
     }
     free_scene_gjk_verts(objects, NUM_OBJECTS);
@@ -189,11 +222,16 @@ int main(void) {
 
         input_update(window);
 
+        // Handle window resize
+        glfwGetFramebufferSize(window, &screenWidth, &screenHeight);
+        if (screenWidth > 0 && screenHeight > 0)
+            glViewport(0, 0, screenWidth, screenHeight);
+
         if (IsKeyPressed(GLFW_KEY_ESCAPE)) glfwSetWindowShouldClose(window, GLFW_TRUE);
-        if (IsKeyPressed(GLFW_KEY_R))      camera_reset(&camera);
+        if (IsKeyPressed(GLFW_KEY_R))      camera_reset(&camera, boundary);
 
         camera_update_controls(&camera, deltaTime);
-        camera_update_matrices(&camera, (float)screenWidth / screenHeight);
+        camera_update_matrices(&camera, screenHeight > 0 ? (float)screenWidth / screenHeight : 1.0f);
 
         // Physics: fixed timestep
         physics_accum += now - last_physics_time;
@@ -220,6 +258,7 @@ int main(void) {
 
     renderer_cleanup(&renderer);
     glDeleteBuffers(1, &gl_pos_buffer);
+    glDeleteBuffers(1, &gl_quat_buffer);
     sim_cleanup();
     glfwDestroyWindow(window);
     glfwTerminate();

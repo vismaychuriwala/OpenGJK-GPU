@@ -25,7 +25,8 @@ struct OpenGLRenderer {
     // dynamic position buffer (gl_pos_buffer) is owned by the caller and
     // registered with CUDA; we receive it in renderer_init and store a copy
 
-    GLuint dynamic_pos_buffer;  // float4 per object, written by CUDA each frame
+    GLuint dynamic_pos_buffer;   // float4 per object (xyz=world pos), written by CUDA each frame
+    GLuint dynamic_quat_buffer;  // float4 per object (xyzw=quaternion), written by CUDA each frame
 
     // Draw indirect
     GLuint draw_cmd_buffer;
@@ -36,12 +37,13 @@ struct OpenGLRenderer {
     GLuint ground_vbo;
 };
 
-// dynamic_pos_buffer: the same GL buffer passed to sim_init (registered with CUDA)
+// dynamic_pos_buffer / dynamic_quat_buffer: the same GL buffers passed to sim_init (registered with CUDA)
 bool renderer_init(OpenGLRenderer* renderer,
                    const MeshAtlas* atlas,
                    const ObjectInitData* objects,
                    int num_objects,
-                   GLuint dynamic_pos_buffer);
+                   GLuint dynamic_pos_buffer,
+                   GLuint dynamic_quat_buffer);
 
 void renderer_cleanup(OpenGLRenderer* renderer);
 void renderer_draw(OpenGLRenderer* renderer,

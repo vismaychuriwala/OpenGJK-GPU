@@ -5,7 +5,7 @@
 // SHARED SIMULATION CONFIGURATION
 // ============================================================================
 
-#define NUM_OBJECTS 5000           // Number of physics objects
+#define NUM_OBJECTS 1000           // Number of physics objects
 #define MAX_PAIRS (NUM_OBJECTS * 50)  // Preallocated pair buffer (avg 50 neighbors per object with broad-phase)
 
 // Kernel launch configuration
@@ -24,9 +24,11 @@
 #define GRAVITY_Y -9.80665f
 #define FPS 60.0f
 #define DELTA_TIME (1.0f / FPS)
-#define DAMPING_COEFF 0.95f
+#define DAMPING_COEFF 0.9f
 #define COLLISION_EPSILON 0.1f
-#define RESTITUTION 0.8f
+#define RESTITUTION 0.99f
+#define FRICTION_COEFF 0.2f
+#define ANGULAR_DAMPING 0.999f  // multiplied each physics step (~0.99^60 ≈ 0.55 per second)
 
 // Helper macro to compute boundary size based on object count
 #define COMPUTE_BOUNDARY(num_objects) \

@@ -1,9 +1,45 @@
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <libgen.h>
+#endif
 #include "opengl_renderer.h"
 #include "../sim_config.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+// Resolve a relative path against the executable's directory so that shader
+// loading works regardless of the current working directory.
+static void resolve_exe_relative(const char* relative, char* out, size_t out_size) {
+#ifdef _WIN32
+    char exe_path[MAX_PATH];
+    GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+    // Strip filename to get directory
+    char* last_sep = strrchr(exe_path, '\\');
+    if (!last_sep) last_sep = strrchr(exe_path, '/');
+    if (last_sep) *(last_sep + 1) = '\0';
+    else exe_path[0] = '\0';
+    snprintf(out, out_size, "%s%s", exe_path, relative);
+#else
+    char exe_path[1024];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len > 0) {
+        exe_path[len] = '\0';
+        char* dir = dirname(exe_path);
+        snprintf(out, out_size, "%s/%s", dir, relative);
+    } else {
+        snprintf(out, out_size, "%s", relative);
+    }
+#endif
+}
 
 // ============================================================================
 // Shaders
@@ -14,7 +50,14 @@ GLuint load_shader(const char* path, GLenum shader_type) {
     if (!f) { fprintf(stderr, "Cannot open shader: %s\n", path); return 0; }
     fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
     char* src = (char*)malloc(len + 1);
-    fread(src, 1, len, f); src[len] = '\0'; fclose(f);
+    size_t read_bytes = fread(src, 1, len, f);
+    fclose(f);
+    if ((long)read_bytes != len) {
+        fprintf(stderr, "Shader partial read (%s): got %zu of %ld bytes\n", path, read_bytes, len);
+        free(src);
+        return 0;
+    }
+    src[len] = '\0';
 
     GLuint shader = glCreateShader(shader_type);
     glShaderSource(shader, 1, (const char**)&src, NULL);
@@ -25,6 +68,7 @@ GLuint load_shader(const char* path, GLenum shader_type) {
     if (!ok) {
         char log[512]; glGetShaderInfoLog(shader, 512, NULL, log);
         fprintf(stderr, "Shader compile error (%s):\n%s\n", path, log);
+        glDeleteShader(shader);
         return 0;
     }
     return shader;
@@ -33,7 +77,11 @@ GLuint load_shader(const char* path, GLenum shader_type) {
 GLuint create_shader_program(const char* vert_path, const char* frag_path) {
     GLuint vs = load_shader(vert_path, GL_VERTEX_SHADER);
     GLuint fs = load_shader(frag_path, GL_FRAGMENT_SHADER);
-    if (!vs || !fs) return 0;
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
 
     GLuint prog = glCreateProgram();
     glAttachShader(prog, vs); glAttachShader(prog, fs);
@@ -44,6 +92,7 @@ GLuint create_shader_program(const char* vert_path, const char* frag_path) {
     if (!ok) {
         char log[512]; glGetProgramInfoLog(prog, 512, NULL, log);
         fprintf(stderr, "Shader link error:\n%s\n", log);
+        glDeleteProgram(prog);
         return 0;
     }
     return prog;
@@ -79,17 +128,25 @@ bool renderer_init(OpenGLRenderer* renderer,
                    const MeshAtlas* atlas,
                    const ObjectInitData* objects,
                    int num_objects,
-                   GLuint dynamic_pos_buffer)
+                   GLuint dynamic_pos_buffer,
+                   GLuint dynamic_quat_buffer)
 {
     memset(renderer, 0, sizeof(OpenGLRenderer));
-    renderer->num_objects        = num_objects;
-    renderer->dynamic_pos_buffer = dynamic_pos_buffer;
+    renderer->num_objects         = num_objects;
+    renderer->dynamic_pos_buffer  = dynamic_pos_buffer;
+    renderer->dynamic_quat_buffer = dynamic_quat_buffer;
 
-    // --- Shaders ---
+    // --- Shaders (resolve paths relative to executable) ---
+    char path_buf[4][1024];
+    resolve_exe_relative("shaders/object.vert", path_buf[0], sizeof(path_buf[0]));
+    resolve_exe_relative("shaders/object.frag", path_buf[1], sizeof(path_buf[1]));
+    resolve_exe_relative("shaders/ground.vert", path_buf[2], sizeof(path_buf[2]));
+    resolve_exe_relative("shaders/ground.frag", path_buf[3], sizeof(path_buf[3]));
+
     renderer->object_shader.program_id =
-        create_shader_program("shaders/object.vert", "shaders/object.frag");
+        create_shader_program(path_buf[0], path_buf[1]);
     renderer->ground_shader.program_id =
-        create_shader_program("shaders/ground.vert", "shaders/ground.frag");
+        create_shader_program(path_buf[2], path_buf[3]);
 
     if (!renderer->object_shader.program_id || !renderer->ground_shader.program_id) {
         fprintf(stderr, "Failed to load shaders\n");
@@ -245,6 +302,7 @@ void renderer_draw(OpenGLRenderer* renderer,
     // Bind SSBOs
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, renderer->static_ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, renderer->dynamic_pos_buffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, renderer->dynamic_quat_buffer);
 
     // Draw all objects in one call
     glBindVertexArray(renderer->mesh_vao);
