@@ -159,6 +159,8 @@ bool renderer_init(OpenGLRenderer* renderer,
         glGetUniformLocation(renderer->object_shader.program_id, "uView");
     renderer->object_shader.uniform_light_dir =
         glGetUniformLocation(renderer->object_shader.program_id, "uLightDir");
+    renderer->object_shader.uniform_camera_pos =
+        glGetUniformLocation(renderer->object_shader.program_id, "uCameraPos");
 
     renderer->ground_shader.uniform_projection =
         glGetUniformLocation(renderer->ground_shader.program_id, "uProjection");
@@ -298,6 +300,11 @@ void renderer_draw(OpenGLRenderer* renderer,
     glm::vec3 light_dir(0.5f, 0.7f, 0.3f);
     if (renderer->object_shader.uniform_light_dir >= 0)
         glUniform3fv(renderer->object_shader.uniform_light_dir, 1, &light_dir[0]);
+
+    // Extract camera world position from view matrix: pos = -(R^T * t)
+    glm::vec3 cam_pos = -glm::transpose(glm::mat3(view)) * glm::vec3(view[3]);
+    if (renderer->object_shader.uniform_camera_pos >= 0)
+        glUniform3fv(renderer->object_shader.uniform_camera_pos, 1, &cam_pos[0]);
 
     // Bind SSBOs
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, renderer->static_ssbo);

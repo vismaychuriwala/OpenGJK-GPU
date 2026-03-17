@@ -335,26 +335,7 @@ __global__ void physics_update_kernel(
     positions[i]  = pos;
     velocities[i] = vel;
 
-    // Gyroscopic correction: subtract I^-1 * (ω × (I·ω)) * dt
-    // Prevents non-spherical objects from gaining spin energy on the wrong axis.
-    {
-        float3 ob   = quat_rotate_inv(q, omega);               // ω in body frame
-        float3 Iob  = make_float3(ob.x / inv_I.x,             // I·ω in body frame
-                                   ob.y / inv_I.y,
-                                   ob.z / inv_I.z);
-        float3 Iow  = quat_rotate(q, Iob);                    // I·ω in world frame
-        float3 gw   = make_float3(omega.y*Iow.z - omega.z*Iow.y,   // ω × (I·ω), world
-                                   omega.z*Iow.x - omega.x*Iow.z,
-                                   omega.x*Iow.y - omega.y*Iow.x);
-        float3 gb   = quat_rotate_inv(q, gw);                 // back to body frame
-        float3 dob  = make_float3(inv_I.x*gb.x, inv_I.y*gb.y, inv_I.z*gb.z); // I^-1 * gyro
-        float3 dow  = quat_rotate(q, dob);                    // back to world frame
-        omega.x -= dow.x * dt;
-        omega.y -= dow.y * dt;
-        omega.z -= dow.z * dt;
-    }
-
-    // Quaternion integration from (possibly updated) angular velocity
+    // Quaternion integration from angular velocity
     float4 dq;
     dq.x =  0.5f*( omega.x*q.w + omega.y*q.z - omega.z*q.y);
     dq.y =  0.5f*( omega.y*q.w + omega.z*q.x - omega.x*q.z);
@@ -422,9 +403,9 @@ __global__ void count_pairs_kernel(
             int other = grid_objects[cell_idx * MAX_OBJECTS_PER_CELL + i];
             if (other <= obj_id) continue;
             float4 opos = positions[other];
-            float dx = pos.x - opos.x, dy = pos.y - opos.y, dz = pos.z - opos.z;
+            float fx = pos.x - opos.x, fy = pos.y - opos.y, fz = pos.z - opos.z;
             float r_sum = pos.w + opos.w;  // w = bounding_radius
-            if (dx*dx + dy*dy + dz*dz < r_sum*r_sum) count++;
+            if (fx*fx + fy*fy + fz*fz < r_sum*r_sum) count++;
         }
     }
     pair_counts[obj_id] = count;
@@ -461,9 +442,9 @@ __global__ void generate_pairs_kernel(
             int other = grid_objects[cell_idx * MAX_OBJECTS_PER_CELL + i];
             if (other <= obj_id) continue;
             float4 opos = positions[other];
-            float dx = pos.x - opos.x, dy = pos.y - opos.y, dz = pos.z - opos.z;
+            float fx = pos.x - opos.x, fy = pos.y - opos.y, fz = pos.z - opos.z;
             float r_sum = pos.w + opos.w;
-            if (dx*dx + dy*dy + dz*dz >= r_sum*r_sum) continue;
+            if (fx*fx + fy*fy + fz*fz >= r_sum*r_sum) continue;
             int gidx = write_offset + local_idx;
             if (gidx >= max_pairs) return;
             pair_buffer[gidx].idx1 = obj_id;

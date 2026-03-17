@@ -9,6 +9,7 @@ struct ShaderProgram {
     GLint  uniform_projection;
     GLint  uniform_view;
     GLint  uniform_light_dir;
+    GLint  uniform_camera_pos;
 };
 
 struct OpenGLRenderer {

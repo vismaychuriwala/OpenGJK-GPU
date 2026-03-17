@@ -14,18 +14,30 @@
 #include "sim_config.h"
 #include "sim_api.h"
 
-static float colors[][4] = {
-    {0.9f, 0.2f, 0.2f, 1.0f},
-    {0.2f, 0.2f, 0.9f, 1.0f},
-    {0.2f, 0.9f, 0.2f, 1.0f},
-    {0.9f, 0.6f, 0.2f, 1.0f},
-    {0.7f, 0.2f, 0.9f, 1.0f},
-    {0.9f, 0.5f, 0.8f, 1.0f},
-    {0.5f, 0.9f, 0.2f, 1.0f},
-    {0.4f, 0.7f, 0.9f, 1.0f},
-    {0.6f, 0.2f, 0.3f, 1.0f},
-};
-static const int NUM_COLORS = sizeof(colors) / sizeof(colors[0]);
+// Golden-ratio HSV: spreads hues maximally across all objects
+static void hsv_to_rgb(float h, float s, float v, float* r, float* g, float* b) {
+    int   hi = (int)(h * 6.0f) % 6;
+    float f  = h * 6.0f - (int)(h * 6.0f);
+    float p  = v * (1.0f - s);
+    float q  = v * (1.0f - f * s);
+    float t  = v * (1.0f - (1.0f - f) * s);
+    switch (hi) {
+        case 0: *r = v; *g = t; *b = p; break;
+        case 1: *r = q; *g = v; *b = p; break;
+        case 2: *r = p; *g = v; *b = t; break;
+        case 3: *r = p; *g = q; *b = v; break;
+        case 4: *r = t; *g = p; *b = v; break;
+        default:*r = v; *g = p; *b = q; break;
+    }
+}
+
+static void object_color(int i, float* rgba) {
+    float hue = std::fmod(i * 0.618033988f, 1.0f);        // golden ratio
+    float sat = 0.65f + std::fmod(i * 0.127f, 0.25f);     // 0.65–0.90
+    float val = 0.75f + std::fmod(i * 0.211f, 0.20f);     // 0.75–0.95
+    hsv_to_rgb(hue, sat, val, &rgba[0], &rgba[1], &rgba[2]);
+    rgba[3] = 1.0f;
+}
 
 // Shape types, one mesh_id per type (filled at build time)
 enum ShapeType { SHAPE_ICOSAHEDRON = 0, SHAPE_BOX, SHAPE_TETRAHEDRON, SHAPE_OCTAHEDRON, SHAPE_COUNT };
@@ -84,7 +96,7 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         objects[i].scale[1] = sy;
         objects[i].scale[2] = sz;
 
-        memcpy(objects[i].color, colors[i % NUM_COLORS], sizeof(float) * 4);
+        object_color(i, objects[i].color);
 
         float mass = sx * sy * sz;
         objects[i].mass            = mass;
