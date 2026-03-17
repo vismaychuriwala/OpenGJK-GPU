@@ -68,6 +68,11 @@ static gkPolytope* d_polytopes;
 static gkSimplex*  d_simplices;
 static gkFloat*    d_distances;
 
+// EPA output buffers (allocated alongside GJK buffers)
+static gkFloat* d_epa_w1;
+static gkFloat* d_epa_w2;
+static gkFloat* d_epa_normals;
+
 // Broad-phase
 static int*              d_grid_counts;
 static int*              d_grid_objects;
@@ -462,9 +467,11 @@ __global__ void collision_response_kernel(
     float4*                ang_pong,
     const float4*          quats,
     const float3*          inv_inertia,
-    const gkSimplex*       simplices,
     const gkCollisionPair* pairs,
     const gkFloat*         distances,
+    const gkFloat*         epa_w1,
+    const gkFloat*         epa_w2,
+    const gkFloat*         epa_normals,
     float                  epsilon,
     int                    num_pairs,
     int                    num_objects)
@@ -485,36 +492,31 @@ __global__ void collision_response_kernel(
     float3 iA   = inv_inertia[idA];
     float3 iB   = inv_inertia[idB];
 
-    // Center-to-center direction (fallback normal)
-    float dx = posB.x - posA.x, dy = posB.y - posA.y, dz = posB.z - posA.z;
-    float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-    if (dist < 0.0001f) return;
-    float inv_d = 1.0f / dist;
+    // Contact normal and witnesses from EPA (valid for all collision cases)
+    float nx = (float)epa_normals[p*3];
+    float ny = (float)epa_normals[p*3 + 1];
+    float nz = (float)epa_normals[p*3 + 2];
+    float nlen = sqrtf(nx*nx + ny*ny + nz*nz);
+    if (nlen < 0.0001f) return;
+    float inv_n = 1.0f / nlen;
+    nx *= inv_n; ny *= inv_n; nz *= inv_n;
 
-    // Contact normal and point from GJK witness points (world space)
-    float wAx = (float)simplices[p].witnesses[0][0];
-    float wAy = (float)simplices[p].witnesses[0][1];
-    float wAz = (float)simplices[p].witnesses[0][2];
-    float wBx = (float)simplices[p].witnesses[1][0];
-    float wBy = (float)simplices[p].witnesses[1][1];
-    float wBz = (float)simplices[p].witnesses[1][2];
+    float eAx = (float)epa_w1[p*3], eAy = (float)epa_w1[p*3+1], eAz = (float)epa_w1[p*3+2];
+    float eBx = (float)epa_w2[p*3], eBy = (float)epa_w2[p*3+1], eBz = (float)epa_w2[p*3+2];
+    float3 rA = make_float3(eAx - posA.x, eAy - posA.y, eAz - posA.z);
+    float3 rB = make_float3(eBx - posB.x, eBy - posB.y, eBz - posB.z);
 
-    float wdx = wBx - wAx, wdy = wBy - wAy, wdz = wBz - wAz;
-    float wdist = sqrtf(wdx*wdx + wdy*wdy + wdz*wdz);
-
-    float nx, ny, nz;
-    float3 rA, rB;
-    if (wdist > 0.001f) {
-        float inv_wd = 1.0f / wdist;
-        nx = wdx * inv_wd; ny = wdy * inv_wd; nz = wdz * inv_wd;
-        // Use per-shape witness points directly — exact surface-to-center lever arms
-        rA = make_float3(wAx - posA.x, wAy - posA.y, wAz - posA.z);
-        rB = make_float3(wBx - posB.x, wBy - posB.y, wBz - posB.z);
-    } else {
-        // Witnesses converged (deep penetration) — fall back to center-to-center
-        nx = dx * inv_d; ny = dy * inv_d; nz = dz * inv_d;
-        rA = make_float3(nx * posA.w, ny * posA.w, nz * posA.w);
-        rB = make_float3(-nx * posB.w, -ny * posB.w, -nz * posB.w);
+    // Baumgarte position correction for penetrating pairs (EPA distance is negative = -depth)
+    if (distances[p] < 0.0f) {
+        float pen_depth = -distances[p];
+        float im_A = 1.0f / velA.w, im_B = 1.0f / velB.w;
+        float corr = BAUMGARTE_BETA * pen_depth / (im_A + im_B);
+        atomicAdd(&positions[idA].x, -corr * im_A * nx);
+        atomicAdd(&positions[idA].y, -corr * im_A * ny);
+        atomicAdd(&positions[idA].z, -corr * im_A * nz);
+        atomicAdd(&positions[idB].x,  corr * im_B * nx);
+        atomicAdd(&positions[idB].y,  corr * im_B * ny);
+        atomicAdd(&positions[idB].z,  corr * im_B * nz);
     }
 
     // Linear + angular velocity at contact point
@@ -671,6 +673,9 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
     CUDA_CHECK(cudaMalloc(&d_polytopes,    num_objects * sizeof(gkPolytope)));
     CUDA_CHECK(cudaMalloc(&d_simplices,    g_max_pairs * sizeof(gkSimplex)));
     CUDA_CHECK(cudaMalloc(&d_distances,    g_max_pairs * sizeof(gkFloat)));
+    CUDA_CHECK(cudaMalloc(&d_epa_w1,       g_max_pairs * 3 * sizeof(gkFloat)));
+    CUDA_CHECK(cudaMalloc(&d_epa_w2,       g_max_pairs * 3 * sizeof(gkFloat)));
+    CUDA_CHECK(cudaMalloc(&d_epa_normals,  g_max_pairs * 3 * sizeof(gkFloat)));
 
     // Compute runtime grid size from max bounding radius
     float max_br = 0.0f;
@@ -750,6 +755,7 @@ void sim_cleanup(void) {
     cudaFree(d_verts_local); cudaFree(d_verts_world);
     cudaFree(d_vert_offsets); cudaFree(d_vert_counts);
     cudaFree(d_polytopes); cudaFree(d_simplices); cudaFree(d_distances);
+    cudaFree(d_epa_w1); cudaFree(d_epa_w2); cudaFree(d_epa_normals);
     cudaFree(d_grid_counts); cudaFree(d_grid_objects);
     cudaFree(d_collision_pairs);
     cudaFree(d_pair_counts); cudaFree(d_pair_offsets);
@@ -830,6 +836,13 @@ void sim_step(const PhysicsParams* params) {
             num_pairs, d_polytopes, d_collision_pairs, d_simplices, d_distances);
         CUDA_CHECK_LAST();
 
+        // 3b. EPA: refines penetrating pairs (distance=0→negative depth) and
+        //     provides correct contact normals + witnesses for all collision cases
+        compute_epa_indexed_device(
+            num_pairs, d_polytopes, d_collision_pairs, d_simplices, d_distances,
+            d_epa_w1, d_epa_w2, d_epa_normals);
+        CUDA_CHECK_LAST();
+
         // 4. Collision response (ping → pong, linear + angular)
         CUDA_CHECK(cudaMemcpy(d_vel_buf[g_vel_pong], d_vel_buf[g_vel_ping],
                               num_objs * sizeof(float4), cudaMemcpyDeviceToDevice));
@@ -841,8 +854,9 @@ void sim_step(const PhysicsParams* params) {
             d_positions,
             d_vel_buf[g_vel_ping], d_vel_buf[g_vel_pong],
             d_ang_buf[g_vel_ping], d_ang_buf[g_vel_pong],
-            d_quats, d_inv_inertia, d_simplices,
+            d_quats, d_inv_inertia,
             d_collision_pairs, d_distances,
+            d_epa_w1, d_epa_w2, d_epa_normals,
             params->collision_epsilon, num_pairs, num_objs);
         CUDA_CHECK_LAST();
 

@@ -42,6 +42,7 @@
 #define RESTITUTION 0.9f
 #define FRICTION_COEFF 0.2f
 #define ANGULAR_DAMPING 0.999f  // multiplied each physics step
+#define BAUMGARTE_BETA  0.2f    // position correction fraction per step for penetrating pairs
 
 // Helper macro to compute boundary size based on object count
 #define COMPUTE_BOUNDARY(num_objects) \
