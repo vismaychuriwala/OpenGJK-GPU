@@ -1,43 +1,64 @@
 # OpenGJK Visualization
 
-Two visualization options: **OpenGL** (recommended, faster) and **Raylib** (legacy).
+GPU-accelerated rigid body physics simulation using GJK collision detection, rendered with OpenGL.
 
 ## Requirements
 
-### Compiler
-- **Visual Studio 2022/2026** with C++ build tools
-- **CUDA Toolkit 13.0+** (default: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0`)
-- Must use **x64 Native Tools Command Prompt**
+- **CMake 3.18+**
+- **Visual Studio 2022** with C++ build tools
+- **CUDA Toolkit 13.0+**
+- **GLFW 3.4** — extract to `C:\glfw-3.4.bin.WIN64`
+- **GLAD / GLM** — vendored in `include/`, no install needed
 
-### Libraries
+## Build
 
-**OpenGL version:**
-- **GLFW 3.4** - Download from https://www.glfw.org/download.html, extract to `C:\glfw-3.4.bin.WIN64`
-- **GLM** - Download from https://github.com/g-truc/glm/releases, extract to `C:\glm`
-- **GLAD** - Already included in `glad/` folder (generated from https://glad.dav1d.de/)
+### From `visualization/` (standalone)
 
-**Raylib version (legacy):**
-- **Raylib** - Download from https://github.com/raysan5/raylib/releases, extract to `C:\raylib` (needs `include/` and `lib/raylib.lib`)
+**CMake GUI:**
+1. Source: `visualization/`
+2. Build: `visualization/build`
+3. Configure → set generator to `Visual Studio 17 2022`, platform `x64`
+4. Adjust `GLFW_DIR` cache variable if your GLFW path differs
+5. Generate → Open Project → build `gjk_visualizer`
 
-## Build & Run
-
-### OpenGL Version (Recommended)
+**Command line:**
 ```cmd
 cd visualization
-build_opengl.bat
-gjk_visualizer_opengl.exe
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --target gjk_visualizer
 ```
 
-### Raylib Version (Legacy)
+### From repo root
+
 ```cmd
-cd visualization\old_raylib
-build_final.bat
-gjk_visualizer_gpu_only.exe
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --target gjk_visualizer
+```
+
+The executable is placed in `build/Release/` (or `build/bin/` when built from root). Shaders are copied automatically post-build.
+
+## Run
+
+```cmd
+build\Release\gjk_visualizer.exe
 ```
 
 ## Controls
-- **WASD** - Move camera
-- **Q/E** - Up/Down
-- **Mouse** - Rotate view (hold left button)
-- **Scroll** - Zoom
-- **W key** - Toggle wireframe (OpenGL only)
+
+| Key / Input | Action |
+|---|---|
+| WASD | Move camera |
+| Q / E | Up / Down |
+| Mouse (left drag) | Rotate view |
+| Scroll | Zoom |
+
+## Configuration
+
+Edit `sim_config.h` to change simulation parameters:
+
+| Constant | Default | Description |
+|---|---|---|
+| `NUM_OBJECTS` | 1000 | Number of rigid bodies |
+| `RESTITUTION` | 0.9 | Bounce coefficient |
+| `ANGULAR_DAMPING` | 0.995 | Spin decay per frame |
+| `MAX_SPATIAL_GRID_SIZE` | 30 | Broad-phase grid resolution |

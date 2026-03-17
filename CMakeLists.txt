@@ -54,6 +54,7 @@ endif(UNIX)
 
 add_subdirectory(GJK)
 add_subdirectory(examples/usage)
+add_subdirectory(visualization)
 
 include_directories(.)
 

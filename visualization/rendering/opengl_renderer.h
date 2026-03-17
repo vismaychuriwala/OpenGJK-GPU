@@ -1,6 +1,6 @@
 #pragma once
 #include <glad/glad.h>
-#include <glm.hpp>
+#include <glm/glm.hpp>
 #include "../sim_api.h"
 #include "mesh_builder.h"
 
