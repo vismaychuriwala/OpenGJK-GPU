@@ -1249,27 +1249,25 @@ __device__ inline static void support_parallel(gkPolytope* body,
   }
 }
 
-__global__ void compute_minimum_distance_kernel(
-  const gkPolytope* polytopes1,
-  const gkPolytope* polytopes2,
-  gkSimplex* simplices,
-  gkFloat* distances,
-  const int n) {
-
-  // Calculate which collision this thread group handles
-  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-  int collision_idx = index / THREADS_PER_GJK;
-
-  // Get thread index within the warp (0-31) and within the thread group (0 to THREADS_PER_GJK-1)
+__device__ __forceinline__ void gjk_core(
+    gkPolytope bd1,
+    gkPolytope bd2,
+    gkSimplex* simplices,
+    gkFloat* distances,
+    const int n,
+    int collision_idx
+) {
+  gkSimplex s = simplices[collision_idx];
+  // Get thread index within the warp (0-31) and within the half-warp (0 to THREADS_PER_GJK-1)
   int warp_lane_idx = threadIdx.x % 32;  // Lane ID within warp
-  int group_in_warp = warp_lane_idx / THREADS_PER_GJK;  // Which thread group we are in within the warp (0 to 32/THREADS_PER_GJK-1)
-  int lane_in_group = warp_lane_idx % THREADS_PER_GJK;  // Lane index within thread group (0 to THREADS_PER_GJK-1)
+  int group_in_warp = warp_lane_idx / THREADS_PER_GJK;  // Which half-warp we are in (0 to 32/THREADS_PER_GJK-1)
+  int lane_in_group = warp_lane_idx % THREADS_PER_GJK;  // thread idx within half-warp (0 to THREADS_PER_GJK-1)
 
-  // Calculate the lead thread index for our group within the warp (multiples of THREADS_PER_GJK: 0, 8, 16, or 24 for 8-thread; 0 or 16 for 16-thread; 0 for 32-thread)
-  // This is the thread that will coordinate the group and complete and broadcast computations we only need one thread to do
+  // Calculate the lead thread index for our half-warp within the warp (multiples of THREADS_PER_GJK: 0, 8, 16, or 24 for 8-thread; 0 or 16 for 16-thread; 0 for 32-thread)
+  // This is the thread that will coordinate the half warp and complete and broadcast computations we only need one thread to do
   int group_leader_lane = group_in_warp * THREADS_PER_GJK;
 
-  // Create sync mask for our thread group (adapts to THREADS_PER_GJK: 8->0xFF/0xFF00/0xFF0000/0xFF000000, 16->0xFFFF/0xFFFF0000, 32->0xFFFFFFFF)
+  // Create mask for our half-warp (adapts to THREADS_PER_GJK: 8->0xFF/0xFF00/0xFF0000/0xFF000000, 16->0xFFFF/0xFFFF0000, 32->0xFFFFFFFF)
 #if THREADS_PER_GJK == 32
   unsigned int group_mask = 0xFFFFFFFF;
 #elif THREADS_PER_GJK == 16
@@ -1279,18 +1277,6 @@ __global__ void compute_minimum_distance_kernel(
 #else
 #error "THREADS_PER_GJK must be 8, 16, or 32"
 #endif
-
-  if (collision_idx >= n) {
-    return;
-  }
-
-  // Each thread group (THREADS_PER_GJK threads) handles a single GJK computation
-  // All threads in the group work cooperatively on the same collision
-
-  // Copy to local memory for fast access during iteration
-  gkPolytope bd1 = polytopes1[collision_idx];
-  gkPolytope bd2 = polytopes2[collision_idx];
-  gkSimplex s = simplices[collision_idx];
 
   unsigned int k = 0;                /**< Iteration counter                 */
   const int mk = 25;                 /**< Maximum number of GJK iterations  */
@@ -1437,35 +1423,41 @@ __global__ void compute_minimum_distance_kernel(
   }
 }
 
+__global__ void compute_minimum_distance_kernel(
+  const gkPolytope* polytopes1,
+  const gkPolytope* polytopes2,
+  gkSimplex* simplices,
+  gkFloat* distances,
+  const int n) {
+  // Calculate which collision this half-warp handles
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  int collision_idx = index / THREADS_PER_GJK;
+
+  if (collision_idx >= n) {
+    return;
+  }
+
+  // Each thread group (THREADS_PER_GJK threads) handles a single GJK computation
+  // All threads in the group work cooperatively on the same collision
+
+  // Copy to local memory for fast access during iteration
+  gkPolytope bd1 = polytopes1[collision_idx];
+  gkPolytope bd2 = polytopes2[collision_idx];
+
+  gjk_core(bd1, bd2, simplices, distances, n, collision_idx);
+}
+
 __global__ void compute_minimum_distance_indexed_kernel(
     const gkPolytope* polytopes,
     const gkCollisionPair* pairs,
     gkSimplex* simplices,
     gkFloat* distances,
     const int n
-) {// Calculate which collision this half-warp handles
+) {
+  
+  // Calculate which collision this half-warp handles
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
   int collision_idx = index / THREADS_PER_GJK;
-
-  // Get thread index within the warp (0-31) and within the half-warp (0 to THREADS_PER_GJK-1)
-  int warp_lane_idx = threadIdx.x % 32;  // Lane ID within warp
-  int group_in_warp = warp_lane_idx / THREADS_PER_GJK;  // Which half-warp we are in (0 to 32/THREADS_PER_GJK-1)
-  int lane_in_group = warp_lane_idx % THREADS_PER_GJK;  // thread idx within half-warp (0 to THREADS_PER_GJK-1)
-
-  // Calculate the lead thread index for our half-warp within the warp (multiples of THREADS_PER_GJK: 0, 8, 16, or 24 for 8-thread; 0 or 16 for 16-thread; 0 for 32-thread)
-  // This is the thread that will coordinate the half warp and complete and broadcast computations we only need one thread to do
-  int group_leader_lane = group_in_warp * THREADS_PER_GJK;
-
-  // Create mask for our half-warp (adapts to THREADS_PER_GJK: 8->0xFF/0xFF00/0xFF0000/0xFF000000, 16->0xFFFF/0xFFFF0000, 32->0xFFFFFFFF)
-#if THREADS_PER_GJK == 32
-  unsigned int group_mask = 0xFFFFFFFF;
-#elif THREADS_PER_GJK == 16
-  unsigned int group_mask = (group_in_warp == 0) ? 0xFFFF : 0xFFFF0000;
-#elif THREADS_PER_GJK == 8
-  unsigned int group_mask = 0xFF << (group_in_warp * 8);
-#else
-#error "THREADS_PER_GJK must be 8, 16, or 32"
-#endif
 
   if (collision_idx >= n) {
     return;
@@ -1478,151 +1470,8 @@ __global__ void compute_minimum_distance_indexed_kernel(
   gkCollisionPair pair = pairs[collision_idx];
   gkPolytope bd1 = polytopes[pair.idx1];
   gkPolytope bd2 = polytopes[pair.idx2];
-  gkSimplex s = simplices[collision_idx];
 
-  unsigned int k = 0;                /**< Iteration counter                 */
-  const int mk = 25;                 /**< Maximum number of GJK iterations  */
-  const gkFloat eps_rel = eps_rel22; /**< Tolerance on relative             */
-  const gkFloat eps_tot = eps_tot22; /**< Tolerance on absolute distance    */
-
-  const gkFloat eps_rel2 = eps_rel * eps_rel;
-  unsigned int i;
-  gkFloat w[3];
-  int w_idx[2];
-  gkFloat v[3];
-  gkFloat vminus[3];
-  gkFloat norm2Wmax = 0;
-
-  // Synchronize all threads in the half-warp before starting
-  __syncwarp(group_mask);
-
-  // Initialize search direction
-  v[0] = bd1.coord[0] - bd2.coord[0];
-  v[1] = bd1.coord[1] - bd2.coord[1];
-  v[2] = bd1.coord[2] - bd2.coord[2];
-
-  // Initialize simplex - all threads compute identical values, no broadcast needed
-  s.nvrtx = 1;
-  #pragma unroll
-  for (int t = 0; t < 3; ++t) {
-    s.vrtx[0][t] = v[t];
-  }
-  s.vrtx_idx[0][0] = 0;
-  s.vrtx_idx[0][1] = 0;
-
-  #pragma unroll
-  for (int t = 0; t < 3; ++t) {
-    bd1.s[t] = bd1.coord[t];
-  }
-  bd1.s_idx = 0;
-
-  #pragma unroll
-  for (int t = 0; t < 3; ++t) {
-    bd2.s[t] = bd2.coord[t];
-  }
-  bd2.s_idx = 0;
-
-  /* Begin GJK iteration */
-  // Thread 0 controls the loop but all threads participate in parallel operations
-  bool continue_iteration = true;
-
-  while (continue_iteration) {
-    // Broadcast k and s.nvrtx to all threads for loop condition check
-    k = __shfl_sync(group_mask, k, group_leader_lane);
-    s.nvrtx = __shfl_sync(group_mask, s.nvrtx, group_leader_lane);
-
-    // Check loop conditions
-    if (s.nvrtx == 4 || k == mk) {
-      continue_iteration = false;
-      break;
-    }
-
-    k++;
-
-    /* Update negative search direction - all threads compute*/
-    // Note: v is already the same on all threads from previous iteration
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      vminus[t] = -v[t];
-    }
-
-    /* Support function - parallelized using all threads */
-    // All threads participate in finding support points for speedup but only thread 0 updates the body
-    support_parallel(&bd1, vminus, lane_in_group, group_mask, group_leader_lane);
-    support_parallel(&bd2, v, lane_in_group, group_mask, group_leader_lane);
-
-    // all threads compute w for witness point computation
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      w[t] = bd1.s[t] - bd2.s[t];
-    }
-    w_idx[0] = bd1.s_idx;
-    w_idx[1] = bd2.s_idx;
-
-    /* Test first exit condition (new point already in simplex/can't move
-     * further) */
-    gkFloat norm2_v = norm2(v);
-    gkFloat exeedtol_rel = (norm2_v - dotProduct(v, w));
-
-    //check exit conditions
-    bool should_break = false;
-    if (exeedtol_rel <= (eps_rel * norm2_v) || exeedtol_rel < eps_tot22) {
-      should_break = true;
-    }
-    if (norm2_v < eps_rel2) {
-      should_break = true;
-    }
-    // if any thread should break, all threads break at same spot
-    if (should_break) {
-      continue_iteration = false;
-      break;
-    }
-
-    /* Add new vertex to simplex - all threads compute identical values */
-    i = s.nvrtx;
-    #pragma unroll
-    for (int t = 0; t < 3; ++t) {
-      s.vrtx[i][t] = w[t];
-    }
-    s.vrtx_idx[i][0] = w_idx[0];
-    s.vrtx_idx[i][1] = w_idx[1];
-    s.nvrtx++;
-
-    /* Invoke distance sub-algorithm (warp-parallel wrapper).*/
-    subalgorithm_warp_parallel(&s, v, lane_in_group, group_mask,
-      group_leader_lane);
-
-    /* Test */
-    // All threads compute the same value since s.vrtx is the same on all threads (broadcast earlier)
-    #pragma unroll 4
-    for (int jj = 0; jj < 4; jj++) {
-      if (jj < s.nvrtx) {
-        norm2Wmax = gkFmax(norm2Wmax, norm2(s.vrtx[jj]));
-      }
-    }
-
-    // Check exit condition
-    norm2_v = norm2(v);
-    if ((norm2_v <= (eps_tot * eps_tot * norm2Wmax))) {
-      continue_iteration = false;
-    }
-
-    __syncwarp(group_mask);
-  }
-
-  if (lane_in_group == 0 && k == mk) {
-    // mexPrintf(
-    //     "\n * * * * * * * * * * * * MAXIMUM ITERATION NUMBER REACHED!!!  "
-    //     " * * * * * * * * * * * * * * \n");
-  }
-
-  // Compute witnesses and final distance on first thread only
-  if (lane_in_group == 0) {
-    compute_witnesses(&bd1, &bd2, &s);
-    distances[collision_idx] = gkSqrt(norm2(v));
-    // Write back updated simplex
-    simplices[collision_idx] = s;
-  }
+  gjk_core(bd1, bd2, simplices, distances, n, collision_idx);
 }
 
 //*******************************************************************************************
@@ -2006,7 +1855,7 @@ typedef struct {
 } EPAEdge;
 
 // Core EPA logic
-__device__ void epa_core(
+__device__ __forceinline__ void epa_core(
     const gkPolytope* bd1,
     const gkPolytope* bd2,
     gkSimplex* simplices,
