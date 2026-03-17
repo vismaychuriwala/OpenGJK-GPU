@@ -19,7 +19,7 @@ typedef struct {
 } ObjectInitData;
 
 typedef struct {
-    float gravity[3];
+    float gravity_y;
     float delta_time;
     float boundary;
     float collision_epsilon;

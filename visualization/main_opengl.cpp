@@ -193,9 +193,7 @@ int main(void) {
 
     // ---- Physics params ----
     PhysicsParams params;
-    params.gravity[0]         = 0.0f;
-    params.gravity[1]         = GRAVITY_Y;
-    params.gravity[2]         = 0.0f;
+    params.gravity_y          = GRAVITY_Y;
     params.delta_time         = DELTA_TIME;
     params.boundary           = boundary;
     params.collision_epsilon  = COLLISION_EPSILON;

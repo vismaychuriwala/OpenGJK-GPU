@@ -16,6 +16,8 @@
 #include <string.h>
 #include <math.h>
 
+static_assert(sizeof(gkFloat) == sizeof(float), "GJK float type mismatch: verts_world pool is float3 — recompile openGJK with gkFloat=float");
+
 // ============================================================================
 // Error checking
 // ============================================================================
@@ -103,9 +105,9 @@ __device__ static inline float3 quat_rotate_inv(float4 q, float3 v) {
 }
 
 // Apply friction impulse at a boundary contact.
-// n        : outward surface normal (points away from wall, into the simulation)
-// r        : contact arm in world space (contact_point - object_center)
-// j_n_mag  : magnitude of the already-applied normal impulse
+// n        : wall normal (into simulation)
+// r        : contact arm = contact_pt - center
+// j_n_mag  : magnitude of the normal impulse already applied
 // inv_mass : 1/m
 // inv_I    : diagonal inverse inertia in body frame
 // q        : current quaternion
@@ -170,6 +172,49 @@ __device__ static void apply_boundary_friction(
     omega.z += d_omg.z;
 }
 
+// Unified boundary contact: separating-contact guard, correct normal impulse
+// (including angular effective mass), angular bounce impulse, then friction.
+// n        : wall normal pointing INTO simulation
+// r        : contact arm = contact_pt - center  (bounding sphere: r = -br * n)
+__device__ static void apply_boundary_contact(
+    float3& vel, float3& omega,
+    float3 n, float3 r,
+    float inv_mass, float3 inv_I, float4 q)
+{
+    // Full contact-point closing velocity (linear + angular contribution)
+    float3 omg_r = make_float3(omega.y*r.z - omega.z*r.y,
+                                omega.z*r.x - omega.x*r.z,
+                                omega.x*r.y - omega.y*r.x);
+    float v_n_close = -( (vel.x + omg_r.x)*n.x
+                        +(vel.y + omg_r.y)*n.y
+                        +(vel.z + omg_r.z)*n.z );
+    if (v_n_close <= 0.0f) return;  // already separating — no impulse needed
+
+    // Angular effective mass: (r × n) · I^-1 (r × n)
+    // With bounding-sphere r = -br*n this is 0; kept correct for general r.
+    float3 rxn       = make_float3(r.y*n.z - r.z*n.y, r.z*n.x - r.x*n.z, r.x*n.y - r.y*n.x);
+    float3 rxn_body  = quat_rotate_inv(q, rxn);
+    float3 Irxn      = make_float3(inv_I.x*rxn_body.x, inv_I.y*rxn_body.y, inv_I.z*rxn_body.z);
+    float  ang_denom = rxn_body.x*Irxn.x + rxn_body.y*Irxn.y + rxn_body.z*Irxn.z;
+
+    float j_n = (1.0f + RESTITUTION) * v_n_close / (inv_mass + ang_denom);
+
+    // Linear impulse
+    vel.x += j_n * inv_mass * n.x;
+    vel.y += j_n * inv_mass * n.y;
+    vel.z += j_n * inv_mass * n.z;
+
+    // Angular impulse: dω = I^-1 * (r × j_n*n) = j_n * (I^-1 * rxn)
+    float3 d_omg_body  = make_float3(j_n*Irxn.x, j_n*Irxn.y, j_n*Irxn.z);
+    float3 d_omg_world = quat_rotate(q, d_omg_body);
+    omega.x += d_omg_world.x;
+    omega.y += d_omg_world.y;
+    omega.z += d_omg_world.z;
+
+    // Friction using the correctly-computed j_n as Coulomb clamp
+    apply_boundary_friction(vel, omega, n, r, j_n, inv_mass, inv_I, q);
+}
+
 // ============================================================================
 // Kernels
 // ============================================================================
@@ -232,81 +277,82 @@ __global__ void physics_update_kernel(
 
     float3 vel3 = make_float3(vel.x, vel.y, vel.z);
 
+    // Apply angular damping to carry-over omega before boundary contacts
+    omega.x *= ANGULAR_DAMPING;
+    omega.y *= ANGULAR_DAMPING;
+    omega.z *= ANGULAR_DAMPING;
+
     // Floor (y = -boundary), n = (0,1,0), r = (0,-br,0)
     if (pos.y - br < -boundary) {
         pos.y = -boundary + br;
-        float v_close = fabsf(vel3.y);
-        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
-        vel3.y = -vel3.y * RESTITUTION;
-        apply_boundary_friction(vel3, omega,
+        apply_boundary_contact(vel3, omega,
             make_float3(0.0f,  1.0f, 0.0f),
             make_float3(0.0f, -br,   0.0f),
-            j_n, inv_mass, inv_I, q);
+            inv_mass, inv_I, q);
     }
     // Ceiling (y = +boundary), n = (0,-1,0), r = (0,+br,0)
     if (pos.y + br > boundary) {
         pos.y = boundary - br;
-        float v_close = fabsf(vel3.y);
-        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
-        vel3.y = -vel3.y * RESTITUTION;
-        apply_boundary_friction(vel3, omega,
+        apply_boundary_contact(vel3, omega,
             make_float3(0.0f, -1.0f, 0.0f),
             make_float3(0.0f, +br,   0.0f),
-            j_n, inv_mass, inv_I, q);
+            inv_mass, inv_I, q);
     }
     // -X wall, n = (1,0,0), r = (-br,0,0)
     if (pos.x - br < -boundary) {
         pos.x = -boundary + br;
-        float v_close = fabsf(vel3.x);
-        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
-        vel3.x = -vel3.x * RESTITUTION;
-        apply_boundary_friction(vel3, omega,
+        apply_boundary_contact(vel3, omega,
             make_float3( 1.0f, 0.0f, 0.0f),
             make_float3(-br,   0.0f, 0.0f),
-            j_n, inv_mass, inv_I, q);
+            inv_mass, inv_I, q);
     }
     // +X wall, n = (-1,0,0), r = (+br,0,0)
     if (pos.x + br > boundary) {
         pos.x = boundary - br;
-        float v_close = fabsf(vel3.x);
-        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
-        vel3.x = -vel3.x * RESTITUTION;
-        apply_boundary_friction(vel3, omega,
+        apply_boundary_contact(vel3, omega,
             make_float3(-1.0f, 0.0f, 0.0f),
             make_float3(+br,   0.0f, 0.0f),
-            j_n, inv_mass, inv_I, q);
+            inv_mass, inv_I, q);
     }
     // -Z wall, n = (0,0,1), r = (0,0,-br)
     if (pos.z - br < -boundary) {
         pos.z = -boundary + br;
-        float v_close = fabsf(vel3.z);
-        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
-        vel3.z = -vel3.z * RESTITUTION;
-        apply_boundary_friction(vel3, omega,
+        apply_boundary_contact(vel3, omega,
             make_float3(0.0f, 0.0f,  1.0f),
             make_float3(0.0f, 0.0f, -br),
-            j_n, inv_mass, inv_I, q);
+            inv_mass, inv_I, q);
     }
     // +Z wall, n = (0,0,-1), r = (0,0,+br)
     if (pos.z + br > boundary) {
         pos.z = boundary - br;
-        float v_close = fabsf(vel3.z);
-        float j_n = vel.w * (1.0f + RESTITUTION) * v_close;
-        vel3.z = -vel3.z * RESTITUTION;
-        apply_boundary_friction(vel3, omega,
+        apply_boundary_contact(vel3, omega,
             make_float3(0.0f, 0.0f, -1.0f),
             make_float3(0.0f, 0.0f, +br),
-            j_n, inv_mass, inv_I, q);
+            inv_mass, inv_I, q);
     }
 
     vel.x = vel3.x; vel.y = vel3.y; vel.z = vel3.z;
     positions[i]  = pos;
     velocities[i] = vel;
 
-    // Angular damping (air resistance / internal friction)
-    omega.x *= ANGULAR_DAMPING;
-    omega.y *= ANGULAR_DAMPING;
-    omega.z *= ANGULAR_DAMPING;
+    // Gyroscopic correction: subtract I^-1 * (ω × (I·ω)) * dt
+    // Prevents non-spherical objects from gaining spin energy on the wrong axis.
+    {
+        float3 ob   = quat_rotate_inv(q, omega);               // ω in body frame
+        float3 Iob  = make_float3(ob.x / inv_I.x,             // I·ω in body frame
+                                   ob.y / inv_I.y,
+                                   ob.z / inv_I.z);
+        float3 Iow  = quat_rotate(q, Iob);                    // I·ω in world frame
+        float3 gw   = make_float3(omega.y*Iow.z - omega.z*Iow.y,   // ω × (I·ω), world
+                                   omega.z*Iow.x - omega.x*Iow.z,
+                                   omega.x*Iow.y - omega.y*Iow.x);
+        float3 gb   = quat_rotate_inv(q, gw);                 // back to body frame
+        float3 dob  = make_float3(inv_I.x*gb.x, inv_I.y*gb.y, inv_I.z*gb.z); // I^-1 * gyro
+        float3 dow  = quat_rotate(q, dob);                    // back to world frame
+        omega.x -= dow.x * dt;
+        omega.y -= dow.y * dt;
+        omega.z -= dow.z * dt;
+    }
 
     // Quaternion integration from (possibly updated) angular velocity
     float4 dq;
@@ -791,7 +837,7 @@ void sim_step(const PhysicsParams* params) {
     // 1. Integrate physics (position, angular velocity → quaternion, boundary friction)
     physics_update_kernel<<<obj_blocks, BLOCK_SIZE>>>(
         d_positions, d_vel_buf[g_vel_ping], d_ang_buf[g_vel_ping], d_quats, d_inv_inertia,
-        num_objs, params->delta_time, params->gravity[1], params->boundary);
+        num_objs, params->delta_time, params->gravity_y, params->boundary);
     CUDA_CHECK_LAST();
 
     // 2. Transform local verts to world space
@@ -803,12 +849,8 @@ void sim_step(const PhysicsParams* params) {
 
     if (num_pairs > 0) {
         // 3. GJK distance computation
-        const int threads_per_gjk = 16;
-        const int gjk_per_block   = 2;
-        int gjk_blocks = (num_pairs + gjk_per_block - 1) / gjk_per_block;
-
-        compute_minimum_distance_indexed_kernel<<<gjk_blocks, threads_per_gjk * gjk_per_block>>>(
-            d_polytopes, d_collision_pairs, d_simplices, d_distances, num_pairs);
+        compute_minimum_distance_indexed_device(
+            num_pairs, d_polytopes, d_collision_pairs, d_simplices, d_distances);
         CUDA_CHECK_LAST();
 
         // 4. Collision response (ping → pong, linear + angular)

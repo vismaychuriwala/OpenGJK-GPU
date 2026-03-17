@@ -13,7 +13,7 @@
 
 // Spatial grid configuration for broad-phase culling
 #define MAX_SPATIAL_GRID_SIZE 30          // Max grid divisions per axis (for allocation)
-#define MAX_OBJECTS_PER_CELL 256          // Max objects per cell
+#define MAX_OBJECTS_PER_CELL 512          // Max objects per cell
 
 // Spatial configuration (scales with number of objects)
 #define BOUNDARY_SCALE_FACTOR 0.08f  // Boundary = num_objects * scale_factor
@@ -25,7 +25,7 @@
 #define FPS 60.0f
 #define DELTA_TIME (1.0f / FPS)
 #define COLLISION_EPSILON 0.1f
-#define RESTITUTION 0.99f
+#define RESTITUTION 0.9f
 #define FRICTION_COEFF 0.2f
 #define ANGULAR_DAMPING 0.999f  // multiplied each physics step
 
