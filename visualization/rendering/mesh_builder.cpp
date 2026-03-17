@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <vector>
+#include <unordered_set>
+
+#include <tinyobj/tiny_obj_loader.h>
 
 static void atlas_grow_verts(MeshAtlas* a, int needed) {
     if (a->num_vertices + needed <= a->vertex_cap) return;
@@ -236,6 +240,273 @@ float* gen_gjk_octahedron(int* out_count) {
     float c[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     for (int i = 0; i < 6; i++) { v[i*3+0]=c[i][0]; v[i*3+1]=c[i][1]; v[i*3+2]=c[i][2]; }
     return v;
+}
+
+// ============================================================================
+// 3D incremental convex hull
+// ============================================================================
+
+typedef struct { int v[3]; } HullFace;
+
+// Returns 6x signed volume of tetrahedron (a,b,c,p). Positive = p above face (a,b,c).
+static float hull_signed_vol6(const float (*pts)[3], HullFace f, int p) {
+    const float *a=pts[f.v[0]], *b=pts[f.v[1]], *c=pts[f.v[2]], *d=pts[p];
+    float bx=b[0]-a[0], by=b[1]-a[1], bz=b[2]-a[2];
+    float cx=c[0]-a[0], cy=c[1]-a[1], cz=c[2]-a[2];
+    float dx=d[0]-a[0], dy=d[1]-a[1], dz=d[2]-a[2];
+    float nx=by*cz-bz*cy, ny=bz*cx-bx*cz, nz=bx*cy-by*cx;
+    return nx*dx + ny*dy + nz*dz;
+}
+
+// Builds the convex hull of pts[0..n-1] (each 3 floats). Returns face list.
+static std::vector<HullFace> build_hull(const float* pts_flat, int n) {
+    std::vector<HullFace> hull;
+    const float (*pts)[3] = (const float (*)[3])pts_flat;
+    if (n < 4) return hull;
+
+    // --- Find initial tetrahedron ---
+    int i0=0, i1=1, i2=-1, i3=-1;
+    // O(n): find the most-separated axis-aligned pair as i0/i1
+    { int xmn=0,xmx=0,ymn=0,ymx=0,zmn=0,zmx=0;
+      for (int i=1;i<n;i++) {
+          if (pts[i][0]<pts[xmn][0]) xmn=i; if (pts[i][0]>pts[xmx][0]) xmx=i;
+          if (pts[i][1]<pts[ymn][1]) ymn=i; if (pts[i][1]>pts[ymx][1]) ymx=i;
+          if (pts[i][2]<pts[zmn][2]) zmn=i; if (pts[i][2]>pts[zmx][2]) zmx=i;
+      }
+      int cands[6]={xmn,xmx,ymn,ymx,zmn,zmx};
+      float bd=0;
+      for (int a=0;a<6;a++) for (int b=a+1;b<6;b++) {
+          float dx=pts[cands[b]][0]-pts[cands[a]][0],
+                dy=pts[cands[b]][1]-pts[cands[a]][1],
+                dz=pts[cands[b]][2]-pts[cands[a]][2];
+          float d=dx*dx+dy*dy+dz*dz;
+          if (d>bd) { bd=d; i0=cands[a]; i1=cands[b]; }
+      } }
+    { float e[3]={pts[i1][0]-pts[i0][0],pts[i1][1]-pts[i0][1],pts[i1][2]-pts[i0][2]};
+      float bd=0;
+      for (int i=0;i<n;i++) {
+          if (i==i0||i==i1) continue;
+          float vx=pts[i][0]-pts[i0][0], vy=pts[i][1]-pts[i0][1], vz=pts[i][2]-pts[i0][2];
+          float cx=vy*e[2]-vz*e[1], cy=vz*e[0]-vx*e[2], cz=vx*e[1]-vy*e[0];
+          float d=cx*cx+cy*cy+cz*cz;
+          if (d>bd) { bd=d; i2=i; }
+      } }
+    if (i2<0) return hull;
+    { float bd=0;
+      for (int i=0;i<n;i++) {
+          if (i==i0||i==i1||i==i2) continue;
+          HullFace f; f.v[0]=i0; f.v[1]=i1; f.v[2]=i2;
+          float d=hull_signed_vol6(pts,f,i); if (d<0) d=-d;
+          if (d>bd) { bd=d; i3=i; }
+      } }
+    if (i3<0) return hull;
+
+    // Orient base face so i3 is on the negative side
+    { HullFace f; f.v[0]=i0; f.v[1]=i1; f.v[2]=i2;
+      if (hull_signed_vol6(pts,f,i3)>0) { int t=i1; i1=i2; i2=t; } }
+
+    hull.push_back({i0,i1,i2});
+    hull.push_back({i0,i2,i3});
+    hull.push_back({i0,i3,i1});
+    hull.push_back({i1,i3,i2});
+
+    // --- Incremental expansion ---
+    std::vector<int> vis, ha, hb, alive;  // ha/hb = horizon edge endpoints
+
+    for (int pi=0; pi<n; pi++) {
+        if (pi==i0||pi==i1||pi==i2||pi==i3) continue;
+
+        vis.clear();
+        int nf = (int)hull.size();
+        for (int fi=0;fi<nf;fi++)
+            if (hull_signed_vol6(pts,hull[fi],pi) > 1e-7f) vis.push_back(fi);
+        if (vis.empty()) continue;
+
+        // Horizon edges — O(nv) via edge hash set
+        // A directed edge (a→b) is on the horizon iff its reverse (b→a) is not in the visible set.
+        static std::unordered_set<long long> vis_edges;
+        vis_edges.clear();
+        for (int vi : vis)
+            for (int ei=0;ei<3;ei++) {
+                int ea=hull[vi].v[ei], eb=hull[vi].v[(ei+1)%3];
+                vis_edges.insert(((long long)ea << 32) | (unsigned int)eb);
+            }
+        ha.clear(); hb.clear();
+        for (int vi : vis)
+            for (int ei=0;ei<3;ei++) {
+                int ea=hull[vi].v[ei], eb=hull[vi].v[(ei+1)%3];
+                if (!vis_edges.count(((long long)eb << 32) | (unsigned int)ea))
+                    { ha.push_back(ea); hb.push_back(eb); }
+            }
+
+        // Remove visible faces (mark-and-compact)
+        alive.assign(nf, 1);
+        for (int vi : vis) alive[vi]=0;
+        int w=0;
+        for (int fi=0;fi<nf;fi++) if (alive[fi]) hull[w++]=hull[fi];
+        hull.resize(w);
+
+        // Stitch horizon to new point
+        for (int hi=0;hi<(int)ha.size();hi++) {
+            HullFace f; f.v[0]=ha[hi]; f.v[1]=hb[hi]; f.v[2]=pi;
+            hull.push_back(f);
+        }
+    }
+    return hull;
+}
+
+// ============================================================================
+// Random convex hull generators
+// ============================================================================
+
+float* gen_gjk_random_hull(int n, unsigned int seed, int* out_count) {
+    if (n < 4) n = 4;
+    *out_count = n;
+    float* v = (float*)malloc(n * 3 * sizeof(float));
+    // Seeded LCG for reproducible per-variant shapes
+    unsigned int s = seed ^ 0xDEADBEEFu;
+    for (int i = 0; i < n; ) {
+        s = s * 1664525u + 1013904223u; float x = (int)s * (1.0f/2147483648.0f);
+        s = s * 1664525u + 1013904223u; float y = (int)s * (1.0f/2147483648.0f);
+        s = s * 1664525u + 1013904223u; float z = (int)s * (1.0f/2147483648.0f);
+        float r2 = x*x + y*y + z*z;
+        if (r2 < 1e-6f || r2 > 1.0f) continue;   // rejection sample unit sphere
+        float inv_r = 1.0f / sqrtf(r2);
+        v[i*3+0] = x * inv_r;
+        v[i*3+1] = y * inv_r;
+        v[i*3+2] = z * inv_r;
+        i++;
+    }
+    return v;
+}
+
+int atlas_add_convex_hull(MeshAtlas* atlas, const float* pts_flat, int n) {
+    std::vector<HullFace> hull = build_hull(pts_flat, n);
+    int nf = (int)hull.size();
+    if (nf <= 0) return -1;
+
+    const float (*pts)[3] = (const float (*)[3])pts_flat;
+    int nv = nf * 3;
+    AtlasVertex* verts = (AtlasVertex*)malloc(nv * sizeof(AtlasVertex));
+    uint32_t*    idx   = (uint32_t*)   malloc(nv * sizeof(uint32_t));
+
+    for (int fi = 0; fi < nf; fi++) {
+        float fn[3];
+        face_normal(pts[hull[fi].v[0]], pts[hull[fi].v[1]], pts[hull[fi].v[2]], fn);
+        for (int k = 0; k < 3; k++) {
+            memcpy(verts[fi*3+k].pos,    pts[hull[fi].v[k]], 12);
+            memcpy(verts[fi*3+k].normal, fn,                 12);
+        }
+        idx[fi*3+0] = fi*3+0; idx[fi*3+1] = fi*3+1; idx[fi*3+2] = fi*3+2;
+    }
+
+    int mesh_id = atlas_add_mesh(atlas, verts, nv, idx, nv);
+    free(verts); free(idx);
+    return mesh_id;
+}
+
+// ============================================================================
+// Polyhedral inertia (per-axis unit factors)
+// ============================================================================
+
+// Shared helper: builds hull and accumulates signed-tet volume + first/second moments.
+static void hull_volume_moments(const float* pts_flat, int n,
+                                 double* out_vol,
+                                 double* out_cx,  double* out_cy,  double* out_cz,
+                                 double* out_ix2, double* out_iy2, double* out_iz2) {
+    std::vector<HullFace> hull = build_hull(pts_flat, n);
+    int nf = (int)hull.size();
+    const float (*pts)[3] = (const float (*)[3])pts_flat;
+
+    double vol=0, cx=0, cy=0, cz=0, ix2=0, iy2=0, iz2=0;
+    for (int fi = 0; fi < nf; fi++) {
+        const float *a=pts[hull[fi].v[0]], *b=pts[hull[fi].v[1]], *c=pts[hull[fi].v[2]];
+        double dv = ((double)a[0]*((double)b[1]*(double)c[2]-(double)b[2]*(double)c[1])
+                    -(double)a[1]*((double)b[0]*(double)c[2]-(double)b[2]*(double)c[0])
+                    +(double)a[2]*((double)b[0]*(double)c[1]-(double)b[1]*(double)c[0])) / 6.0;
+        vol += dv;
+        cx  += dv * (a[0]+b[0]+c[0]);
+        cy  += dv * (a[1]+b[1]+c[1]);
+        cz  += dv * (a[2]+b[2]+c[2]);
+#define TET_I2(ak,bk,ck) (dv/10.0*((double)(ak)*(ak)+(double)(ak)*(bk)+(double)(bk)*(bk)+(double)(ak)*(ck)+(double)(bk)*(ck)+(double)(ck)*(ck)))
+        ix2 += TET_I2(a[0],b[0],c[0]);
+        iy2 += TET_I2(a[1],b[1],c[1]);
+        iz2 += TET_I2(a[2],b[2],c[2]);
+#undef TET_I2
+    }
+    *out_vol=vol; *out_cx=cx; *out_cy=cy; *out_cz=cz;
+    *out_ix2=ix2; *out_iy2=iy2; *out_iz2=iz2;
+}
+
+void center_hull_verts(float* pts_flat, int n) {
+    double vol, cx, cy, cz, ix2, iy2, iz2;
+    hull_volume_moments(pts_flat, n, &vol, &cx, &cy, &cz, &ix2, &iy2, &iz2);
+    if (vol < 1e-10) return;
+    float com[3] = { (float)(cx/(4.0*vol)), (float)(cy/(4.0*vol)), (float)(cz/(4.0*vol)) };
+    for (int i = 0; i < n; i++) {
+        pts_flat[i*3+0] -= com[0];
+        pts_flat[i*3+1] -= com[1];
+        pts_flat[i*3+2] -= com[2];
+    }
+}
+
+void compute_hull_inertia_k(const float* pts_flat, int n, float* kx, float* ky, float* kz) {
+    double vol, cx, cy, cz, ix2, iy2, iz2;
+    hull_volume_moments(pts_flat, n, &vol, &cx, &cy, &cz, &ix2, &iy2, &iz2);
+    if (vol < 1e-10) { *kx = *ky = *kz = 1.0f/10.0f; return; }
+    // If center_hull_verts was called, com≈(0,0,0) and the parallel axis terms vanish.
+    // Kept here for correctness if called on un-centred geometry.
+    double com[3] = { cx/(4.0*vol), cy/(4.0*vol), cz/(4.0*vol) };
+    *kx = (float)((ix2 - vol*com[0]*com[0]) / vol);
+    *ky = (float)((iy2 - vol*com[1]*com[1]) / vol);
+    *kz = (float)((iz2 - vol*com[2]*com[2]) / vol);
+}
+
+// ============================================================================
+// Bounding radius
+// ============================================================================
+
+// ============================================================================
+// OBJ loading
+// ============================================================================
+
+int load_obj_shape(MeshAtlas* atlas, const char* path,
+                   int* out_mesh_id, float** out_gjk_verts, int* out_gjk_count)
+{
+    std::vector<tinyobj::shape_t>    shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string err = tinyobj::LoadObj(shapes, materials, path);
+    if (!err.empty() || shapes.empty()) return 0;
+
+    // Collect all unique positions across all shapes
+    // Use the first shape's positions as the vertex cloud (covers most single-mesh OBJs).
+    // For multi-shape OBJs all positions are concatenated.
+    std::vector<float> all_pos;
+    for (auto& s : shapes) {
+        all_pos.insert(all_pos.end(), s.mesh.positions.begin(), s.mesh.positions.end());
+    }
+    int total_verts = (int)(all_pos.size() / 3);
+    if (total_verts < 4) return 0;
+
+    // Normalise so the furthest vertex sits on the unit sphere
+    float max_r2 = 0.0f;
+    for (int i = 0; i < total_verts; i++) {
+        float x = all_pos[i*3], y = all_pos[i*3+1], z = all_pos[i*3+2];
+        float r2 = x*x + y*y + z*z;
+        if (r2 > max_r2) max_r2 = r2;
+    }
+    float inv_r = (max_r2 > 1e-8f) ? 1.0f / sqrtf(max_r2) : 1.0f;
+    for (int i = 0; i < (int)all_pos.size(); i++) all_pos[i] *= inv_r;
+
+    // Build GJK vertex cloud = convex hull of all positions, COM-centred
+    float* gjk = (float*)malloc(total_verts * 3 * sizeof(float));
+    memcpy(gjk, all_pos.data(), total_verts * 3 * sizeof(float));
+    center_hull_verts(gjk, total_verts);
+
+    *out_gjk_verts = gjk;
+    *out_gjk_count = total_verts;
+    *out_mesh_id   = atlas_add_convex_hull(atlas, gjk, total_verts);
+    return 1;
 }
 
 // ============================================================================

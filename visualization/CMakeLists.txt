@@ -43,6 +43,7 @@ add_executable(gjk_visualizer
     rendering/mesh_builder.cpp
     rendering/opengl_renderer.cpp
     integrate_final_gjk.cu
+    include/tinyobj/tiny_obj_loader.cc
 )
 
 # Match the same CUDA arch logic as GJK/CMakeLists.txt
@@ -60,6 +61,7 @@ target_compile_options(gjk_visualizer PRIVATE
 
 target_include_directories(gjk_visualizer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${_GJK_INCLUDE_ROOT}/GJK/gpu
     ${_GJK_INCLUDE_ROOT}/GJK
     ${CUDAToolkit_INCLUDE_DIRS}
@@ -75,9 +77,12 @@ target_link_libraries(gjk_visualizer PRIVATE
     gdi32 user32 shell32
 )
 
-# Copy shaders next to the executable after build
+# Copy shaders and OBJ assets next to the executable after build
 add_custom_command(TARGET gjk_visualizer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders
         $<TARGET_FILE_DIR:gjk_visualizer>/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/objs
+        $<TARGET_FILE_DIR:gjk_visualizer>/objs
 )

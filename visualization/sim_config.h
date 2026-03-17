@@ -15,6 +15,20 @@
 #define MAX_SPATIAL_GRID_SIZE 30         // Max grid divisions per axis (for allocation)
 #define MAX_OBJECTS_PER_CELL 512          // Max objects per cell
 
+// Set to 1 to load OBJ files at startup (slow for dense meshes until hull builder is improved)
+#define LOAD_OBJS 0
+
+// Random convex hull shape generation
+#define MAX_HULL_VERTS    32     // maximum GJK vertices per random hull
+#define MIN_HULL_VERTS     8     // minimum GJK vertices per random hull
+#define HULL_SHAPE_RATIO 0.70f   // fraction of objects that are random convex hulls
+
+// Object scale range: per-object base size and per-axis variation
+#define SCALE_BASE_MIN   0.3f
+#define SCALE_BASE_MAX   2.5f
+#define SCALE_AXIS_MIN   0.6f
+#define SCALE_AXIS_MAX   1.6f
+
 // Spatial configuration (scales with number of objects)
 #define BOUNDARY_SCALE_FACTOR 0.08f  // Boundary = num_objects * scale_factor
 #define MIN_BOUNDARY_SIZE 10.0f

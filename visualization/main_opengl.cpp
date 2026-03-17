@@ -6,6 +6,23 @@
 #include <ctime>
 #include <cstring>
 #include <cmath>
+#include <string>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+// Returns the directory containing the running executable (with trailing slash).
+static std::string exe_dir() {
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    std::string s(buf);
+    auto pos = s.find_last_of("\\/");
+    return (pos == std::string::npos) ? "./" : s.substr(0, pos + 1);
+#else
+    return "./";
+#endif
+}
 
 #include "rendering/input.h"
 #include "rendering/camera.h"
@@ -39,30 +56,84 @@ static void object_color(int i, float* rgba) {
     rgba[3] = 1.0f;
 }
 
-// Shape types, one mesh_id per type (filled at build time)
-enum ShapeType { SHAPE_ICOSAHEDRON = 0, SHAPE_BOX, SHAPE_TETRAHEDRON, SHAPE_OCTAHEDRON, SHAPE_COUNT };
-static int g_mesh_ids[SHAPE_COUNT];
+// Base shape types
+enum ShapeType { SHAPE_ICOSAHEDRON = 0, SHAPE_BOX, SHAPE_TETRAHEDRON, SHAPE_OCTAHEDRON, SHAPE_BASE_COUNT };
+static int g_mesh_ids[SHAPE_BASE_COUNT];
+
+// Hull variants — generated at build_scene init
+static int    g_num_hull_variants = 0;
+static int*   g_hull_mesh_ids   = nullptr;
+static float** g_hull_gjk_verts = nullptr;
+static int*   g_hull_gjk_counts = nullptr;
+
+#if LOAD_OBJS
+// OBJ shapes — loaded from disk at startup.
+// Add new paths here to include more meshes.
+static const char* OBJ_PATHS[] = {
+    "objs/wahoo.obj",
+    "objs/alienanimal.obj",
+};
+static const int NUM_OBJ_SHAPES = sizeof(OBJ_PATHS) / sizeof(OBJ_PATHS[0]);
+static int    g_obj_mesh_ids[NUM_OBJ_SHAPES];
+static float* g_obj_gjk_verts[NUM_OBJ_SHAPES];
+static int    g_obj_gjk_counts[NUM_OBJ_SHAPES];
+static int    g_num_obj_loaded = 0;
+#else
+static const int g_num_obj_loaded = 0;
+#endif
 
 static float* build_gjk_verts(ShapeType type, int* out_count) {
     switch (type) {
-        case SHAPE_ICOSAHEDRON:  return gen_gjk_icosahedron(out_count);
-        case SHAPE_BOX:          return gen_gjk_box(out_count);
-        case SHAPE_TETRAHEDRON:  return gen_gjk_tetrahedron(out_count);
-        case SHAPE_OCTAHEDRON:   return gen_gjk_octahedron(out_count);
-        default:                 return gen_gjk_icosahedron(out_count);
+        case SHAPE_ICOSAHEDRON: return gen_gjk_icosahedron(out_count);
+        case SHAPE_BOX:         return gen_gjk_box(out_count);
+        case SHAPE_TETRAHEDRON: return gen_gjk_tetrahedron(out_count);
+        case SHAPE_OCTAHEDRON:  return gen_gjk_octahedron(out_count);
+        default:                return gen_gjk_icosahedron(out_count);
     }
 }
 
 static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objects) {
-    // Register all shape types once
+    // Register base shape types
     g_mesh_ids[SHAPE_ICOSAHEDRON] = atlas_add_icosahedron(atlas);
     g_mesh_ids[SHAPE_BOX]         = atlas_add_box(atlas);
     g_mesh_ids[SHAPE_TETRAHEDRON] = atlas_add_tetrahedron(atlas);
     g_mesh_ids[SHAPE_OCTAHEDRON]  = atlas_add_octahedron(atlas);
 
+    // Generate unique random hull variants: HULL_SHAPE_RATIO * num_objects
+    g_num_hull_variants = (int)(num_objects * HULL_SHAPE_RATIO);
+    g_hull_mesh_ids   = (int*)   malloc(g_num_hull_variants * sizeof(int));
+    g_hull_gjk_verts  = (float**)malloc(g_num_hull_variants * sizeof(float*));
+    g_hull_gjk_counts = (int*)   malloc(g_num_hull_variants * sizeof(int));
+
+    for (int h = 0; h < g_num_hull_variants; h++) {
+        int n = MIN_HULL_VERTS + (h % (MAX_HULL_VERTS - MIN_HULL_VERTS + 1));
+        int cnt = 0;
+        float* pts = gen_gjk_random_hull(n, (unsigned int)(h * 2654435761u), &cnt);
+        center_hull_verts(pts, cnt);          // shift so volumetric COM = origin
+        g_hull_gjk_verts[h]  = pts;
+        g_hull_gjk_counts[h] = cnt;
+        g_hull_mesh_ids[h]   = atlas_add_convex_hull(atlas, pts, cnt);
+    }
+
+#if LOAD_OBJS
+    g_num_obj_loaded = 0;
+    std::string base = exe_dir();
+    for (int o = 0; o < NUM_OBJ_SHAPES; o++) {
+        std::string path = base + OBJ_PATHS[o];
+        int ok = load_obj_shape(atlas, path.c_str(),
+                                &g_obj_mesh_ids[o],
+                                &g_obj_gjk_verts[o],
+                                &g_obj_gjk_counts[o]);
+        if (ok) { g_num_obj_loaded++; }
+        else    { printf("Warning: could not load %s\n", path.c_str()); }
+    }
+#endif
+
     int grid_size = (int)std::ceil(std::sqrt((double)num_objects));
     float spacing = 3.0f;
     float start_height = 10.0f;
+
+    int total_types = SHAPE_BASE_COUNT + g_num_hull_variants + g_num_obj_loaded;
 
     for (int i = 0; i < num_objects; i++) {
         int row = i / grid_size, col = i % grid_size;
@@ -73,13 +144,40 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         auto rn = [&]() { return ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise; };
         auto rf = [&](float lo, float hi) { return lo + (float)rand() / RAND_MAX * (hi - lo); };
 
-        ShapeType shape = (ShapeType)(i % SHAPE_COUNT);
-        float sx = rf(0.5f, 1.8f);
-        float sy = rf(0.5f, 1.8f);
-        float sz = rf(0.5f, 1.8f);
+        int type_idx = i % total_types;
+        int    gjk_count = 0;
+        float* gjk_verts = nullptr;
+        int    mesh_id   = 0;
 
-        int gjk_count = 0;
-        float* gjk_verts = build_gjk_verts(shape, &gjk_count);
+        if (type_idx < g_num_hull_variants) {
+            // Random hull variant
+            int hull_id = type_idx;
+            gjk_count = g_hull_gjk_counts[hull_id];
+            gjk_verts = (float*)malloc(gjk_count * 3 * sizeof(float));
+            memcpy(gjk_verts, g_hull_gjk_verts[hull_id], gjk_count * 3 * sizeof(float));
+            mesh_id = g_hull_mesh_ids[hull_id];
+        }
+#if LOAD_OBJS
+        else if (type_idx < g_num_hull_variants + g_num_obj_loaded) {
+            // OBJ shape
+            int obj_id = type_idx - g_num_hull_variants;
+            gjk_count = g_obj_gjk_counts[obj_id];
+            gjk_verts = (float*)malloc(gjk_count * 3 * sizeof(float));
+            memcpy(gjk_verts, g_obj_gjk_verts[obj_id], gjk_count * 3 * sizeof(float));
+            mesh_id = g_obj_mesh_ids[obj_id];
+        }
+#endif
+        else {
+            // Base shape
+            ShapeType shape = (ShapeType)((type_idx - g_num_hull_variants - g_num_obj_loaded) % SHAPE_BASE_COUNT);
+            gjk_verts = build_gjk_verts(shape, &gjk_count);
+            mesh_id   = g_mesh_ids[shape];
+        }
+
+        float base = rf(SCALE_BASE_MIN, SCALE_BASE_MAX);
+        float sx = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
+        float sy = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
+        float sz = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
 
         float scale[3] = { sx, sy, sz };
         float br = compute_bounding_radius(gjk_verts, gjk_count, scale);
@@ -103,27 +201,29 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         objects[i].bounding_radius = br;
         objects[i].gjk_verts       = gjk_verts;
         objects[i].num_gjk_verts   = gjk_count;
-        objects[i].mesh_id         = g_mesh_ids[shape];
+        objects[i].mesh_id         = mesh_id;
 
-        // Inverse principal inertia moments in body frame.
-        // All four shapes have isotropic second moment: <x²> = <y²> = <z²> = k
-        // With non-uniform scale: Ixx = mass*k*(sy²+sz²), etc.
-        // k values (derived from polyhedral volume integrals):
-        //   Box          (half-extents ±0.5):   k = 1/12
-        //   Tetrahedron  (unit circumradius 1):  k = 1/15
-        //   Octahedron   (unit circumradius 1):  k = 1/10
-        //   Icosahedron  (unit circumradius 1):  k = (1 + 1/√5) / 10
-        float k;
-        switch (shape) {
-            case SHAPE_BOX:         k = 1.0f / 12.0f; break;
-            case SHAPE_TETRAHEDRON: k = 1.0f / 15.0f; break;
-            case SHAPE_OCTAHEDRON:  k = 1.0f / 10.0f; break;
-            case SHAPE_ICOSAHEDRON: k = (1.0f + 1.0f / std::sqrt(5.0f)) / 10.0f; break;
-            default:                k = 1.0f / 10.0f; break;
+        // Inertia: Ixx = mass*(ky*sy²+kz*sz²), etc.
+        // Base shapes: analytic isotropic k (ky=kz=kx).
+        // Random hulls: per-axis kx,ky,kz from polyhedral second-moment integral.
+        float kx, ky, kz;
+        bool is_base = (type_idx >= g_num_hull_variants + g_num_obj_loaded);
+        if (is_base) {
+            ShapeType shape = (ShapeType)((type_idx - g_num_hull_variants - g_num_obj_loaded) % SHAPE_BASE_COUNT);
+            float k;
+            switch (shape) {
+                case SHAPE_BOX:         k = 1.0f / 12.0f; break;
+                case SHAPE_TETRAHEDRON: k = 1.0f / 15.0f; break;
+                case SHAPE_OCTAHEDRON:  k = 1.0f / 10.0f; break;
+                default:                k = (1.0f + 1.0f / std::sqrt(5.0f)) / 10.0f; break;
+            }
+            kx = ky = kz = k;
+        } else {
+            compute_hull_inertia_k(gjk_verts, gjk_count, &kx, &ky, &kz);
         }
-        float Ixx = mass * k * (sy*sy + sz*sz);
-        float Iyy = mass * k * (sx*sx + sz*sz);
-        float Izz = mass * k * (sx*sx + sy*sy);
+        float Ixx = mass * (ky*sy*sy + kz*sz*sz);
+        float Iyy = mass * (kx*sx*sx + kz*sz*sz);
+        float Izz = mass * (kx*sx*sx + ky*sy*sy);
         objects[i].inv_inertia[0] = 1.0f / Ixx;
         objects[i].inv_inertia[1] = 1.0f / Iyy;
         objects[i].inv_inertia[2] = 1.0f / Izz;
@@ -135,6 +235,11 @@ static void free_scene_gjk_verts(ObjectInitData* objects, int num_objects) {
         free(objects[i].gjk_verts);
         objects[i].gjk_verts = nullptr;
     }
+    for (int h = 0; h < g_num_hull_variants; h++)
+        free(g_hull_gjk_verts[h]);
+    free(g_hull_mesh_ids);  free(g_hull_gjk_verts);  free(g_hull_gjk_counts);
+    g_hull_mesh_ids = nullptr;  g_hull_gjk_verts = nullptr;  g_hull_gjk_counts = nullptr;
+    g_num_hull_variants = 0;
 }
 
 int main(void) {
