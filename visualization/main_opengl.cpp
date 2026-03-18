@@ -69,9 +69,14 @@ static int*   g_hull_gjk_counts = nullptr;
 #if LOAD_OBJS
 // OBJ shapes — loaded from disk at startup.
 // Add new paths here to include more meshes.
+// OBJ_TEX_PATHS: texture filename (inside textures/) for each OBJ, parallel to OBJ_PATHS.
 static const char* OBJ_PATHS[] = {
     "objs/wahoo.obj",
-    "objs/alienanimal.obj",
+    // "objs/alienanimal.obj",
+};
+static const char* OBJ_TEX_PATHS[] = {
+    "wahoo.bmp",
+    // "alienanimal.png",
 };
 static const int NUM_OBJ_SHAPES = sizeof(OBJ_PATHS) / sizeof(OBJ_PATHS[0]);
 static int     g_obj_num_hulls[NUM_OBJ_SHAPES];
@@ -246,6 +251,14 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         objects[i].scale[2] = sz;
 
         object_color(i, objects[i].color);
+        if (sm_verts) {
+            // OBJ: texture array layer = OBJ_TEX_START + obj_id
+            int obj_id = type_idx - g_num_hull_variants;
+            objects[i].tex_index = (float)(OBJ_TEX_START + obj_id);
+        } else {
+            // Random hull / base shape: random rock texture
+            objects[i].tex_index = (float)(rand() % N_ROCK_TEXTURES);
+        }
 
         float mass = sx * sy * sz;
 
@@ -387,7 +400,14 @@ int main(void) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     OpenGLRenderer renderer;
-    if (!renderer_init(&renderer, &atlas, objects, NUM_OBJECTS, gl_pos_buffer, gl_quat_buffer)) {
+#if LOAD_OBJS
+    const char** obj_tex = (const char**)OBJ_TEX_PATHS;
+    int n_obj_tex = g_num_obj_loaded;
+#else
+    const char** obj_tex = nullptr;
+    int n_obj_tex = 0;
+#endif
+    if (!renderer_init(&renderer, &atlas, objects, NUM_OBJECTS, gl_pos_buffer, gl_quat_buffer, obj_tex, n_obj_tex)) {
         fprintf(stderr, "Failed to init renderer\n"); return -1;
     }
     atlas_free(&atlas);  // uploaded to GPU, no longer needed

@@ -119,7 +119,7 @@ struct DrawCmd {
 
 struct GPUObjectStatic {
     float scale[3];
-    float pad;
+    float tex_index;   // -1 = flat color, 0 = polytope rock texture
     float color[4];
 };  // 32 bytes
 
@@ -132,7 +132,9 @@ bool renderer_init(OpenGLRenderer* renderer,
                    const ObjectInitData* objects,
                    int num_objects,
                    GLuint dynamic_pos_buffer,
-                   GLuint dynamic_quat_buffer)
+                   GLuint dynamic_quat_buffer,
+                   const char** obj_tex_paths,
+                   int n_obj_tex)
 {
     memset(renderer, 0, sizeof(OpenGLRenderer));
     renderer->num_objects         = num_objects;
@@ -168,6 +170,8 @@ bool renderer_init(OpenGLRenderer* renderer,
         glGetUniformLocation(renderer->object_shader.program_id, "uEnvMap");
     renderer->object_shader.uniform_has_env_map =
         glGetUniformLocation(renderer->object_shader.program_id, "uHasEnvMap");
+    renderer->object_shader.uniform_tex_array =
+        glGetUniformLocation(renderer->object_shader.program_id, "uTexArray");
 
     renderer->ground_shader.uniform_projection =
         glGetUniformLocation(renderer->ground_shader.program_id, "uProjection");
@@ -198,6 +202,9 @@ bool renderer_init(OpenGLRenderer* renderer,
     // location 1: normal
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(AtlasVertex), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    // location 2: uv
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(AtlasVertex), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->geometry_ebo);
     glBindVertexArray(0);
@@ -205,10 +212,10 @@ bool renderer_init(OpenGLRenderer* renderer,
     // --- Static SSBO ---
     GPUObjectStatic* static_data = (GPUObjectStatic*)malloc(num_objects * sizeof(GPUObjectStatic));
     for (int i = 0; i < num_objects; i++) {
-        static_data[i].scale[0] = objects[i].scale[0];
-        static_data[i].scale[1] = objects[i].scale[1];
-        static_data[i].scale[2] = objects[i].scale[2];
-        static_data[i].pad      = 0.0f;
+        static_data[i].scale[0]   = objects[i].scale[0];
+        static_data[i].scale[1]   = objects[i].scale[1];
+        static_data[i].scale[2]   = objects[i].scale[2];
+        static_data[i].tex_index  = objects[i].tex_index;
         static_data[i].color[0] = objects[i].color[0];
         static_data[i].color[1] = objects[i].color[1];
         static_data[i].color[2] = objects[i].color[2];
@@ -301,6 +308,70 @@ bool renderer_init(OpenGLRenderer* renderer,
         }
     }
 
+    // --- Texture array: rock layers (from config) + OBJ layers (from caller) ---
+    {
+        static const char* rock_files[] = { TEXTURE_ARRAY_FILES };
+        int n_rock = (int)(sizeof(rock_files) / sizeof(rock_files[0]));
+        int total_layers = n_rock + n_obj_tex;
+
+        glGenTextures(1, &renderer->tex_array);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, renderer->tex_array);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_SRGB8_ALPHA8,
+                     TEX_ARRAY_DIM, TEX_ARRAY_DIM, total_layers,
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+
+        auto load_layer = [&](const char* rel, int layer) {
+            char full[1024];
+            resolve_exe_relative(rel, full, sizeof(full));
+            int w, h, nc;
+            stbi_set_flip_vertically_on_load(true);
+            unsigned char* data = stbi_load(full, &w, &h, &nc, 4);
+            if (!data) {
+                fprintf(stderr, "Warning: could not load texture layer %d: %s\n", layer, full);
+                return;
+            }
+            unsigned char* px = data;
+            unsigned char* resized = nullptr;
+            if (w != TEX_ARRAY_DIM || h != TEX_ARRAY_DIM) {
+                resized = (unsigned char*)malloc(TEX_ARRAY_DIM * TEX_ARRAY_DIM * 4);
+                for (int dy = 0; dy < TEX_ARRAY_DIM; dy++) {
+                    for (int dx = 0; dx < TEX_ARRAY_DIM; dx++) {
+                        int sx = dx * w / TEX_ARRAY_DIM;
+                        int sy = dy * h / TEX_ARRAY_DIM;
+                        const unsigned char* s = data + (sy * w + sx) * 4;
+                        unsigned char*       d = resized + (dy * TEX_ARRAY_DIM + dx) * 4;
+                        d[0]=s[0]; d[1]=s[1]; d[2]=s[2]; d[3]=s[3];
+                    }
+                }
+                px = resized;
+            }
+            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0,
+                            0, 0, layer,
+                            TEX_ARRAY_DIM, TEX_ARRAY_DIM, 1,
+                            GL_RGBA, GL_UNSIGNED_BYTE, px);
+            if (resized) free(resized);
+            stbi_image_free(data);
+            fprintf(stderr, "Loaded texture layer %d: %s (%dx%d)\n", layer, rel, w, h);
+        };
+
+        for (int i = 0; i < n_rock; i++) {
+            char rel[512];
+            snprintf(rel, sizeof(rel), "textures/%s", rock_files[i]);
+            load_layer(rel, i);
+        }
+        for (int i = 0; i < n_obj_tex; i++) {
+            char rel[512];
+            snprintf(rel, sizeof(rel), "textures/%s", obj_tex_paths[i]);
+            load_layer(rel, n_rock + i);
+        }
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+    }
+
     return true;
 }
 
@@ -319,6 +390,7 @@ void renderer_cleanup(OpenGLRenderer* renderer) {
     glDeleteBuffers(1, &renderer->draw_cmd_buffer);
     glDeleteBuffers(1, &renderer->ground_vbo);
     if (renderer->env_map_tex) glDeleteTextures(1, &renderer->env_map_tex);
+    if (renderer->tex_array)   glDeleteTextures(1, &renderer->tex_array);
     if (renderer->sky_program) glDeleteProgram(renderer->sky_program);
     glDeleteVertexArrays(1, &renderer->sky_vao);
     // dynamic_pos_buffer is owned by caller
@@ -371,7 +443,7 @@ void renderer_draw(OpenGLRenderer* renderer,
     if (renderer->object_shader.uniform_camera_pos >= 0)
         glUniform3fv(renderer->object_shader.uniform_camera_pos, 1, &cam_pos[0]);
 
-    // Env map
+    // Env map (unit 0)
     if (renderer->object_shader.uniform_has_env_map >= 0)
         glUniform1i(renderer->object_shader.uniform_has_env_map, renderer->env_map_tex ? 1 : 0);
     if (renderer->env_map_tex) {
@@ -379,6 +451,14 @@ void renderer_draw(OpenGLRenderer* renderer,
         glBindTexture(GL_TEXTURE_2D, renderer->env_map_tex);
         if (renderer->object_shader.uniform_env_map >= 0)
             glUniform1i(renderer->object_shader.uniform_env_map, 0);
+    }
+
+    // Texture array (unit 1)
+    if (renderer->tex_array) {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, renderer->tex_array);
+        if (renderer->object_shader.uniform_tex_array >= 0)
+            glUniform1i(renderer->object_shader.uniform_tex_array, 1);
     }
 
     // Bind SSBOs

@@ -21,6 +21,17 @@
 // Environment map filename (inside env_maps/ dir). Set to "" to disable.
 #define ENV_MAP "Tropical_Beach_3k.hdr"
 
+// Texture array (GL_TEXTURE_2D_ARRAY) — all textures resized to TEX_ARRAY_DIM x TEX_ARRAY_DIM.
+// Layers 0..N_ROCK_TEXTURES-1 are rock/polytope textures (randomly assigned per object).
+// Layers N_ROCK_TEXTURES..N_ROCK_TEXTURES+N_OBJ_TEXTURES-1 are per-OBJ textures (in OBJ_PATHS order).
+#define TEX_ARRAY_DIM    1024
+#define N_ROCK_TEXTURES  3
+#define OBJ_TEX_START    N_ROCK_TEXTURES
+#define TEXTURE_ARRAY_FILES \
+    "Rock_9_Base_Color.jpg", \
+    "stone.jpg",             \
+    "whitebubble.jpg"
+
 // Random convex hull shape generation
 #define MAX_HULL_VERTS    32     // maximum GJK vertices per random hull
 #define MIN_HULL_VERTS     8     // minimum GJK vertices per random hull
@@ -46,7 +57,7 @@
 #define FPS 60.0f
 #define DELTA_TIME (1.0f / FPS)
 #define COLLISION_EPSILON 0.1f
-#define RESTITUTION 0.8f
+#define RESTITUTION 0.7f
 #define RESTITUTION_THRESHOLD 2.0f  // closing speed (m/s) below which restitution = 0 (prevents resting vibration)
 #define FRICTION_COEFF 0.2f
 #define ANGULAR_DAMPING 0.999f  // multiplied each physics step

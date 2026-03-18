@@ -17,6 +17,7 @@ typedef struct {
     float** submesh_verts;       // [num_submeshes] flat float3 arrays, local unit-scale
     int*    submesh_vert_counts; // [num_submeshes] vertex counts per sub-mesh
     int    mesh_id;
+    float  tex_index;   // -1 = flat color, 0 = polytope rock texture
 } ObjectInitData;
 
 typedef struct {

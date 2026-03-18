@@ -88,4 +88,7 @@ add_custom_command(TARGET gjk_visualizer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/env_maps
         $<TARGET_FILE_DIR:gjk_visualizer>/env_maps
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/textures
+        $<TARGET_FILE_DIR:gjk_visualizer>/textures
 )

@@ -1,3 +1,7 @@
+# Large asset directories (not tracked in git)
+visualization/textures/
+visualization/env_maps/
+
 *.orig
 *.filters
 *.sln

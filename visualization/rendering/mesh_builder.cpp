@@ -75,6 +75,16 @@ static void cross3(const float* a, const float* b, float* out) {
     out[2] = a[0]*b[1] - a[1]*b[0];
 }
 
+static void set_spherical_uv(AtlasVertex* v) {
+    float x = v->pos[0], y = v->pos[1], z = v->pos[2];
+    float len = sqrtf(x*x + y*y + z*z);
+    if (len > 1e-6f) { x /= len; y /= len; z /= len; }
+    if (y >  1.0f) y =  1.0f;
+    if (y < -1.0f) y = -1.0f;
+    v->uv[0] = atan2f(z, x) * 0.15915f + 0.5f;
+    v->uv[1] = asinf(y) * 0.31831f + 0.5f;
+}
+
 static void face_normal(const float* v0, const float* v1, const float* v2, float* out) {
     float e1[3] = { v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2] };
     float e2[3] = { v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2] };
@@ -106,6 +116,7 @@ int atlas_add_icosahedron(MeshAtlas* atlas) {
         normalize3(v);
         memcpy(verts[i].pos,    v, 12);
         memcpy(verts[i].normal, v, 12);  // for unit sphere: normal == position
+        set_spherical_uv(&verts[i]);
     }
     uint32_t idx[60];
     for (int i = 0; i < 20; i++) {
@@ -139,6 +150,7 @@ int atlas_add_box(MeshAtlas* atlas) {
         for (int c = 0; c < 4; c++) {
             memcpy(verts[f*4+c].pos,    face_corners[f][c],  12);
             memcpy(verts[f*4+c].normal, face_normals[f],     12);
+            set_spherical_uv(&verts[f*4+c]);
         }
         // two tris: 0,1,2 and 0,2,3
         idx[f*6+0] = f*4+0; idx[f*6+1] = f*4+1; idx[f*6+2] = f*4+2;
@@ -169,6 +181,7 @@ int atlas_add_tetrahedron(MeshAtlas* atlas) {
         for (int v = 0; v < 3; v++) {
             memcpy(verts[f*3+v].pos,    tv[tet_faces[f][v]], 12);
             memcpy(verts[f*3+v].normal, n, 12);
+            set_spherical_uv(&verts[f*3+v]);
         }
         idx[f*3+0] = f*3+0;
         idx[f*3+1] = f*3+1;
@@ -192,6 +205,7 @@ int atlas_add_octahedron(MeshAtlas* atlas) {
     for (int i = 0; i < 6; i++) {
         memcpy(verts[i].pos,    ov[i], 12);
         memcpy(verts[i].normal, ov[i], 12);
+        set_spherical_uv(&verts[i]);
     }
     uint32_t idx[24];
     for (int f = 0; f < 8; f++) {
@@ -399,6 +413,7 @@ int atlas_add_convex_hull(MeshAtlas* atlas, const float* pts_flat, int n) {
         for (int k = 0; k < 3; k++) {
             memcpy(verts[fi*3+k].pos,    pts[hull[fi].v[k]], 12);
             memcpy(verts[fi*3+k].normal, fn,                 12);
+            set_spherical_uv(&verts[fi*3+k]);
         }
         idx[fi*3+0] = fi*3+0; idx[fi*3+1] = fi*3+1; idx[fi*3+2] = fi*3+2;
     }
@@ -483,15 +498,18 @@ int load_obj_shape(MeshAtlas* atlas, const char* path,
     std::string err = tinyobj::LoadObj(shapes, materials, path);
     if (!err.empty() || shapes.empty()) return 0;
 
-    // Collect positions and triangle indices across all shapes
+    // Collect positions, UVs, and triangle indices across all shapes
     std::vector<float>    all_pos;
+    std::vector<float>    all_uv;
     std::vector<uint32_t> all_idx;
     for (auto& s : shapes) {
         uint32_t base = (uint32_t)(all_pos.size() / 3);
         all_pos.insert(all_pos.end(), s.mesh.positions.begin(), s.mesh.positions.end());
+        all_uv.insert(all_uv.end(), s.mesh.texcoords.begin(), s.mesh.texcoords.end());
         for (auto idx : s.mesh.indices)
             all_idx.push_back(base + (uint32_t)idx);
     }
+    bool has_uv = (all_uv.size() / 2 >= all_pos.size() / 3);
     int total_verts = (int)(all_pos.size() / 3);
     int total_tris  = (int)(all_idx.size()  / 3);
     if (total_verts < 4 || total_tris < 1) return 0;
@@ -537,6 +555,11 @@ int load_obj_shape(MeshAtlas* atlas, const char* path,
             AtlasVertex va = {{ax,ay,az},{nx,ny,nz}};
             AtlasVertex vb = {{bx,by,bz},{nx,ny,nz}};
             AtlasVertex vc = {{cx,cy,cz},{nx,ny,nz}};
+            if (has_uv) {
+                va.uv[0] = all_uv[i0*2]; va.uv[1] = all_uv[i0*2+1];
+                vb.uv[0] = all_uv[i1*2]; vb.uv[1] = all_uv[i1*2+1];
+                vc.uv[0] = all_uv[i2*2]; vc.uv[1] = all_uv[i2*2+1];
+            }
             uint32_t base = (uint32_t)rverts.size();
             rverts.push_back(va); rverts.push_back(vb); rverts.push_back(vc);
             ridx.push_back(base); ridx.push_back(base+1); ridx.push_back(base+2);

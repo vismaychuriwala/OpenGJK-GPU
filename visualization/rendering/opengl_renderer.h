@@ -12,6 +12,7 @@ struct ShaderProgram {
     GLint  uniform_camera_pos;
     GLint  uniform_env_map;
     GLint  uniform_has_env_map;
+    GLint  uniform_tex_array;
 };
 
 struct OpenGLRenderer {
@@ -24,12 +25,9 @@ struct OpenGLRenderer {
     GLuint mesh_vao;
 
     // Per-object data
-    GLuint static_ssbo;     // scale(3)+pad(1) + color(4) per object, uploaded once
-    // dynamic position buffer (gl_pos_buffer) is owned by the caller and
-    // registered with CUDA; we receive it in renderer_init and store a copy
-
-    GLuint dynamic_pos_buffer;   // float4 per object (xyz=world pos), written by CUDA each frame
-    GLuint dynamic_quat_buffer;  // float4 per object (xyzw=quaternion), written by CUDA each frame
+    GLuint static_ssbo;
+    GLuint dynamic_pos_buffer;
+    GLuint dynamic_quat_buffer;
 
     // Draw indirect
     GLuint draw_cmd_buffer;
@@ -39,8 +37,11 @@ struct OpenGLRenderer {
     GLuint ground_vao;
     GLuint ground_vbo;
 
-    // Environment map
+    // Environment map (unit 0)
     GLuint env_map_tex;
+
+    // Texture array: rock layers + OBJ layers (unit 1)
+    GLuint tex_array;
 
     // Sky
     GLuint sky_program;
@@ -49,13 +50,14 @@ struct OpenGLRenderer {
     GLuint sky_vao;
 };
 
-// dynamic_pos_buffer / dynamic_quat_buffer: the same GL buffers passed to sim_init (registered with CUDA)
 bool renderer_init(OpenGLRenderer* renderer,
                    const MeshAtlas* atlas,
                    const ObjectInitData* objects,
                    int num_objects,
                    GLuint dynamic_pos_buffer,
-                   GLuint dynamic_quat_buffer);
+                   GLuint dynamic_quat_buffer,
+                   const char** obj_tex_paths,
+                   int n_obj_tex);
 
 void renderer_cleanup(OpenGLRenderer* renderer);
 void renderer_draw(OpenGLRenderer* renderer,

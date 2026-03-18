@@ -2,6 +2,7 @@
 
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
 
 uniform mat4 uProjection;
 uniform mat4 uView;
@@ -26,6 +27,8 @@ layout(std430, binding = 2) readonly buffer QuatSSBO {
 out vec3 v_world_normal;
 out vec3 v_world_pos;
 out vec4 v_color;
+out vec2 v_uv;
+flat out float v_tex_index;
 
 vec3 quat_rotate(vec4 q, vec3 v) {
     vec3 u = q.xyz;
@@ -47,6 +50,8 @@ void main() {
     v_world_pos    = rotated + world_pos;
     v_world_normal = normalize(quat_rotate(q, a_normal / scale));
     v_color        = objects[id].color;
+    v_uv           = a_uv;
+    v_tex_index    = objects[id].scale_pad.w;
 
     gl_Position = uProjection * uView * vec4(v_world_pos, 1.0);
 }

@@ -19,6 +19,14 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
     g_input.mouse_buttons[button] = (action == GLFW_PRESS);
 }
 
+static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+    // Accumulate delta from each move event fired during glfwPollEvents
+    g_input.mouse_delta_x += xpos - g_input.mouse_x;
+    g_input.mouse_delta_y += ypos - g_input.mouse_y;
+    g_input.mouse_x = xpos;
+    g_input.mouse_y = ypos;
+}
+
 static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     g_input.scroll_offset += yoffset;
 }
@@ -28,27 +36,30 @@ void input_init(GLFWwindow* window) {
 
     glfwSetKeyCallback(window, key_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetCursorPosCallback(window, cursor_pos_callback);
     glfwSetScrollCallback(window, scroll_callback);
 
-    // Initialize mouse position
     glfwGetCursorPos(window, &g_input.mouse_x, &g_input.mouse_y);
-    g_input.prev_mouse_x = g_input.mouse_x;
-    g_input.prev_mouse_y = g_input.mouse_y;
 }
 
 void input_update(GLFWwindow* window) {
-    // Update mouse position and delta
-    glfwGetCursorPos(window, &g_input.mouse_x, &g_input.mouse_y);
-    g_input.mouse_delta_x = g_input.mouse_x - g_input.prev_mouse_x;
-    g_input.mouse_delta_y = g_input.mouse_y - g_input.prev_mouse_y;
-    g_input.prev_mouse_x = g_input.mouse_x;
-    g_input.prev_mouse_y = g_input.mouse_y;
+    bool prev_lmb = g_input.mouse_buttons[GLFW_MOUSE_BUTTON_LEFT];
 
-    // Reset one-shot events
+    // Reset per-frame accumulators before polling
     std::memset(g_input.keys_pressed, 0, sizeof(g_input.keys_pressed));
     g_input.scroll_offset = 0.0;
+    g_input.mouse_delta_x = 0.0;
+    g_input.mouse_delta_y = 0.0;
 
+    // cursor_pos_callback accumulates delta for all move events this frame
     glfwPollEvents();
+
+    // On the first frame of a drag, discard delta — it may include pre-click movement
+    bool lmb_just_pressed = !prev_lmb && g_input.mouse_buttons[GLFW_MOUSE_BUTTON_LEFT];
+    if (lmb_just_pressed) {
+        g_input.mouse_delta_x = 0.0;
+        g_input.mouse_delta_y = 0.0;
+    }
 }
 
 // Raylib-compatible helper functions
