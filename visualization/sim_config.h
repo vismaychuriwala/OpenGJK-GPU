@@ -18,6 +18,9 @@
 // Set to 1 to load OBJ files at startup (slow for dense meshes until hull builder is improved)
 #define LOAD_OBJS 1
 
+// Environment map filename (inside env_maps/ dir). Set to "" to disable.
+#define ENV_MAP "Tropical_Beach_3k.hdr"
+
 // Random convex hull shape generation
 #define MAX_HULL_VERTS    32     // maximum GJK vertices per random hull
 #define MIN_HULL_VERTS     8     // minimum GJK vertices per random hull

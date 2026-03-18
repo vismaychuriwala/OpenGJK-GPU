@@ -10,6 +10,8 @@ struct ShaderProgram {
     GLint  uniform_view;
     GLint  uniform_light_dir;
     GLint  uniform_camera_pos;
+    GLint  uniform_env_map;
+    GLint  uniform_has_env_map;
 };
 
 struct OpenGLRenderer {
@@ -36,6 +38,15 @@ struct OpenGLRenderer {
     // Ground plane
     GLuint ground_vao;
     GLuint ground_vbo;
+
+    // Environment map
+    GLuint env_map_tex;
+
+    // Sky
+    GLuint sky_program;
+    GLint  sky_uniform_inv_proj_view;
+    GLint  sky_uniform_env_map;
+    GLuint sky_vao;
 };
 
 // dynamic_pos_buffer / dynamic_quat_buffer: the same GL buffers passed to sim_init (registered with CUDA)

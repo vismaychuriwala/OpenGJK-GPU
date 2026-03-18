@@ -12,6 +12,9 @@
 #include <cstring>
 #include <cmath>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "../include/stb_image.h"
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -161,6 +164,10 @@ bool renderer_init(OpenGLRenderer* renderer,
         glGetUniformLocation(renderer->object_shader.program_id, "uLightDir");
     renderer->object_shader.uniform_camera_pos =
         glGetUniformLocation(renderer->object_shader.program_id, "uCameraPos");
+    renderer->object_shader.uniform_env_map =
+        glGetUniformLocation(renderer->object_shader.program_id, "uEnvMap");
+    renderer->object_shader.uniform_has_env_map =
+        glGetUniformLocation(renderer->object_shader.program_id, "uHasEnvMap");
 
     renderer->ground_shader.uniform_projection =
         glGetUniformLocation(renderer->ground_shader.program_id, "uProjection");
@@ -255,6 +262,45 @@ bool renderer_init(OpenGLRenderer* renderer,
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
+    // --- Sky shader + empty VAO ---
+    {
+        char sky_vert[1024], sky_frag[1024];
+        resolve_exe_relative("shaders/sky.vert", sky_vert, sizeof(sky_vert));
+        resolve_exe_relative("shaders/sky.frag", sky_frag, sizeof(sky_frag));
+        renderer->sky_program = create_shader_program(sky_vert, sky_frag);
+        if (renderer->sky_program) {
+            renderer->sky_uniform_inv_proj_view =
+                glGetUniformLocation(renderer->sky_program, "uInvProjView");
+            renderer->sky_uniform_env_map =
+                glGetUniformLocation(renderer->sky_program, "uEnvMap");
+        }
+        glGenVertexArrays(1, &renderer->sky_vao);
+    }
+
+    // --- Environment map (equirectangular HDR) ---
+    renderer->env_map_tex = 0;
+    if (sizeof(ENV_MAP) > sizeof("")) {
+        char env_path[1024];
+        resolve_exe_relative("env_maps/" ENV_MAP, env_path, sizeof(env_path));
+        int w, h, nc;
+        stbi_set_flip_vertically_on_load(true);
+        float* data = stbi_loadf(env_path, &w, &h, &nc, 0);
+        if (data) {
+            glGenTextures(1, &renderer->env_map_tex);
+            glBindTexture(GL_TEXTURE_2D, renderer->env_map_tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, w, h, 0, GL_RGB, GL_FLOAT, data);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glGenerateMipmap(GL_TEXTURE_2D);
+            stbi_image_free(data);
+            fprintf(stderr, "Loaded env map: %s (%dx%d)\n", ENV_MAP, w, h);
+        } else {
+            fprintf(stderr, "Warning: could not load env map: %s\n", env_path);
+        }
+    }
+
     return true;
 }
 
@@ -272,6 +318,9 @@ void renderer_cleanup(OpenGLRenderer* renderer) {
     glDeleteBuffers(1, &renderer->static_ssbo);
     glDeleteBuffers(1, &renderer->draw_cmd_buffer);
     glDeleteBuffers(1, &renderer->ground_vbo);
+    if (renderer->env_map_tex) glDeleteTextures(1, &renderer->env_map_tex);
+    if (renderer->sky_program) glDeleteProgram(renderer->sky_program);
+    glDeleteVertexArrays(1, &renderer->sky_vao);
     // dynamic_pos_buffer is owned by caller
 }
 
@@ -284,6 +333,22 @@ void renderer_draw(OpenGLRenderer* renderer,
                    const glm::mat4& view)
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Sky (fullscreen triangle behind everything)
+    if (renderer->sky_program && renderer->env_map_tex) {
+        glDepthMask(GL_FALSE);
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(renderer->sky_program);
+        glm::mat4 inv_proj_view = glm::inverse(projection * glm::mat4(glm::mat3(view)));
+        glUniformMatrix4fv(renderer->sky_uniform_inv_proj_view, 1, GL_FALSE, &inv_proj_view[0][0]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, renderer->env_map_tex);
+        glUniform1i(renderer->sky_uniform_env_map, 0);
+        glBindVertexArray(renderer->sky_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+    }
 
     // Ground
     glUseProgram(renderer->ground_shader.program_id);
@@ -305,6 +370,16 @@ void renderer_draw(OpenGLRenderer* renderer,
     glm::vec3 cam_pos = -glm::transpose(glm::mat3(view)) * glm::vec3(view[3]);
     if (renderer->object_shader.uniform_camera_pos >= 0)
         glUniform3fv(renderer->object_shader.uniform_camera_pos, 1, &cam_pos[0]);
+
+    // Env map
+    if (renderer->object_shader.uniform_has_env_map >= 0)
+        glUniform1i(renderer->object_shader.uniform_has_env_map, renderer->env_map_tex ? 1 : 0);
+    if (renderer->env_map_tex) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, renderer->env_map_tex);
+        if (renderer->object_shader.uniform_env_map >= 0)
+            glUniform1i(renderer->object_shader.uniform_env_map, 0);
+    }
 
     // Bind SSBOs
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, renderer->static_ssbo);

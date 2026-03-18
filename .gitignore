@@ -140,6 +140,7 @@ crashlytics-build.properties
 Session.vim
 .netrwhist
 *~
+.claude
 
 
 ### Emacs ###
@@ -192,6 +193,7 @@ install_manifest.txt
 *.lo
 *.o
 *.obj
+*.hdr
 
 # Precompiled Headers
 *.gch

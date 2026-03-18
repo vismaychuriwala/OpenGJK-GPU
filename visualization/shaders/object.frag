@@ -6,8 +6,16 @@ in vec4 v_color;
 
 uniform vec3 uLightDir;
 uniform vec3 uCameraPos;
+uniform sampler2D uEnvMap;
+uniform bool uHasEnvMap;
 
 out vec4 frag_color;
+
+vec2 sampleSphericalMap(vec3 v) {
+    vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
+    uv *= vec2(0.1591, 0.3183);
+    return uv + 0.5;
+}
 
 void main() {
     vec3 n = normalize(v_world_normal);
@@ -15,9 +23,17 @@ void main() {
     vec3 v = normalize(uCameraPos - v_world_pos);
     vec3 h = normalize(l + v);
 
-    // Hemisphere ambient: warm sky above, cool ground below
-    float hemi = n.y * 0.5 + 0.5;
-    vec3 ambient = mix(vec3(0.05, 0.06, 0.12), vec3(0.20, 0.18, 0.14), hemi);
+    // Ambient: env map at high mip (blurred diffuse) or hemisphere fallback
+    vec3 ambient;
+    if (uHasEnvMap) {
+        // Sample a blurred mip level — averages out sharp highlights to prevent flickering
+        vec3 env = textureLod(uEnvMap, sampleSphericalMap(n), 5.0).rgb;
+        env = env / (env + vec3(1.0)); // Reinhard
+        ambient = env * 0.8;
+    } else {
+        float hemi = n.y * 0.5 + 0.5;
+        ambient = mix(vec3(0.05, 0.06, 0.12), vec3(0.20, 0.18, 0.14), hemi);
+    }
 
     // Key light diffuse
     float diff_key = max(dot(n, l), 0.0);
