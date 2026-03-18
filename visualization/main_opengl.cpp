@@ -74,10 +74,11 @@ static const char* OBJ_PATHS[] = {
     "objs/alienanimal.obj",
 };
 static const int NUM_OBJ_SHAPES = sizeof(OBJ_PATHS) / sizeof(OBJ_PATHS[0]);
-static int    g_obj_mesh_ids[NUM_OBJ_SHAPES];
-static float* g_obj_gjk_verts[NUM_OBJ_SHAPES];
-static int    g_obj_gjk_counts[NUM_OBJ_SHAPES];
-static int    g_num_obj_loaded = 0;
+static int     g_obj_num_hulls[NUM_OBJ_SHAPES];
+static int     g_obj_mesh_ids[NUM_OBJ_SHAPES];   // render mesh id (original OBJ triangles)
+static float** g_obj_gjk_verts[NUM_OBJ_SHAPES];  // physics hulls
+static int*    g_obj_gjk_counts[NUM_OBJ_SHAPES];
+static int     g_num_obj_loaded = 0;
 #else
 static const int g_num_obj_loaded = 0;
 #endif
@@ -123,7 +124,9 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         int ok = load_obj_shape(atlas, path.c_str(),
                                 &g_obj_mesh_ids[o],
                                 &g_obj_gjk_verts[o],
-                                &g_obj_gjk_counts[o]);
+                                &g_obj_gjk_counts[o],
+                                &g_obj_num_hulls[o]);
+
         if (ok) { g_num_obj_loaded++; }
         else    { printf("Warning: could not load %s\n", path.c_str()); }
     }
@@ -134,6 +137,15 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
     float start_height = 10.0f;
 
     int total_types = SHAPE_BASE_COUNT + g_num_hull_variants + g_num_obj_loaded;
+
+    // Count OBJ objects for centering the row
+    int n_obj_objects = 0;
+    for (int j = 0; j < num_objects; j++) {
+        int t = j % total_types;
+        if (t >= g_num_hull_variants && t < g_num_hull_variants + g_num_obj_loaded)
+            n_obj_objects++;
+    }
+    int obj_idx = 0;
 
     for (int i = 0; i < num_objects; i++) {
         int row = i / grid_size, col = i % grid_size;
@@ -148,6 +160,10 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         int    gjk_count = 0;
         float* gjk_verts = nullptr;
         int    mesh_id   = 0;
+        // Multi-hull override (OBJ shapes); null = single-mesh path
+        float** sm_verts  = nullptr;
+        int*    sm_counts = nullptr;
+        int     num_sm    = 0;
 
         if (type_idx < g_num_hull_variants) {
             // Random hull variant
@@ -159,12 +175,20 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         }
 #if LOAD_OBJS
         else if (type_idx < g_num_hull_variants + g_num_obj_loaded) {
-            // OBJ shape
             int obj_id = type_idx - g_num_hull_variants;
-            gjk_count = g_obj_gjk_counts[obj_id];
-            gjk_verts = (float*)malloc(gjk_count * 3 * sizeof(float));
-            memcpy(gjk_verts, g_obj_gjk_verts[obj_id], gjk_count * 3 * sizeof(float));
-            mesh_id = g_obj_mesh_ids[obj_id];
+            num_sm    = g_obj_num_hulls[obj_id];
+            sm_verts  = (float**)malloc(num_sm * sizeof(float*));
+            sm_counts = (int*)   malloc(num_sm * sizeof(int));
+            for (int h = 0; h < num_sm; h++) {
+                int nv = g_obj_gjk_counts[obj_id][h];
+                sm_verts[h]  = (float*)malloc(nv * 3 * sizeof(float));
+                sm_counts[h] = nv;
+                memcpy(sm_verts[h], g_obj_gjk_verts[obj_id][h], nv * 3 * sizeof(float));
+            }
+            // Use first hull for bounding radius and inertia estimates
+            gjk_verts = sm_verts[0];
+            gjk_count = sm_counts[0];
+            mesh_id   = g_obj_mesh_ids[obj_id];
         }
 #endif
         else {
@@ -175,20 +199,47 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         }
 
         float base = rf(SCALE_BASE_MIN, SCALE_BASE_MAX);
-        float sx = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
-        float sy = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
-        float sz = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
-
+        float sx, sy, sz;
+        if (sm_verts) {
+            sx = sy = sz = OBJ_SCALE;
+        } else {
+            sx = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
+            sy = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
+            sz = base * rf(SCALE_AXIS_MIN, SCALE_AXIS_MAX);
+        }
         float scale[3] = { sx, sy, sz };
-        float br = compute_bounding_radius(gjk_verts, gjk_count, scale);
 
-        objects[i].position[0] = x_off + col * spacing + rn();
-        objects[i].position[1] = start_height + (i % 3) * 2.0f + rn();
-        objects[i].position[2] = z_off + row * spacing + rn();
+        // Bounding radius: max over all hulls for multi-mesh, single hull otherwise
+        float br = 0.0f;
+        if (sm_verts) {
+            for (int h = 0; h < num_sm; h++) {
+                float r = compute_bounding_radius(sm_verts[h], sm_counts[h], scale);
+                if (r > br) br = r;
+            }
+        } else {
+            br = compute_bounding_radius(gjk_verts, gjk_count, scale);
+        }
 
-        objects[i].velocity[0] = ((i % 3) - 1) * 1.0f + rn();
-        objects[i].velocity[1] = rn();
-        objects[i].velocity[2] = ((i % 2) - 0.5f) * 2.0f + rn();
+        if (sm_verts) {
+            // OBJ: single row centred at origin
+            float ox = (obj_idx - (n_obj_objects - 1) * 0.5f) * OBJ_SPACING;
+            float oz = 0.0f;
+            float boundary = COMPUTE_BOUNDARY(num_objects);
+            objects[i].position[0] = ox;
+            objects[i].position[1] = -boundary + OBJ_SCALE * 0.3f;
+            objects[i].position[2] = oz;
+            objects[i].velocity[0] = 0.0f;
+            objects[i].velocity[1] = 0.0f;
+            objects[i].velocity[2] = 0.0f;
+            obj_idx++;
+        } else {
+            objects[i].position[0] = x_off + col * spacing + rn();
+            objects[i].position[1] = start_height + (i % 3) * 2.0f + rn();
+            objects[i].position[2] = z_off + row * spacing + rn();
+            objects[i].velocity[0] = ((i % 3) - 1) * 1.0f + rn();
+            objects[i].velocity[1] = rn();
+            objects[i].velocity[2] = ((i % 2) - 0.5f) * 2.0f + rn();
+        }
 
         objects[i].scale[0] = sx;
         objects[i].scale[1] = sy;
@@ -197,10 +248,25 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         object_color(i, objects[i].color);
 
         float mass = sx * sy * sz;
+
+        if (sm_verts) {
+            // OBJ: assign all hulls as sub-meshes
+            objects[i].num_submeshes       = num_sm;
+            objects[i].submesh_verts       = sm_verts;
+            objects[i].submesh_vert_counts = sm_counts;
+        } else {
+            // Single mesh: wrap in 1-element arrays
+            float** verts_arr  = (float**)malloc(sizeof(float*));
+            int*    counts_arr = (int*)   malloc(sizeof(int));
+            verts_arr[0]  = gjk_verts;
+            counts_arr[0] = gjk_count;
+            objects[i].num_submeshes       = 1;
+            objects[i].submesh_verts       = verts_arr;
+            objects[i].submesh_vert_counts = counts_arr;
+        }
+
         objects[i].mass            = mass;
         objects[i].bounding_radius = br;
-        objects[i].gjk_verts       = gjk_verts;
-        objects[i].num_gjk_verts   = gjk_count;
         objects[i].mesh_id         = mesh_id;
 
         // Inertia: Ixx = mass*(ky*sy²+kz*sz²), etc.
@@ -218,6 +284,18 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
                 default:                k = (1.0f + 1.0f / std::sqrt(5.0f)) / 10.0f; break;
             }
             kx = ky = kz = k;
+        } else if (sm_verts) {
+            // OBJ: combine all V-HACD hull vertices in their shared body-COM frame
+            int total_combined = 0;
+            for (int h = 0; h < num_sm; h++) total_combined += sm_counts[h];
+            float* combined = (float*)malloc(total_combined * 3 * sizeof(float));
+            int off = 0;
+            for (int h = 0; h < num_sm; h++) {
+                memcpy(combined + off * 3, sm_verts[h], sm_counts[h] * 3 * sizeof(float));
+                off += sm_counts[h];
+            }
+            compute_hull_inertia_k(combined, total_combined, &kx, &ky, &kz);
+            free(combined);
         } else {
             compute_hull_inertia_k(gjk_verts, gjk_count, &kx, &ky, &kz);
         }
@@ -232,14 +310,27 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
 
 static void free_scene_gjk_verts(ObjectInitData* objects, int num_objects) {
     for (int i = 0; i < num_objects; i++) {
-        free(objects[i].gjk_verts);
-        objects[i].gjk_verts = nullptr;
+        for (int s = 0; s < objects[i].num_submeshes; s++)
+            free(objects[i].submesh_verts[s]);
+        free(objects[i].submesh_verts);
+        free(objects[i].submesh_vert_counts);
+        objects[i].submesh_verts       = nullptr;
+        objects[i].submesh_vert_counts = nullptr;
+        objects[i].num_submeshes       = 0;
     }
     for (int h = 0; h < g_num_hull_variants; h++)
         free(g_hull_gjk_verts[h]);
     free(g_hull_mesh_ids);  free(g_hull_gjk_verts);  free(g_hull_gjk_counts);
     g_hull_mesh_ids = nullptr;  g_hull_gjk_verts = nullptr;  g_hull_gjk_counts = nullptr;
     g_num_hull_variants = 0;
+#if LOAD_OBJS
+    for (int o = 0; o < g_num_obj_loaded; o++) {
+        for (int h = 0; h < g_obj_num_hulls[o]; h++)
+            free(g_obj_gjk_verts[o][h]);
+        free(g_obj_gjk_verts[o]);
+        free(g_obj_gjk_counts[o]);
+    }
+#endif
 }
 
 int main(void) {

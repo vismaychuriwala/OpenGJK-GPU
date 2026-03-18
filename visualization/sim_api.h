@@ -11,10 +11,11 @@ typedef struct {
     float  scale[3];
     float  color[4];
     float  mass;
-    float  bounding_radius;  // world-space, after scale applied
-    float  inv_inertia[3];   // inverse principal moments (Ixx,Iyy,Izz) in body frame
-    float* gjk_verts;        // caller-allocated flat float[num_gjk_verts * 3], local unit-scale
-    int    num_gjk_verts;
+    float  bounding_radius;      // world-space bounding radius enclosing all sub-meshes
+    float  inv_inertia[3];       // inverse principal moments (Ixx,Iyy,Izz) in body frame
+    int    num_submeshes;        // number of convex sub-meshes
+    float** submesh_verts;       // [num_submeshes] flat float3 arrays, local unit-scale
+    int*    submesh_vert_counts; // [num_submeshes] vertex counts per sub-mesh
     int    mesh_id;
 } ObjectInitData;
 

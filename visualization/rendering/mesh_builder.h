@@ -72,12 +72,15 @@ void center_hull_verts(float* pts_flat, int n);
 void compute_hull_inertia_k(const float* gjk_verts, int n, float* kx, float* ky, float* kz);
 
 // Load an OBJ file and build:
-//   - a flat-shaded convex hull render mesh added to `atlas` (mesh_id returned via out_mesh_id)
-//   - a unit-normalised, COM-centred GJK vertex cloud (malloc'd, caller frees via out_gjk_verts)
+// Loads an OBJ, adds the original triangulated mesh to the atlas for rendering,
+// and runs V-HACD convex decomposition for physics.
 // Returns 1 on success, 0 on failure.
-// All OBJ vertices are normalised to fit in the unit sphere so that object scale[3] controls size.
+// out_gjk_verts and out_gjk_counts are malloc'd arrays of length *out_num_hulls.
+// Caller frees: each out_gjk_verts[h], then out_gjk_verts and out_gjk_counts.
 int load_obj_shape(MeshAtlas* atlas, const char* path,
-                   int* out_mesh_id, float** out_gjk_verts, int* out_gjk_count);
+                   int* out_render_mesh_id,
+                   float*** out_gjk_verts,
+                   int** out_gjk_counts, int* out_num_hulls);
 
 #ifdef __cplusplus
 }

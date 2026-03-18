@@ -7,6 +7,9 @@
 
 #include <tinyobj/tiny_obj_loader.h>
 
+#define ENABLE_VHACD_IMPLEMENTATION 1
+#include <v-hacd/VHACD.h>
+
 static void atlas_grow_verts(MeshAtlas* a, int needed) {
     if (a->num_vertices + needed <= a->vertex_cap) return;
     while (a->vertex_cap < a->num_vertices + needed) a->vertex_cap = a->vertex_cap ? a->vertex_cap * 2 : 256;
@@ -471,22 +474,27 @@ void compute_hull_inertia_k(const float* pts_flat, int n, float* kx, float* ky, 
 // ============================================================================
 
 int load_obj_shape(MeshAtlas* atlas, const char* path,
-                   int* out_mesh_id, float** out_gjk_verts, int* out_gjk_count)
+                   int* out_render_mesh_id,
+                   float*** out_gjk_verts,
+                   int** out_gjk_counts, int* out_num_hulls)
 {
     std::vector<tinyobj::shape_t>    shapes;
     std::vector<tinyobj::material_t> materials;
     std::string err = tinyobj::LoadObj(shapes, materials, path);
     if (!err.empty() || shapes.empty()) return 0;
 
-    // Collect all unique positions across all shapes
-    // Use the first shape's positions as the vertex cloud (covers most single-mesh OBJs).
-    // For multi-shape OBJs all positions are concatenated.
-    std::vector<float> all_pos;
+    // Collect positions and triangle indices across all shapes
+    std::vector<float>    all_pos;
+    std::vector<uint32_t> all_idx;
     for (auto& s : shapes) {
+        uint32_t base = (uint32_t)(all_pos.size() / 3);
         all_pos.insert(all_pos.end(), s.mesh.positions.begin(), s.mesh.positions.end());
+        for (auto idx : s.mesh.indices)
+            all_idx.push_back(base + (uint32_t)idx);
     }
     int total_verts = (int)(all_pos.size() / 3);
-    if (total_verts < 4) return 0;
+    int total_tris  = (int)(all_idx.size()  / 3);
+    if (total_verts < 4 || total_tris < 1) return 0;
 
     // Normalise so the furthest vertex sits on the unit sphere
     float max_r2 = 0.0f;
@@ -496,16 +504,85 @@ int load_obj_shape(MeshAtlas* atlas, const char* path,
         if (r2 > max_r2) max_r2 = r2;
     }
     float inv_r = (max_r2 > 1e-8f) ? 1.0f / sqrtf(max_r2) : 1.0f;
-    for (int i = 0; i < (int)all_pos.size(); i++) all_pos[i] *= inv_r;
+    for (auto& v : all_pos) v *= inv_r;
 
-    // Build GJK vertex cloud = convex hull of all positions, COM-centred
-    float* gjk = (float*)malloc(total_verts * 3 * sizeof(float));
-    memcpy(gjk, all_pos.data(), total_verts * 3 * sizeof(float));
-    center_hull_verts(gjk, total_verts);
+    // Centre vertices at their centroid so body position = centre of mass
+    {
+        float cx = 0, cy = 0, cz = 0;
+        for (int i = 0; i < total_verts; i++) {
+            cx += all_pos[i*3]; cy += all_pos[i*3+1]; cz += all_pos[i*3+2];
+        }
+        cx /= total_verts; cy /= total_verts; cz /= total_verts;
+        for (int i = 0; i < total_verts; i++) {
+            all_pos[i*3+0] -= cx; all_pos[i*3+1] -= cy; all_pos[i*3+2] -= cz;
+        }
+    }
 
-    *out_gjk_verts = gjk;
-    *out_gjk_count = total_verts;
-    *out_mesh_id   = atlas_add_convex_hull(atlas, gjk, total_verts);
+    // Build flat-shaded render mesh from original OBJ triangles
+    {
+        std::vector<AtlasVertex> rverts;
+        std::vector<uint32_t>    ridx;
+        rverts.reserve(total_tris * 3);
+        ridx.reserve(total_tris * 3);
+        for (int t = 0; t < total_tris; t++) {
+            uint32_t i0 = all_idx[t*3], i1 = all_idx[t*3+1], i2 = all_idx[t*3+2];
+            float ax = all_pos[i0*3], ay = all_pos[i0*3+1], az = all_pos[i0*3+2];
+            float bx = all_pos[i1*3], by = all_pos[i1*3+1], bz = all_pos[i1*3+2];
+            float cx = all_pos[i2*3], cy = all_pos[i2*3+1], cz = all_pos[i2*3+2];
+            float ex = bx-ax, ey = by-ay, ez = bz-az;
+            float fx = cx-ax, fy = cy-ay, fz = cz-az;
+            float nx = ey*fz - ez*fy, ny = ez*fx - ex*fz, nz = ex*fy - ey*fx;
+            float nl = sqrtf(nx*nx + ny*ny + nz*nz);
+            if (nl > 1e-8f) { float inv = 1.0f/nl; nx*=inv; ny*=inv; nz*=inv; }
+            AtlasVertex va = {{ax,ay,az},{nx,ny,nz}};
+            AtlasVertex vb = {{bx,by,bz},{nx,ny,nz}};
+            AtlasVertex vc = {{cx,cy,cz},{nx,ny,nz}};
+            uint32_t base = (uint32_t)rverts.size();
+            rverts.push_back(va); rverts.push_back(vb); rverts.push_back(vc);
+            ridx.push_back(base); ridx.push_back(base+1); ridx.push_back(base+2);
+        }
+        *out_render_mesh_id = atlas_add_mesh(atlas, rverts.data(), (int)rverts.size(),
+                                              ridx.data(), (int)ridx.size());
+    }
+
+    // V-HACD convex decomposition for physics
+    printf("[OBJ] %s — %d verts, %d tris, running V-HACD...\n", path, total_verts, total_tris);
+    VHACD::IVHACD* vhacd = VHACD::CreateVHACD();
+    VHACD::IVHACD::Parameters params;
+    params.m_maxConvexHulls = 8;
+    params.m_resolution     = 100000;
+    bool ok = vhacd->Compute(all_pos.data(), (uint32_t)total_verts,
+                              all_idx.data(), (uint32_t)total_tris, params);
+    if (!ok) { vhacd->Release(); return 0; }
+
+    uint32_t num_hulls = vhacd->GetNConvexHulls();
+    printf("[OBJ] V-HACD produced %u hulls\n", num_hulls);
+
+    float** gjk_arr = (float**)malloc(num_hulls * sizeof(float*));
+    int*    cnt_arr = (int*)   malloc(num_hulls * sizeof(int));
+
+    for (uint32_t h = 0; h < num_hulls; h++) {
+        VHACD::IVHACD::ConvexHull hull;
+        vhacd->GetConvexHull(h, hull);
+        int nv = (int)hull.m_points.size();
+        float* gjk = (float*)malloc(nv * 3 * sizeof(float));
+        for (int v = 0; v < nv; v++) {
+            gjk[v*3+0] = (float)hull.m_points[v].mX;
+            gjk[v*3+1] = (float)hull.m_points[v].mY;
+            gjk[v*3+2] = (float)hull.m_points[v].mZ;
+        }
+        // No per-hull centering: all hulls share the same body-COM frame
+        // (all_pos was already centred above, V-HACD preserves that frame)
+        gjk_arr[h] = gjk;
+        cnt_arr[h] = nv;
+    }
+
+    vhacd->Clean();
+    vhacd->Release();
+
+    *out_gjk_verts  = gjk_arr;
+    *out_gjk_counts = cnt_arr;
+    *out_num_hulls  = (int)num_hulls;
     return 1;
 }
 

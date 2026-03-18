@@ -42,10 +42,11 @@ static_assert(sizeof(gkFloat) == sizeof(float), "GJK float type mismatch: verts_
 // Global device arrays
 // ============================================================================
 
-static int g_num_objects  = 0;
-static int g_num_pairs    = 0;
-static int g_max_pairs    = 0;
-static int g_total_verts  = 0;
+static int g_num_objects   = 0;
+static int g_num_submeshes = 0;
+static int g_num_sub_pairs = 0;
+static int g_max_pairs     = 0;
+static int g_total_verts   = 0;
 
 // Physics state
 static float4* d_positions;       // xyz = world pos, w = bounding_radius (constant)
@@ -73,15 +74,24 @@ static gkFloat* d_epa_w1;
 static gkFloat* d_epa_w2;
 static gkFloat* d_epa_normals;
 
+// Body/sub-mesh mapping
+static int*             d_body_sub_offsets;  // body → first sub-mesh index
+static int*             d_body_sub_counts;   // body → sub-mesh count
+static int*             d_sub_mesh_body;     // sub-mesh → body index
+
 // Broad-phase
 static int*              d_grid_counts;
 static int*              d_grid_objects;
-static gkCollisionPair*  d_collision_pairs;
-static int*              d_pair_counts;
-static int*              d_pair_offsets;
-static int*              d_scan_aux;   // pre-allocated auxiliary buffer for recursive_scan
-static int               g_grid_size;  // runtime grid divisions per axis
-static float             g_cell_size;  // runtime cell size (>= 2 * max_bounding_radius)
+static gkCollisionPair*  d_collision_pairs;    // body pairs (intermediate)
+static gkCollisionPair*  d_sub_pairs;          // sub-mesh pairs (GJK/EPA/response input)
+static int*              d_pair_counts;        // per-body body-pair counts (for body-pair scan)
+static int*              d_pair_offsets;       // prefix-scanned body-pair offsets
+static int*              d_sub_pair_counts;    // per-body-pair sub-mesh-pair counts
+static int*              d_sub_pair_offsets;   // prefix-scanned sub-mesh-pair offsets
+static int*              d_scan_aux;           // aux buffer for body-pair recursive_scan
+static int*              d_sub_pair_scan_aux;  // aux buffer for sub-pair recursive_scan
+static int               g_grid_size;
+static float             g_cell_size;
 
 // GL interop
 static cudaGraphicsResource_t g_gl_pos_resource  = nullptr;
@@ -107,6 +117,34 @@ __device__ static inline float3 quat_rotate(float4 q, float3 v) {
 // Rotate by conjugate (R^T for unit quaternion)
 __device__ static inline float3 quat_rotate_inv(float4 q, float3 v) {
     return quat_rotate(make_float4(-q.x, -q.y, -q.z, q.w), v);
+}
+
+// Find the world-space vertex of body `body` that minimises dot(v, n).
+// Used to get the exact contact point against a wall with inward normal n.
+__device__ static float3 support_point_min(
+    int body,
+    float3 n,
+    const float3* verts_world,
+    const int*    vert_offsets,
+    const int*    vert_counts,
+    const int*    body_sub_offsets,
+    const int*    body_sub_counts)
+{
+    int sub_start = body_sub_offsets[body];
+    int sub_count = body_sub_counts[body];
+    float  best_dot = 1e30f;
+    float3 best_v   = make_float3(0.0f, 0.0f, 0.0f);
+    for (int s = 0; s < sub_count; s++) {
+        int sm   = sub_start + s;
+        int voff = vert_offsets[sm];
+        int vcnt = vert_counts[sm];
+        for (int v = 0; v < vcnt; v++) {
+            float3 wv = verts_world[voff + v];
+            float  d  = wv.x*n.x + wv.y*n.y + wv.z*n.z;
+            if (d < best_dot) { best_dot = d; best_v = wv; }
+        }
+    }
+    return best_v;
 }
 
 // Apply friction impulse at a boundary contact.
@@ -202,7 +240,8 @@ __device__ static void apply_boundary_contact(
     float3 Irxn      = make_float3(inv_I.x*rxn_body.x, inv_I.y*rxn_body.y, inv_I.z*rxn_body.z);
     float  ang_denom = rxn_body.x*Irxn.x + rxn_body.y*Irxn.y + rxn_body.z*Irxn.z;
 
-    float j_n = (1.0f + RESTITUTION) * v_n_close / (inv_mass + ang_denom);
+    float e   = (v_n_close > RESTITUTION_THRESHOLD) ? RESTITUTION : 0.0f;
+    float j_n = (1.0f + e) * v_n_close / (inv_mass + ang_denom);
 
     // Linear impulse
     vel.x += j_n * inv_mass * n.x;
@@ -224,6 +263,46 @@ __device__ static void apply_boundary_contact(
 // Kernels
 // ============================================================================
 
+// Counts how many sub-mesh pairs each body pair expands to: cntA * cntB.
+__global__ void count_submesh_pairs_kernel(
+    const gkCollisionPair* body_pairs,
+    int                    num_body_pairs,
+    const int*             body_sub_counts,
+    int*                   out_counts)
+{
+    int p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= num_body_pairs) return;
+    out_counts[p] = body_sub_counts[body_pairs[p].idx1]
+                  * body_sub_counts[body_pairs[p].idx2];
+}
+
+// Expands body pairs → sub-mesh pairs. One thread per body pair.
+// With prefix-scanned sub_pair_offsets this generalises to any sub-mesh count per body;
+// supply sub_pair_offsets[p] = p (i.e. identity) when counts are uniform.
+__global__ void expand_submesh_pairs_kernel(
+    const gkCollisionPair* body_pairs,
+    int                    num_body_pairs,
+    const int*             body_sub_offsets,
+    const int*             body_sub_counts,
+    const int*             sub_pair_offsets,  // prefix-scanned write offsets per body pair
+    gkCollisionPair*       sub_pairs,
+    int                    max_sub_pairs)
+{
+    int p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= num_body_pairs) return;
+
+    int bodyA = body_pairs[p].idx1, bodyB = body_pairs[p].idx2;
+    int offA  = body_sub_offsets[bodyA], cntA = body_sub_counts[bodyA];
+    int offB  = body_sub_offsets[bodyB], cntB = body_sub_counts[bodyB];
+    int write = sub_pair_offsets[p];
+    for (int a = 0; a < cntA; a++) {
+        for (int b = 0; b < cntB; b++) {
+            if (write < max_sub_pairs)
+                sub_pairs[write++] = { offA + a, offB + b };
+        }
+    }
+}
+
 __global__ void transform_to_world_kernel(
     const float4* positions,
     const float4* quats,
@@ -232,17 +311,19 @@ __global__ void transform_to_world_kernel(
     float3*       verts_world,
     const int*    vert_offsets,
     const int*    vert_counts,
-    int           num_objects)
+    const int*    sub_mesh_body,
+    int           num_submeshes)
 {
-    int obj = blockIdx.x * blockDim.x + threadIdx.x;
-    if (obj >= num_objects) return;
+    int sm = blockIdx.x * blockDim.x + threadIdx.x;
+    if (sm >= num_submeshes) return;
 
-    float3 pos   = make_float3(positions[obj].x, positions[obj].y, positions[obj].z);
-    float3 sc    = scales[obj];
-    float4 quat  = quats[obj];
+    int    body = sub_mesh_body[sm];
+    float3 pos  = make_float3(positions[body].x, positions[body].y, positions[body].z);
+    float3 sc   = scales[body];
+    float4 quat = quats[body];
 
-    int offset = vert_offsets[obj];
-    int count  = vert_counts[obj];
+    int offset = vert_offsets[sm];
+    int count  = vert_counts[sm];
 
     for (int v = 0; v < count; v++) {
         float3 lv = verts_local[offset + v];
@@ -258,6 +339,11 @@ __global__ void physics_update_kernel(
     float4*       ang_vel,
     float4*       quats,
     const float3* inv_inertia,
+    const float3* verts_world,
+    const int*    vert_offsets,
+    const int*    vert_counts,
+    const int*    body_sub_offsets,
+    const int*    body_sub_counts,
     int           num_objects,
     float         dt,
     float         gravity_y,
@@ -272,7 +358,7 @@ __global__ void physics_update_kernel(
     float3 omega = make_float3(ang_vel[i].x, ang_vel[i].y, ang_vel[i].z);
     float3 inv_I = inv_inertia[i];
 
-    float br      = pos.w;
+    float br       = pos.w;
     float inv_mass = 1.0f / vel.w;
 
     vel.y += gravity_y * dt;
@@ -287,53 +373,79 @@ __global__ void physics_update_kernel(
     omega.y *= ANGULAR_DAMPING;
     omega.z *= ANGULAR_DAMPING;
 
-    // Floor (y = -boundary), n = (0,1,0), r = (0,-br,0)
+    float3 _cp; float3 _r; float _pen;
+
+    // Floor (y = -boundary), n=(0,+1,0): lowest vertex
     if (pos.y - br < -boundary) {
-        pos.y = -boundary + br;
-        apply_boundary_contact(vel3, omega,
-            make_float3(0.0f,  1.0f, 0.0f),
-            make_float3(0.0f, -br,   0.0f),
-            inv_mass, inv_I, q);
+        _cp  = support_point_min(i, make_float3(0,1,0), verts_world,
+                                 vert_offsets, vert_counts,
+                                 body_sub_offsets, body_sub_counts);
+        _pen = _cp.y - (-boundary);        // negative when penetrating
+        if (_pen < 0.0f) {
+            pos.y -= _pen;
+            _r = make_float3(_cp.x-pos.x, _cp.y-pos.y, _cp.z-pos.z);
+            apply_boundary_contact(vel3, omega, make_float3(0,1,0), _r, inv_mass, inv_I, q);
+        }
     }
-    // Ceiling (y = +boundary), n = (0,-1,0), r = (0,+br,0)
+    // Ceiling (y = +boundary), n=(0,-1,0): highest vertex
     if (pos.y + br > boundary) {
-        pos.y = boundary - br;
-        apply_boundary_contact(vel3, omega,
-            make_float3(0.0f, -1.0f, 0.0f),
-            make_float3(0.0f, +br,   0.0f),
-            inv_mass, inv_I, q);
+        _cp  = support_point_min(i, make_float3(0,-1,0), verts_world,
+                                 vert_offsets, vert_counts,
+                                 body_sub_offsets, body_sub_counts);
+        _pen = boundary - _cp.y;           // negative when penetrating
+        if (_pen < 0.0f) {
+            pos.y += _pen;
+            _r = make_float3(_cp.x-pos.x, _cp.y-pos.y, _cp.z-pos.z);
+            apply_boundary_contact(vel3, omega, make_float3(0,-1,0), _r, inv_mass, inv_I, q);
+        }
     }
-    // -X wall, n = (1,0,0), r = (-br,0,0)
+    // -X wall (x = -boundary), n=(+1,0,0): min-X vertex
     if (pos.x - br < -boundary) {
-        pos.x = -boundary + br;
-        apply_boundary_contact(vel3, omega,
-            make_float3( 1.0f, 0.0f, 0.0f),
-            make_float3(-br,   0.0f, 0.0f),
-            inv_mass, inv_I, q);
+        _cp  = support_point_min(i, make_float3(1,0,0), verts_world,
+                                 vert_offsets, vert_counts,
+                                 body_sub_offsets, body_sub_counts);
+        _pen = _cp.x - (-boundary);
+        if (_pen < 0.0f) {
+            pos.x -= _pen;
+            _r = make_float3(_cp.x-pos.x, _cp.y-pos.y, _cp.z-pos.z);
+            apply_boundary_contact(vel3, omega, make_float3(1,0,0), _r, inv_mass, inv_I, q);
+        }
     }
-    // +X wall, n = (-1,0,0), r = (+br,0,0)
+    // +X wall (x = +boundary), n=(-1,0,0): max-X vertex
     if (pos.x + br > boundary) {
-        pos.x = boundary - br;
-        apply_boundary_contact(vel3, omega,
-            make_float3(-1.0f, 0.0f, 0.0f),
-            make_float3(+br,   0.0f, 0.0f),
-            inv_mass, inv_I, q);
+        _cp  = support_point_min(i, make_float3(-1,0,0), verts_world,
+                                 vert_offsets, vert_counts,
+                                 body_sub_offsets, body_sub_counts);
+        _pen = boundary - _cp.x;
+        if (_pen < 0.0f) {
+            pos.x += _pen;
+            _r = make_float3(_cp.x-pos.x, _cp.y-pos.y, _cp.z-pos.z);
+            apply_boundary_contact(vel3, omega, make_float3(-1,0,0), _r, inv_mass, inv_I, q);
+        }
     }
-    // -Z wall, n = (0,0,1), r = (0,0,-br)
+    // -Z wall (z = -boundary), n=(0,0,+1): min-Z vertex
     if (pos.z - br < -boundary) {
-        pos.z = -boundary + br;
-        apply_boundary_contact(vel3, omega,
-            make_float3(0.0f, 0.0f,  1.0f),
-            make_float3(0.0f, 0.0f, -br),
-            inv_mass, inv_I, q);
+        _cp  = support_point_min(i, make_float3(0,0,1), verts_world,
+                                 vert_offsets, vert_counts,
+                                 body_sub_offsets, body_sub_counts);
+        _pen = _cp.z - (-boundary);
+        if (_pen < 0.0f) {
+            pos.z -= _pen;
+            _r = make_float3(_cp.x-pos.x, _cp.y-pos.y, _cp.z-pos.z);
+            apply_boundary_contact(vel3, omega, make_float3(0,0,1), _r, inv_mass, inv_I, q);
+        }
     }
-    // +Z wall, n = (0,0,-1), r = (0,0,+br)
+    // +Z wall (z = +boundary), n=(0,0,-1): max-Z vertex
     if (pos.z + br > boundary) {
-        pos.z = boundary - br;
-        apply_boundary_contact(vel3, omega,
-            make_float3(0.0f, 0.0f, -1.0f),
-            make_float3(0.0f, 0.0f, +br),
-            inv_mass, inv_I, q);
+        _cp  = support_point_min(i, make_float3(0,0,-1), verts_world,
+                                 vert_offsets, vert_counts,
+                                 body_sub_offsets, body_sub_counts);
+        _pen = boundary - _cp.z;
+        if (_pen < 0.0f) {
+            pos.z += _pen;
+            _r = make_float3(_cp.x-pos.x, _cp.y-pos.y, _cp.z-pos.z);
+            apply_boundary_contact(vel3, omega, make_float3(0,0,-1), _r, inv_mass, inv_I, q);
+        }
     }
 
     vel.x = vel3.x; vel.y = vel3.y; vel.z = vel3.z;
@@ -467,21 +579,22 @@ __global__ void collision_response_kernel(
     float4*                ang_pong,
     const float4*          quats,
     const float3*          inv_inertia,
-    const gkCollisionPair* pairs,
+    const gkCollisionPair* sub_pairs,
     const gkFloat*         distances,
     const gkFloat*         epa_w1,
     const gkFloat*         epa_w2,
     const gkFloat*         epa_normals,
+    const int*             sub_mesh_body,
     float                  epsilon,
-    int                    num_pairs,
+    int                    num_sub_pairs,
     int                    num_objects)
 {
     int p = blockIdx.x * blockDim.x + threadIdx.x;
-    if (p >= num_pairs) return;
+    if (p >= num_sub_pairs) return;
     if (distances[p] > epsilon) return;
 
-    int idA = pairs[p].idx1;
-    int idB = pairs[p].idx2;
+    int smA = sub_pairs[p].idx1, smB = sub_pairs[p].idx2;
+    int idA = sub_mesh_body[smA],  idB = sub_mesh_body[smB];
     if (idA < 0 || idA >= num_objects || idB < 0 || idB >= num_objects) return;
 
     float4 posA = positions[idA], posB = positions[idB];
@@ -551,7 +664,8 @@ __global__ void collision_response_kernel(
 
     float inv_mA = 1.0f / velA.w;
     float inv_mB = 1.0f / velB.w;
-    float j = -(1.0f + RESTITUTION) * vn / (inv_mA + inv_mB + ang_denom_A + ang_denom_B);
+    float e = (-vn > RESTITUTION_THRESHOLD) ? RESTITUTION : 0.0f;
+    float j = -(1.0f + e) * vn / (inv_mA + inv_mB + ang_denom_A + ang_denom_B);
 
     // Linear impulse
     atomicAdd(&vel_pong[idA].x, -j * nx * inv_mA);
@@ -582,14 +696,14 @@ __global__ void init_polytopes_kernel(
     float3*       verts_world,
     const int*    vert_offsets,
     const int*    vert_counts,
-    int           num_objects)
+    int           num_submeshes)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= num_objects) return;
-    polytopes[i].numpoints = vert_counts[i];
-    polytopes[i].coord     = (gkFloat*)(verts_world + vert_offsets[i]);
-    polytopes[i].s[0]      = 0; polytopes[i].s[1] = 0; polytopes[i].s[2] = 0;
-    polytopes[i].s_idx     = 0;
+    int sm = blockIdx.x * blockDim.x + threadIdx.x;
+    if (sm >= num_submeshes) return;
+    polytopes[sm].numpoints = vert_counts[sm];
+    polytopes[sm].coord     = (gkFloat*)(verts_world + vert_offsets[sm]);
+    polytopes[sm].s[0]      = 0; polytopes[sm].s[1] = 0; polytopes[sm].s[2] = 0;
+    polytopes[sm].s_idx     = 0;
 }
 
 __global__ void copy_positions_to_gl_kernel(float4* gl_buf, const float4* positions, int num_objects) {
@@ -614,26 +728,46 @@ extern "C" {
 
 bool sim_init(const ObjectInitData* objects, int num_objects,
               unsigned int gl_pos_buffer, unsigned int gl_quat_buffer) {
-    g_num_objects = num_objects;
-    g_max_pairs   = num_objects * 50;
+    g_num_objects   = num_objects;
+    g_num_submeshes = num_objects;  // 1 sub-mesh per body
+    g_max_pairs     = num_objects * 50;
 
-    // Count total GJK verts
+    // Count total GJK verts across all sub-meshes of all bodies
     g_total_verts = 0;
     for (int i = 0; i < num_objects; i++)
-        g_total_verts += objects[i].num_gjk_verts;
+        for (int s = 0; s < objects[i].num_submeshes; s++)
+            g_total_verts += objects[i].submesh_vert_counts[s];
 
-    // Build CPU-side vert offsets
-    int* h_vert_offsets = (int*)malloc(num_objects * sizeof(int));
-    int* h_vert_counts  = (int*)malloc(num_objects * sizeof(int));
+    // Build body/sub-mesh mapping from struct data
+    int* h_body_sub_counts  = (int*)malloc(num_objects * sizeof(int));
+    for (int i = 0; i < num_objects; i++)
+        h_body_sub_counts[i] = objects[i].num_submeshes;
+
+    int* h_body_sub_offsets = (int*)malloc(num_objects * sizeof(int));
+    h_body_sub_offsets[0] = 0;
+    for (int i = 1; i < num_objects; i++)
+        h_body_sub_offsets[i] = h_body_sub_offsets[i-1] + h_body_sub_counts[i-1];
+    g_num_submeshes = h_body_sub_offsets[num_objects-1] + h_body_sub_counts[num_objects-1];
+
+    int* h_sub_mesh_body = (int*)malloc(g_num_submeshes * sizeof(int));
+    for (int i = 0; i < num_objects; i++)
+        for (int s = 0; s < h_body_sub_counts[i]; s++)
+            h_sub_mesh_body[h_body_sub_offsets[i] + s] = i;
+
+    // Build CPU-side vert offsets (indexed by sub-mesh)
+    int* h_vert_offsets  = (int*)malloc(g_num_submeshes * sizeof(int));
+    int* h_vert_counts   = (int*)malloc(g_num_submeshes * sizeof(int));
     float* h_verts_local = (float*)malloc(g_total_verts * 3 * sizeof(float));
 
-    int cursor = 0;
+    int cursor = 0, sm_idx = 0;
     for (int i = 0; i < num_objects; i++) {
-        h_vert_offsets[i] = cursor;
-        h_vert_counts[i]  = objects[i].num_gjk_verts;
-        memcpy(h_verts_local + cursor * 3, objects[i].gjk_verts,
-               objects[i].num_gjk_verts * 3 * sizeof(float));
-        cursor += objects[i].num_gjk_verts;
+        for (int s = 0; s < objects[i].num_submeshes; s++, sm_idx++) {
+            h_vert_offsets[sm_idx] = cursor;
+            h_vert_counts[sm_idx]  = objects[i].submesh_vert_counts[s];
+            memcpy(h_verts_local + cursor * 3, objects[i].submesh_verts[s],
+                   objects[i].submesh_vert_counts[s] * 3 * sizeof(float));
+            cursor += objects[i].submesh_vert_counts[s];
+        }
     }
 
     // Build CPU-side physics arrays
@@ -666,11 +800,14 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
     CUDA_CHECK(cudaMalloc(&d_ang_buf[1],   num_objects * sizeof(float4)));
     CUDA_CHECK(cudaMalloc(&d_inv_inertia,  num_objects * sizeof(float3)));
     CUDA_CHECK(cudaMalloc(&d_scales,       num_objects * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(&d_verts_local,  g_total_verts * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(&d_verts_world,  g_total_verts * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(&d_vert_offsets, num_objects * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_vert_counts,  num_objects * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_polytopes,    num_objects * sizeof(gkPolytope)));
+    CUDA_CHECK(cudaMalloc(&d_verts_local,  g_total_verts   * sizeof(float3)));
+    CUDA_CHECK(cudaMalloc(&d_verts_world,  g_total_verts   * sizeof(float3)));
+    CUDA_CHECK(cudaMalloc(&d_vert_offsets, g_num_submeshes * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_vert_counts,  g_num_submeshes * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_body_sub_offsets, num_objects    * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_body_sub_counts,  num_objects    * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_sub_mesh_body,    g_num_submeshes * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_polytopes,    g_num_submeshes * sizeof(gkPolytope)));
     CUDA_CHECK(cudaMalloc(&d_simplices,    g_max_pairs * sizeof(gkSimplex)));
     CUDA_CHECK(cudaMalloc(&d_distances,    g_max_pairs * sizeof(gkFloat)));
     CUDA_CHECK(cudaMalloc(&d_epa_w1,       g_max_pairs * 3 * sizeof(gkFloat)));
@@ -690,6 +827,17 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
     CUDA_CHECK(cudaMalloc(&d_grid_counts,    total_cells * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_grid_objects,   total_cells * MAX_OBJECTS_PER_CELL * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_collision_pairs, g_max_pairs * sizeof(gkCollisionPair)));
+    CUDA_CHECK(cudaMalloc(&d_sub_pairs,       g_max_pairs * sizeof(gkCollisionPair)));
+
+    // Scan buffers for body-pair → sub-mesh-pair expansion
+    int pair_scan_size = next_power_of_2(g_max_pairs);
+    CUDA_CHECK(cudaMalloc(&d_sub_pair_counts,  pair_scan_size * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_sub_pair_offsets, pair_scan_size * sizeof(int)));
+    int pair_aux_size = scan_aux_size(pair_scan_size);
+    if (pair_aux_size > 0)
+        CUDA_CHECK(cudaMalloc(&d_sub_pair_scan_aux, pair_aux_size * sizeof(int)));
+    else
+        d_sub_pair_scan_aux = nullptr;
 
     int scan_size = next_power_of_2(num_objects);
     CUDA_CHECK(cudaMalloc(&d_pair_counts,  scan_size * sizeof(int)));
@@ -702,6 +850,10 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
         d_scan_aux = nullptr;
 
     // Upload
+    CUDA_CHECK(cudaMemcpy(d_body_sub_offsets, h_body_sub_offsets, num_objects     * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_body_sub_counts,  h_body_sub_counts,  num_objects     * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_sub_mesh_body,    h_sub_mesh_body,    g_num_submeshes * sizeof(int), cudaMemcpyHostToDevice));
+    free(h_body_sub_offsets); free(h_body_sub_counts); free(h_sub_mesh_body);
     CUDA_CHECK(cudaMemcpy(d_positions,    h_positions,   num_objects * sizeof(float4), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_vel_buf[0],   h_velocities,  num_objects * sizeof(float4), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_vel_buf[1],   h_velocities,  num_objects * sizeof(float4), cudaMemcpyHostToDevice));
@@ -710,14 +862,14 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
     CUDA_CHECK(cudaMemcpy(d_ang_buf[1],   h_ang_vel,     num_objects * sizeof(float4), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_inv_inertia,  h_inv_inertia, num_objects * sizeof(float3), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_scales,       h_scales,      num_objects * sizeof(float3), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_vert_offsets, h_vert_offsets, num_objects * sizeof(int),   cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_vert_counts,  h_vert_counts,  num_objects * sizeof(int),   cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_vert_offsets, h_vert_offsets, g_num_submeshes * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_vert_counts,  h_vert_counts,  g_num_submeshes * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_verts_local,  h_verts_local,  g_total_verts * 3 * sizeof(float), cudaMemcpyHostToDevice));
 
-    // Init polytope coord pointers
-    int blocks = (num_objects + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    // Init polytope coord pointers (indexed by sub-mesh)
+    int blocks = (g_num_submeshes + BLOCK_SIZE - 1) / BLOCK_SIZE;
     init_polytopes_kernel<<<blocks, BLOCK_SIZE>>>(
-        d_polytopes, d_verts_world, d_vert_offsets, d_vert_counts, num_objects);
+        d_polytopes, d_verts_world, d_vert_offsets, d_vert_counts, g_num_submeshes);
     CUDA_CHECK_LAST();
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -756,10 +908,13 @@ void sim_cleanup(void) {
     cudaFree(d_vert_offsets); cudaFree(d_vert_counts);
     cudaFree(d_polytopes); cudaFree(d_simplices); cudaFree(d_distances);
     cudaFree(d_epa_w1); cudaFree(d_epa_w2); cudaFree(d_epa_normals);
+    cudaFree(d_body_sub_offsets); cudaFree(d_body_sub_counts); cudaFree(d_sub_mesh_body);
     cudaFree(d_grid_counts); cudaFree(d_grid_objects);
-    cudaFree(d_collision_pairs);
+    cudaFree(d_collision_pairs); cudaFree(d_sub_pairs);
     cudaFree(d_pair_counts); cudaFree(d_pair_offsets);
+    cudaFree(d_sub_pair_counts); cudaFree(d_sub_pair_offsets);
     if (d_scan_aux) cudaFree(d_scan_aux);
+    if (d_sub_pair_scan_aux) cudaFree(d_sub_pair_scan_aux);
     g_num_objects = 0;
 }
 
@@ -796,50 +951,93 @@ int sim_broad_phase(const PhysicsParams* params) {
     int h_last_offset, h_last_count;
     CUDA_CHECK(cudaMemcpy(&h_last_offset, d_pair_offsets + num_objs - 1, sizeof(int), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(&h_last_count,  d_pair_counts  + num_objs - 1, sizeof(int), cudaMemcpyDeviceToHost));
-    g_num_pairs = h_last_offset + h_last_count;
-    if (g_num_pairs > g_max_pairs) {
-        fprintf(stderr, "Pair overflow: %d > %d, clamping\n", g_num_pairs, g_max_pairs);
-        g_num_pairs = g_max_pairs;
+    int num_body_pairs = h_last_offset + h_last_count;
+    if (num_body_pairs > g_max_pairs) {
+        fprintf(stderr, "Body pair overflow: %d > %d, clamping\n", num_body_pairs, g_max_pairs);
+        num_body_pairs = g_max_pairs;
     }
 
-    if (g_num_pairs > 0) {
+    g_num_sub_pairs = 0;
+
+    if (num_body_pairs > 0) {
         generate_pairs_kernel<<<blocks, BLOCK_SIZE>>>(
             num_objs, d_grid_counts, d_grid_objects, d_positions,
             g_cell_size, params->boundary, d_pair_offsets, d_collision_pairs, g_max_pairs, g_grid_size);
         CUDA_CHECK_LAST();
+
+        // Count sub-mesh pairs per body pair
+        int bp_blocks = (num_body_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        count_submesh_pairs_kernel<<<bp_blocks, BLOCK_SIZE>>>(
+            d_collision_pairs, num_body_pairs, d_body_sub_counts, d_sub_pair_counts);
+        CUDA_CHECK_LAST();
+
+        // Prefix scan over sub-pair counts → sub-pair offsets
+        int sp_pow2 = next_power_of_2(num_body_pairs);
+        if (sp_pow2 < 2) sp_pow2 = 2;  // block_scan requires bsz = sp_pow2/2 >= 1
+        if (sp_pow2 > num_body_pairs)
+            CUDA_CHECK(cudaMemset(d_sub_pair_counts + num_body_pairs, 0,
+                                  (sp_pow2 - num_body_pairs) * sizeof(int)));
+        if (sp_pow2 <= SCAN_B) {
+            int bsz  = sp_pow2 / 2;
+            int smem = (sp_pow2 + CONFLICT_FREE_OFFSET(sp_pow2)) * sizeof(int);
+            block_scan_kernel<<<1, bsz, smem>>>(sp_pow2, d_sub_pair_offsets, d_sub_pair_counts, nullptr);
+        } else {
+            recursive_scan(sp_pow2, d_sub_pair_offsets, d_sub_pair_counts, d_sub_pair_scan_aux);
+        }
+        CUDA_CHECK_LAST();
+
+        int h_sp_last_offset, h_sp_last_count;
+        CUDA_CHECK(cudaMemcpy(&h_sp_last_offset, d_sub_pair_offsets + num_body_pairs - 1, sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&h_sp_last_count,  d_sub_pair_counts  + num_body_pairs - 1, sizeof(int), cudaMemcpyDeviceToHost));
+        g_num_sub_pairs = h_sp_last_offset + h_sp_last_count;
+        if (g_num_sub_pairs > g_max_pairs) {
+            fprintf(stderr, "Sub-pair overflow: %d > %d, clamping\n", g_num_sub_pairs, g_max_pairs);
+            g_num_sub_pairs = g_max_pairs;
+        }
+
+        // Expand body pairs → sub-mesh pairs
+        expand_submesh_pairs_kernel<<<bp_blocks, BLOCK_SIZE>>>(
+            d_collision_pairs, num_body_pairs,
+            d_body_sub_offsets, d_body_sub_counts,
+            d_sub_pair_offsets, d_sub_pairs, g_max_pairs);
+        CUDA_CHECK_LAST();
     }
 
-    return g_num_pairs;
+    return g_num_sub_pairs;
 }
 
 void sim_step(const PhysicsParams* params) {
-    int num_objs  = g_num_objects;
-    int num_pairs = g_num_pairs;
-    int obj_blocks  = (num_objs  + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    int num_objs   = g_num_objects;
+    int num_sm     = g_num_submeshes;
+    int num_pairs  = g_num_sub_pairs;
+    int obj_blocks = (num_objs + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    int sm_blocks  = (num_sm  + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     // 1. Integrate physics (position, angular velocity → quaternion, boundary friction)
     physics_update_kernel<<<obj_blocks, BLOCK_SIZE>>>(
         d_positions, d_vel_buf[g_vel_ping], d_ang_buf[g_vel_ping], d_quats, d_inv_inertia,
+        d_verts_world, d_vert_offsets, d_vert_counts,
+        d_body_sub_offsets, d_body_sub_counts,
         num_objs, params->delta_time, params->gravity_y, params->boundary);
     CUDA_CHECK_LAST();
 
-    // 2. Transform local verts to world space
-    transform_to_world_kernel<<<obj_blocks, BLOCK_SIZE>>>(
+    // 2. Transform local verts to world space (indexed by sub-mesh, looks up body transform)
+    transform_to_world_kernel<<<sm_blocks, BLOCK_SIZE>>>(
         d_positions, d_quats, d_scales,
         d_verts_local, d_verts_world,
-        d_vert_offsets, d_vert_counts, num_objs);
+        d_vert_offsets, d_vert_counts, d_sub_mesh_body, num_sm);
     CUDA_CHECK_LAST();
 
     if (num_pairs > 0) {
         // 3. GJK distance computation
         compute_minimum_distance_indexed_device(
-            num_pairs, d_polytopes, d_collision_pairs, d_simplices, d_distances);
+            num_pairs, d_polytopes, d_sub_pairs, d_simplices, d_distances);
         CUDA_CHECK_LAST();
 
         // 3b. EPA: refines penetrating pairs (distance=0→negative depth) and
         //     provides correct contact normals + witnesses for all collision cases
         compute_epa_indexed_device(
-            num_pairs, d_polytopes, d_collision_pairs, d_simplices, d_distances,
+            num_pairs, d_polytopes, d_sub_pairs, d_simplices, d_distances,
             d_epa_w1, d_epa_w2, d_epa_normals);
         CUDA_CHECK_LAST();
 
@@ -855,8 +1053,8 @@ void sim_step(const PhysicsParams* params) {
             d_vel_buf[g_vel_ping], d_vel_buf[g_vel_pong],
             d_ang_buf[g_vel_ping], d_ang_buf[g_vel_pong],
             d_quats, d_inv_inertia,
-            d_collision_pairs, d_distances,
-            d_epa_w1, d_epa_w2, d_epa_normals,
+            d_sub_pairs, d_distances,
+            d_epa_w1, d_epa_w2, d_epa_normals, d_sub_mesh_body,
             params->collision_epsilon, num_pairs, num_objs);
         CUDA_CHECK_LAST();
 
