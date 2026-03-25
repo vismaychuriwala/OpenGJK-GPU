@@ -1671,12 +1671,8 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
   for (int i = 0; i < 4; i++) {
     #pragma unroll
     for (int j = 0; j < 3; j++) {
-      centroid[j] += poly->vertices[i][j];
+      centroid[j] += poly->vertices[i][j] * 0.25f;
     }
-  }
-  #pragma unroll
-  for (int j = 0; j < 3; j++) {
-    centroid[j] /= 4.0f;
   }
 
   // Create 4 faces of tetrahedron
@@ -1842,14 +1838,17 @@ __device__ __forceinline__ void epa_core(
     gkSimplex* simplices,
     gkFloat* distances,
     gkFloat* contact_normals,
-    int warp_idx) {
+    int warp_idx,
+    EPAPolytope* poly) {
   // Get thread index within the EPA group
   int lane_in_group = (threadIdx.x % 32) % THREADS_PER_EPA;
 
   // Mask covering the THREADS_PER_EPA lanes that collaborate on this collision
+  // Only 32 threads per EPA supported (one full warp) for smem polytope approach
 #if THREADS_PER_EPA == 32
   unsigned int group_mask = 0xFFFFFFFF;
   const int group_leader_lane = 0;
+/*
 #elif THREADS_PER_EPA == 16
   int group_in_warp = (threadIdx.x % 32) / THREADS_PER_EPA;
   unsigned int group_mask = (group_in_warp == 0) ? 0xFFFF : 0xFFFF0000;
@@ -1858,8 +1857,9 @@ __device__ __forceinline__ void epa_core(
   int group_in_warp = (threadIdx.x % 32) / THREADS_PER_EPA;
   unsigned int group_mask = 0xFF << (group_in_warp * 8);
   const int group_leader_lane = group_in_warp * THREADS_PER_EPA;
+*/
 #else
-#error "THREADS_PER_EPA must be 8, 16, or 32"
+#error "THREADS_PER_EPA must be 32"
 #endif
 
   gkSimplex simplex = simplices[warp_idx];
@@ -2298,41 +2298,12 @@ __device__ __forceinline__ void epa_core(
 
   // On to actual EPA alg with a valid tetrahedron simplex
   // Initialize EPA polytope from simplex
-  EPAPolytope poly;
-  gkFloat centroid[3];
+  gkFloat centroid[3] = {0, 0, 0};
   if (lane_in_group == 0) {
-    init_epa_polytope(&poly, &simplex, centroid);
+    init_epa_polytope(poly, &simplex, centroid);
   }
 
   __syncwarp(group_mask);
-
-  // Broadcast polytope initialization to all threads
-  poly.num_vertices = __shfl_sync(group_mask, poly.num_vertices, group_leader_lane);
-  poly.max_face_index = __shfl_sync(group_mask, poly.max_face_index, group_leader_lane);
-  centroid[0] = __shfl_sync(group_mask, centroid[0], group_leader_lane);
-  centroid[1] = __shfl_sync(group_mask, centroid[1], group_leader_lane);
-  centroid[2] = __shfl_sync(group_mask, centroid[2], group_leader_lane);
-
-  #pragma unroll
-  for (int i = 0; i < 4; i++) {
-    #pragma unroll
-    for (int j = 0; j < 3; j++) {
-      poly.vertices[i][j] = __shfl_sync(group_mask, poly.vertices[i][j], group_leader_lane);
-    }
-    poly.vertex_indices[i][0] = __shfl_sync(group_mask, poly.vertex_indices[i][0], group_leader_lane);
-    poly.vertex_indices[i][1] = __shfl_sync(group_mask, poly.vertex_indices[i][1], group_leader_lane);
-  }
-
-  #pragma unroll
-  for (int f = 0; f < 4; f++) {
-    #pragma unroll
-    for (int v = 0; v < 3; v++) {
-      poly.faces[f].v[v] = __shfl_sync(group_mask, poly.faces[f].v[v], group_leader_lane);
-      poly.faces[f].v_idx[v][0] = __shfl_sync(group_mask, poly.faces[f].v_idx[v][0], group_leader_lane);
-      poly.faces[f].v_idx[v][1] = __shfl_sync(group_mask, poly.faces[f].v_idx[v][1], group_leader_lane);
-    }
-    poly.faces[f].valid = __shfl_sync(group_mask, poly.faces[f].valid ? 1 : 0, group_leader_lane) != 0;
-  }
 
   // EPA iteration parameters
   const int max_iterations = 64;
@@ -2340,40 +2311,24 @@ __device__ __forceinline__ void epa_core(
   int iteration = 0;
 
   // Main EPA loop
-  while (iteration < max_iterations && poly.num_vertices < MAX_EPA_VERTICES - 1) {
+  while (iteration < max_iterations && poly->num_vertices < MAX_EPA_VERTICES - 1) {
     iteration++;
 
     // Compute face normals and distances in parallel across warp
     // Each thread processes a subset of faces
-    const int faces_per_thread = (poly.max_face_index + THREADS_PER_EPA - 1) / THREADS_PER_EPA;
+    const int faces_per_thread = (poly->max_face_index + THREADS_PER_EPA - 1) / THREADS_PER_EPA;
     const int start_face = lane_in_group * faces_per_thread;
-    const int end_face = (start_face + faces_per_thread < poly.max_face_index) ? 
-                         (start_face + faces_per_thread) : poly.max_face_index;
+    const int end_face = (start_face + faces_per_thread < poly->max_face_index) ? 
+                         (start_face + faces_per_thread) : poly->max_face_index;
 
     // Recompute normals & distances for assigned faces
     for (int i = start_face; i < end_face; ++i) {
-      if (poly.faces[i].valid) {
-        compute_face_normal_distance(&poly, i);
+      if (poly->faces[i].valid) {
+        compute_face_normal_distance(poly, i);
       }
     }
 
     __syncwarp(group_mask);
-
-    // Broadcast updated face normals and distances to all threads
-    // Each thread receives updates from the thread that computed each face
-    for (int i = 0; i < poly.max_face_index; ++i) {
-      if (poly.faces[i].valid) {
-        int source_thread = group_leader_lane + i / faces_per_thread;
-        if (source_thread >= group_leader_lane + THREADS_PER_EPA) source_thread = group_leader_lane + THREADS_PER_EPA - 1; // Clamp to valid thread index
-        
-        // Receive face data from the thread that computed it
-        #pragma unroll
-        for (int c = 0; c < 3; c++) {
-          poly.faces[i].normal[c] = __shfl_sync(group_mask, poly.faces[i].normal[c], source_thread);
-        }
-        poly.faces[i].distance = __shfl_sync(group_mask, poly.faces[i].distance, source_thread);
-      }
-    }
 
     // parallel reduction to find closest face
     // Each thread finds the closest face in its assigned range
@@ -2381,9 +2336,9 @@ __device__ __forceinline__ void epa_core(
     gkFloat local_closest_distance = 1e10f;
 
     for (int i = start_face; i < end_face; ++i) {
-      if (!poly.faces[i].valid) continue;
-      if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < local_closest_distance) {
-        local_closest_distance = poly.faces[i].distance;
+      if (!poly->faces[i].valid) continue;
+      if (poly->faces[i].distance >= 0.0f && poly->faces[i].distance < local_closest_distance) {
+        local_closest_distance = poly->faces[i].distance;
         local_closest_face = i;
       }
     }
@@ -2408,9 +2363,9 @@ __device__ __forceinline__ void epa_core(
     // Read direction from closest face (all threads have same polytope data)
     gkFloat dir_x = 0, dir_y = 0, dir_z = 0;
     if (closest_face >= 0) {
-      dir_x = poly.faces[closest_face].normal[0];
-      dir_y = poly.faces[closest_face].normal[1];
-      dir_z = poly.faces[closest_face].normal[2];
+      dir_x = poly->faces[closest_face].normal[0];
+      dir_y = poly->faces[closest_face].normal[1];
+      dir_z = poly->faces[closest_face].normal[2];
     }
 
     if (closest_face < 0) {
@@ -2418,7 +2373,7 @@ __device__ __forceinline__ void epa_core(
     }
 
     gkFloat direction[3] = { dir_x, dir_y, dir_z };
-    EPAFace* closest = &poly.faces[closest_face];
+    EPAFace* closest = &poly->faces[closest_face];
 
     // Get support point in direction of closest face normal
     gkFloat new_vertex[3];
@@ -2435,9 +2390,9 @@ __device__ __forceinline__ void epa_core(
     if (improvement < tolerance) {
       // Converged, compute witness points with bary coords
       if (lane_in_group == 0) {
-        gkFloat* v0 = poly.vertices[closest->v[0]];
-        gkFloat* v1 = poly.vertices[closest->v[1]];
-        gkFloat* v2 = poly.vertices[closest->v[2]];
+        gkFloat* v0 = poly->vertices[closest->v[0]];
+        gkFloat* v1 = poly->vertices[closest->v[1]];
+        gkFloat* v2 = poly->vertices[closest->v[2]];
 
         // bary computation
         gkFloat a0, a1, a2;
@@ -2476,10 +2431,10 @@ __device__ __forceinline__ void epa_core(
     bool is_duplicate = false;
     if (lane_in_group == 0) {
       const gkFloat eps_sq = gkEpsilon * gkEpsilon;
-      for (int i = 0; i < poly.num_vertices; i++) {
-        gkFloat dx = new_vertex[0] - poly.vertices[i][0];
-        gkFloat dy = new_vertex[1] - poly.vertices[i][1];
-        gkFloat dz = new_vertex[2] - poly.vertices[i][2];
+      for (int i = 0; i < poly->num_vertices; i++) {
+        gkFloat dx = new_vertex[0] - poly->vertices[i][0];
+        gkFloat dy = new_vertex[1] - poly->vertices[i][1];
+        gkFloat dz = new_vertex[2] - poly->vertices[i][2];
         if (dx * dx + dy * dy + dz * dz < eps_sq) {
           is_duplicate = true;
           break;
@@ -2492,9 +2447,9 @@ __device__ __forceinline__ void epa_core(
     if (is_duplicate) {
       // Can't make progress, use current best
       if (lane_in_group == 0) {
-        gkFloat* v0 = poly.vertices[closest->v[0]];
-        gkFloat* v1 = poly.vertices[closest->v[1]];
-        gkFloat* v2 = poly.vertices[closest->v[2]];
+        gkFloat* v0 = poly->vertices[closest->v[0]];
+        gkFloat* v1 = poly->vertices[closest->v[1]];
+        gkFloat* v2 = poly->vertices[closest->v[2]];
 
         gkFloat a0, a1, a2;
         compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
@@ -2529,17 +2484,17 @@ __device__ __forceinline__ void epa_core(
     // Add new vertex to polytope
     int new_vertex_id = -1;
     if (lane_in_group == 0) {
-      new_vertex_id = poly.num_vertices;
+      new_vertex_id = poly->num_vertices;
       #pragma unroll
       for (int i = 0; i < 3; i++) {
-        poly.vertices[new_vertex_id][i] = new_vertex[i];
+        poly->vertices[new_vertex_id][i] = new_vertex[i];
       }
-      poly.vertex_indices[new_vertex_id][0] = new_vertex_idx[0];
-      poly.vertex_indices[new_vertex_id][1] = new_vertex_idx[1];
-      poly.num_vertices++;
+      poly->vertex_indices[new_vertex_id][0] = new_vertex_idx[0];
+      poly->vertex_indices[new_vertex_id][1] = new_vertex_idx[1];
+      poly->num_vertices++;
 
       // Update centroid incrementally (running mean)
-      gkFloat inv_n = (gkFloat)1.0 / (gkFloat)poly.num_vertices;
+      gkFloat inv_n = (gkFloat)1.0 / (gkFloat)poly->num_vertices;
       #pragma unroll
       for (int i = 0; i < 3; i++) {
         centroid[i] += (new_vertex[i] - centroid[i]) * inv_n;
@@ -2547,19 +2502,6 @@ __device__ __forceinline__ void epa_core(
     }
 
     __syncwarp(group_mask);
-
-    // Broadcast new vertex
-    new_vertex_id = __shfl_sync(group_mask, new_vertex_id, group_leader_lane);
-    #pragma unroll
-    for (int i = 0; i < 3; i++) {
-      poly.vertices[new_vertex_id][i] = __shfl_sync(group_mask, poly.vertices[new_vertex_id][i], group_leader_lane);
-    }
-    poly.vertex_indices[new_vertex_id][0] = __shfl_sync(group_mask, poly.vertex_indices[new_vertex_id][0], group_leader_lane);
-    poly.vertex_indices[new_vertex_id][1] = __shfl_sync(group_mask, poly.vertex_indices[new_vertex_id][1], group_leader_lane);
-    poly.num_vertices = __shfl_sync(group_mask, poly.num_vertices, group_leader_lane);
-    centroid[0] = __shfl_sync(group_mask, centroid[0], group_leader_lane);
-    centroid[1] = __shfl_sync(group_mask, centroid[1], group_leader_lane);
-    centroid[2] = __shfl_sync(group_mask, centroid[2], group_leader_lane);
 
     // Find horizon edges (edges shared by exactly one invalid face and one valid face)
     // Only create new faces from horizon edges
@@ -2569,47 +2511,47 @@ __device__ __forceinline__ void epa_core(
       EPAEdge edges[MAX_EPA_FACES * 3];
       int num_edges = 0;
 
-      for (int f = 0; f < poly.max_face_index; f++) {
-        if (!poly.faces[f].valid) continue;
-        if (!is_face_visible(&poly, f, new_vertex)) continue;
+      for (int f = 0; f < poly->max_face_index; f++) {
+        if (!poly->faces[f].valid) continue;
+        if (!is_face_visible(poly, f, new_vertex)) continue;
 
         // Edge 0-1
         if (num_edges < MAX_EPA_FACES * 3) {
-          edges[num_edges].v1 = poly.faces[f].v[0];
-          edges[num_edges].v2 = poly.faces[f].v[1];
-          edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[0][0];
-          edges[num_edges].v_idx1[1] = poly.faces[f].v_idx[0][1];
-          edges[num_edges].v_idx2[0] = poly.faces[f].v_idx[1][0];
-          edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[1][1];
+          edges[num_edges].v1 = poly->faces[f].v[0];
+          edges[num_edges].v2 = poly->faces[f].v[1];
+          edges[num_edges].v_idx1[0] = poly->faces[f].v_idx[0][0];
+          edges[num_edges].v_idx1[1] = poly->faces[f].v_idx[0][1];
+          edges[num_edges].v_idx2[0] = poly->faces[f].v_idx[1][0];
+          edges[num_edges].v_idx2[1] = poly->faces[f].v_idx[1][1];
           edges[num_edges].valid = true;
           num_edges++;
         }
 
         // Edge 1-2
         if (num_edges < MAX_EPA_FACES * 3) {
-          edges[num_edges].v1 = poly.faces[f].v[1];
-          edges[num_edges].v2 = poly.faces[f].v[2];
-          edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[1][0];
-          edges[num_edges].v_idx1[1] = poly.faces[f].v_idx[1][1];
-          edges[num_edges].v_idx2[0] = poly.faces[f].v_idx[2][0];
-          edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[2][1];
+          edges[num_edges].v1 = poly->faces[f].v[1];
+          edges[num_edges].v2 = poly->faces[f].v[2];
+          edges[num_edges].v_idx1[0] = poly->faces[f].v_idx[1][0];
+          edges[num_edges].v_idx1[1] = poly->faces[f].v_idx[1][1];
+          edges[num_edges].v_idx2[0] = poly->faces[f].v_idx[2][0];
+          edges[num_edges].v_idx2[1] = poly->faces[f].v_idx[2][1];
           edges[num_edges].valid = true;
           num_edges++;
         }
 
         // Edge 2-0
         if (num_edges < MAX_EPA_FACES * 3) {
-          edges[num_edges].v1 = poly.faces[f].v[2];
-          edges[num_edges].v2 = poly.faces[f].v[0];
-          edges[num_edges].v_idx1[0] = poly.faces[f].v_idx[2][0];
-          edges[num_edges].v_idx1[1] = poly.faces[f].v_idx[2][1];
-          edges[num_edges].v_idx2[0] = poly.faces[f].v_idx[0][0];
-          edges[num_edges].v_idx2[1] = poly.faces[f].v_idx[0][1];
+          edges[num_edges].v1 = poly->faces[f].v[2];
+          edges[num_edges].v2 = poly->faces[f].v[0];
+          edges[num_edges].v_idx1[0] = poly->faces[f].v_idx[2][0];
+          edges[num_edges].v_idx1[1] = poly->faces[f].v_idx[2][1];
+          edges[num_edges].v_idx2[0] = poly->faces[f].v_idx[0][0];
+          edges[num_edges].v_idx2[1] = poly->faces[f].v_idx[0][1];
           edges[num_edges].valid = true;
           num_edges++;
         }
 
-        poly.faces[f].valid = false;
+        poly->faces[f].valid = false;
       }
 
       // Remove duplicate edges (edges shared by two removed faces)
@@ -2636,7 +2578,7 @@ __device__ __forceinline__ void epa_core(
         int new_face_idx = -1;
         #pragma unroll
         for (int j = 0; j < MAX_EPA_FACES; j++) {
-          if (!poly.faces[j].valid) {
+          if (!poly->faces[j].valid) {
             new_face_idx = j;
             break;
           }
@@ -2645,23 +2587,23 @@ __device__ __forceinline__ void epa_core(
         if (new_face_idx < 0 || new_face_idx >= MAX_EPA_FACES) break;
 
         // Create new face: edge horizon vertices + new vertex
-        poly.faces[new_face_idx].v[0] = edges[i].v1;
-        poly.faces[new_face_idx].v[1] = edges[i].v2;
-        poly.faces[new_face_idx].v[2] = new_vertex_id;
+        poly->faces[new_face_idx].v[0] = edges[i].v1;
+        poly->faces[new_face_idx].v[1] = edges[i].v2;
+        poly->faces[new_face_idx].v[2] = new_vertex_id;
 
-        poly.faces[new_face_idx].v_idx[0][0] = edges[i].v_idx1[0];
-        poly.faces[new_face_idx].v_idx[0][1] = edges[i].v_idx1[1];
-        poly.faces[new_face_idx].v_idx[1][0] = edges[i].v_idx2[0];
-        poly.faces[new_face_idx].v_idx[1][1] = edges[i].v_idx2[1];
-        poly.faces[new_face_idx].v_idx[2][0] = new_vertex_idx[0];
-        poly.faces[new_face_idx].v_idx[2][1] = new_vertex_idx[1];
+        poly->faces[new_face_idx].v_idx[0][0] = edges[i].v_idx1[0];
+        poly->faces[new_face_idx].v_idx[0][1] = edges[i].v_idx1[1];
+        poly->faces[new_face_idx].v_idx[1][0] = edges[i].v_idx2[0];
+        poly->faces[new_face_idx].v_idx[1][1] = edges[i].v_idx2[1];
+        poly->faces[new_face_idx].v_idx[2][0] = new_vertex_idx[0];
+        poly->faces[new_face_idx].v_idx[2][1] = new_vertex_idx[1];
 
-        poly.faces[new_face_idx].valid = true;
+        poly->faces[new_face_idx].valid = true;
 
         // Check winding and fix if necessary
-        gkFloat* fv0 = poly.vertices[poly.faces[new_face_idx].v[0]];
-        gkFloat* fv1 = poly.vertices[poly.faces[new_face_idx].v[1]];
-        gkFloat* fv2 = poly.vertices[poly.faces[new_face_idx].v[2]];
+        gkFloat* fv0 = poly->vertices[poly->faces[new_face_idx].v[0]];
+        gkFloat* fv1 = poly->vertices[poly->faces[new_face_idx].v[1]];
+        gkFloat* fv2 = poly->vertices[poly->faces[new_face_idx].v[2]];
 
         gkFloat fe0[3], fe1[3], fnormal[3];
         #pragma unroll
@@ -2679,67 +2621,52 @@ __device__ __forceinline__ void epa_core(
         }
         if (dotProduct(fnormal, to_cent) > 0) {
           // Swap v[1] and v[2]
-          int tmp_v = poly.faces[new_face_idx].v[1];
-          poly.faces[new_face_idx].v[1] = poly.faces[new_face_idx].v[2];
-          poly.faces[new_face_idx].v[2] = tmp_v;
+          int tmp_v = poly->faces[new_face_idx].v[1];
+          poly->faces[new_face_idx].v[1] = poly->faces[new_face_idx].v[2];
+          poly->faces[new_face_idx].v[2] = tmp_v;
 
-          int tmp_idx0 = poly.faces[new_face_idx].v_idx[1][0];
-          int tmp_idx1 = poly.faces[new_face_idx].v_idx[1][1];
-          poly.faces[new_face_idx].v_idx[1][0] = poly.faces[new_face_idx].v_idx[2][0];
-          poly.faces[new_face_idx].v_idx[1][1] = poly.faces[new_face_idx].v_idx[2][1];
-          poly.faces[new_face_idx].v_idx[2][0] = tmp_idx0;
-          poly.faces[new_face_idx].v_idx[2][1] = tmp_idx1;
+          int tmp_idx0 = poly->faces[new_face_idx].v_idx[1][0];
+          int tmp_idx1 = poly->faces[new_face_idx].v_idx[1][1];
+          poly->faces[new_face_idx].v_idx[1][0] = poly->faces[new_face_idx].v_idx[2][0];
+          poly->faces[new_face_idx].v_idx[1][1] = poly->faces[new_face_idx].v_idx[2][1];
+          poly->faces[new_face_idx].v_idx[2][0] = tmp_idx0;
+          poly->faces[new_face_idx].v_idx[2][1] = tmp_idx1;
         }
 
         // Update max face index
-        if (new_face_idx >= poly.max_face_index) {
-          poly.max_face_index = new_face_idx + 1;
+        if (new_face_idx >= poly->max_face_index) {
+          poly->max_face_index = new_face_idx + 1;
         }
       }
     }
 
     __syncwarp(group_mask);
-
-    // Broadcast updated polytope state
-    poly.max_face_index = __shfl_sync(group_mask, poly.max_face_index, group_leader_lane);
-
-    for (int i = 0; i < poly.max_face_index; i++) {
-      poly.faces[i].valid = __shfl_sync(group_mask, poly.faces[i].valid ? 1 : 0, group_leader_lane) != 0;
-      if (poly.faces[i].valid) {
-        #pragma unroll
-        for (int v = 0; v < 3; v++) {
-          poly.faces[i].v[v] = __shfl_sync(group_mask, poly.faces[i].v[v], group_leader_lane);
-          poly.faces[i].v_idx[v][0] = __shfl_sync(group_mask, poly.faces[i].v_idx[v][0], group_leader_lane);
-          poly.faces[i].v_idx[v][1] = __shfl_sync(group_mask, poly.faces[i].v_idx[v][1], group_leader_lane);
-        }
-      }
-    }
   }
 
   // If we exited due to max iterations, recompute closest face and use it
   if (iteration >= max_iterations && lane_in_group == 0) {
     // Find closest face and compute result
-    for (int i = 0; i < poly.max_face_index; ++i) {
-      if (!poly.faces[i].valid) continue;
-      compute_face_normal_distance(&poly, i);
+    for (int i = 0; i < poly->max_face_index; ++i) {
+      if (!poly->faces[i].valid) continue;
+      compute_face_normal_distance(poly, i);
     }
 
     int closest_face = -1;
     gkFloat closest_distance = 1e10f;
-    for (int i = 0; i < poly.max_face_index; ++i) {
-      if (!poly.faces[i].valid) continue;
-      if (poly.faces[i].distance >= 0.0f && poly.faces[i].distance < closest_distance) {
-        closest_distance = poly.faces[i].distance;
+    for (int i = 0; i < poly->max_face_index; ++i) {
+      if (!poly->faces[i].valid) continue;
+      if (poly->faces[i].distance >= 0.0f && poly->faces[i].distance < closest_distance) {
+        closest_distance = poly->faces[i].distance;
         closest_face = i;
       }
     }
 
-    if (closest_face >= 0 && poly.faces[closest_face].valid) {
-      EPAFace* closest = &poly.faces[closest_face];
+    if (closest_face >= 0 && poly->faces[closest_face].valid) {
+      EPAFace* closest = &poly->faces[closest_face];
 
-      gkFloat* v0 = poly.vertices[closest->v[0]];
-      gkFloat* v1 = poly.vertices[closest->v[1]];
-      gkFloat* v2 = poly.vertices[closest->v[2]];
+      gkFloat* v0 = poly->vertices[closest->v[0]];
+      gkFloat* v1 = poly->vertices[closest->v[1]];
+      gkFloat* v2 = poly->vertices[closest->v[2]];
 
       gkFloat a0, a1, a2;
       compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
@@ -2788,13 +2715,16 @@ __global__ void compute_epa_kernel(
     return;
   }
 
+  extern __shared__ EPAPolytope smem_poly[];
+  int group_in_block = threadIdx.x / THREADS_PER_EPA;
+
   // Copy polytopes to local memory
   gkPolytope bd1_local = polytopes1[warp_idx];
   gkPolytope bd2_local = polytopes2[warp_idx];
   gkPolytope* bd1 = &bd1_local;
   gkPolytope* bd2 = &bd2_local;
 
-  epa_core(bd1, bd2, simplices, distances, contact_normals, warp_idx);
+  epa_core(bd1, bd2, simplices, distances, contact_normals, warp_idx, &smem_poly[group_in_block]);
 }
 
 
@@ -2815,13 +2745,16 @@ __global__ void compute_epa_kernel_indexed_kernel(
     return;
   }
 
+  extern __shared__ EPAPolytope smem_poly[];
+  int group_in_block = threadIdx.x / THREADS_PER_EPA;
+
   // Copy polytopes to local memory
   gkPolytope bd1_local = polytopes[pairs[warp_idx].idx1];
   gkPolytope bd2_local = polytopes[pairs[warp_idx].idx2];
   gkPolytope* bd1 = &bd1_local;
   gkPolytope* bd2 = &bd2_local;
 
-  epa_core(bd1, bd2, simplices, distances, contact_normals, warp_idx);
+  epa_core(bd1, bd2, simplices, distances, contact_normals, warp_idx, &smem_poly[group_in_block]);
 }
 
 // ============================================================================
@@ -3036,7 +2969,10 @@ void compute_epa_device(
     int collisionsPerBlock = blockSize / THREADS_PER_EPA;
     int numBlocks = (n + collisionsPerBlock - 1) / collisionsPerBlock;
 
-    compute_epa_kernel<<<numBlocks, blockSize>>>(
+    int smem_size = collisionsPerBlock * (int)sizeof(EPAPolytope);
+    cudaFuncSetAttribute(compute_epa_kernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    compute_epa_kernel<<<numBlocks, blockSize, smem_size>>>(
         d_bd1, d_bd2, d_simplices, d_distances,
         d_contact_normals, n);
 
@@ -3193,7 +3129,10 @@ void compute_epa_indexed_device(
     int collisionsPerBlock = blockSize / THREADS_PER_EPA;
     int numBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
 
-    compute_epa_kernel_indexed_kernel<<<numBlocks, blockSize>>>(
+    int smem_size = collisionsPerBlock * (int)sizeof(EPAPolytope);
+    cudaFuncSetAttribute(compute_epa_kernel_indexed_kernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    compute_epa_kernel_indexed_kernel<<<numBlocks, blockSize, smem_size>>>(
         d_polytopes, d_pairs, d_simplices, d_distances,
         d_contact_normals, num_pairs);
 
