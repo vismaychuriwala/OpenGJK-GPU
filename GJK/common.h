@@ -48,11 +48,15 @@
 #define gkEpsilon FLT_EPSILON
 #define gkSqrt sqrtf
 #define gkFmax fmaxf
+#define gkFmin fminf
+#define gkFabs fabsf
 #else
 #define gkFloat double
 #define gkEpsilon DBL_EPSILON
 #define gkSqrt sqrt
 #define gkFmax fmax
+#define gkFmin fmin
+#define gkFabs fabs
 #endif
 
 /*! @brief Data structure for convex polytopes.

@@ -1060,5 +1060,5 @@ gkFloat compute_minimum_distance(gkPolytope bd1, gkPolytope bd2,
   }
 
   compute_witnesses(&bd1, &bd2, s);
-  return sqrt(norm2(v));
+  return gkSqrt(norm2(v));
 }

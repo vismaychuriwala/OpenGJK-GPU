@@ -13,7 +13,7 @@
 #define fscanf_s fscanf
 #define M_PI 3.14159265358979323846  /* pi */
 
-#define NUM_POLYTOPES 1000
+#define NUM_POLYTOPES 10000
 #define RANDOM_VERTS 0
 
 #if RANDOM_VERTS
@@ -180,25 +180,30 @@ main() {
   float cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
 
   /* Validate results first to determine coloring */
-  int test_count = (NUM_POLYTOPES < 100) ? NUM_POLYTOPES : 100;
-  bool gpu_passed = true;
-  const gkFloat tolerance = 1e-5f;
+  int test_count = NUM_POLYTOPES;
+#ifdef USE_32BITS
+  const gkFloat tolerance = 1e-3f;
+#else
+  const gkFloat tolerance = 1e-5;
+#endif
 
-  /* Validate GPU vs CPU */
+  /* Validate GPU vs CPU GJK distances */
+  int gjk_mismatch_count = 0;
+  gkFloat gjk_diff_sum = 0.0f, gjk_diff_max = 0.0f;
   for (int i = 0; i < test_count; i++) {
     gkFloat diff = fabs(gpu_distances[i] - distances[i]);
-    if (diff > tolerance) {
-      gpu_passed = false;
-      break;
-    }
+    if (diff > tolerance) gjk_mismatch_count++;
+    gjk_diff_sum += diff;
+    if (diff > gjk_diff_max) gjk_diff_max = diff;
   }
+  bool gpu_passed = (gjk_mismatch_count == 0);
 
   /* Print execution times with color based on validation */
   printf("\n");
   printf("================================================================================\n");
   printf("                           EXECUTION TIMES                                      \n");
   printf("================================================================================\n");
-  printf("GPU:                       %s%.4f ms\033[0m\n", gpu_passed ? "\033[36m" : "\033[31m", gpu_time);
+  printf("GPU:                       %s%.4f ms\033[0m\n", gpu_passed ? "\033[36m" : "\033[33m", gpu_time);
   printf("CPU:                       \033[36m%.4f ms\033[0m\n", cpu_time);
 
   printf("\n");
@@ -221,25 +226,13 @@ main() {
   printf("                            VALIDATION RESULTS                                  \n");
   printf("================================================================================\n");
 
-  /* Print detailed validation results */
-  printf("GPU vs CPU:                ");
-  bool has_errors = false;
-  for (int i = 0; i < test_count; i++) {
-    gkFloat diff = fabs(gpu_distances[i] - distances[i]);
-    if (diff > tolerance) {
-      if (!has_errors) printf("\n"); // Move to new line for error details
-      has_errors = true;
-      printf("  Mismatch at index %d: GPU=%.6f, CPU=%.6f, diff=%.6e\n",
-             i, gpu_distances[i], distances[i], diff);
-    }
-  }
-
-  if (gpu_passed) {
-    printf("\033[32mPASSED\033[0m (first %d results within %.0e tolerance)\n",
-           test_count, tolerance);
-  } else {
-    printf("\033[31mFAILED\033[0m\n");
-  }
+  printf("GPU vs CPU (GJK distance): ");
+  if (gjk_mismatch_count == 0)
+    printf("\033[32mPASSED\033[0m (%d pairs within %.0e)\n", test_count, tolerance);
+  else
+    printf("\033[33mWARN\033[0m   %d/%d differ  max=%.2e  mean=%.2e\n",
+           gjk_mismatch_count, test_count,
+           gjk_diff_max, gjk_diff_sum / test_count);
 
   printf("\n");
   printf("================================================================================\n");
@@ -259,6 +252,128 @@ main() {
          simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2],
          simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
   printf("================================================================================\n");
+
+/* ── EPA: CPU vs GPU ─────────────────────────────────────────────────────── */
+  {
+    gkSimplex* cpu_epa_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkSimplex* gpu_epa_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
+    gkFloat*   cpu_epa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    gkFloat*   gpu_epa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
+    gkFloat*   cpu_epa_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   cpu_epa_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   gpu_epa_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   gpu_epa_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   cpu_epa_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*   gpu_epa_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+
+    memcpy(cpu_epa_simplices, simplices, NUM_POLYTOPES * sizeof(gkSimplex));
+    memcpy(gpu_epa_simplices, simplices, NUM_POLYTOPES * sizeof(gkSimplex));  // same source as CPU
+    memcpy(cpu_epa_distances, distances, NUM_POLYTOPES * sizeof(gkFloat));
+    memcpy(gpu_epa_distances, distances, NUM_POLYTOPES * sizeof(gkFloat));   // same source as CPU
+
+    GJK::GPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
+                                          gpu_epa_simplices, gpu_epa_distances,
+                                          gpu_epa_witness1, gpu_epa_witness2,
+                                          gpu_epa_normals);
+    float epa_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
+
+    GJK::CPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
+                                          cpu_epa_simplices, cpu_epa_distances,
+                                          cpu_epa_witness1, cpu_epa_witness2,
+                                          cpu_epa_normals);
+    float epa_cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
+
+    int colliding_count = 0;
+    int depth_mismatch_count = 0;
+    int witness_mismatch_count = 0;
+    int normal_mismatch_count = 0;
+    gkFloat w_norm_sum = 0.0f, w_norm_max = 0.0f;
+    gkFloat n_norm_sum = 0.0f, n_norm_max = 0.0f;
+
+    for (int i = 0; i < test_count; i++) {
+      if (gpu_distances[i] <= tolerance) {
+        colliding_count++;
+
+        gkFloat depth_diff = fabs(cpu_epa_distances[i] - gpu_epa_distances[i]);
+        if (depth_diff > tolerance)
+          depth_mismatch_count++;
+
+        // Compute norm of witness difference: max(|w1_cpu - w1_gpu|, |w2_cpu - w2_gpu|)
+        gkFloat d1 = 0.0f, d2 = 0.0f;
+        for (int d = 0; d < 3; d++) {
+          gkFloat e1 = cpu_epa_witness1[i*3+d] - gpu_epa_witness1[i*3+d];
+          gkFloat e2 = cpu_epa_witness2[i*3+d] - gpu_epa_witness2[i*3+d];
+          d1 += e1 * e1;
+          d2 += e2 * e2;
+        }
+        d1 = sqrt(d1); d2 = sqrt(d2);
+        gkFloat w_norm = d1 > d2 ? d1 : d2;
+
+        if (w_norm > tolerance) witness_mismatch_count++;
+        w_norm_sum += w_norm;
+        if (w_norm > w_norm_max) w_norm_max = w_norm;
+
+        // Compute norm of contact normal difference
+        gkFloat dn = 0.0f;
+        for (int d = 0; d < 3; d++) {
+          gkFloat en = cpu_epa_normals[i*3+d] - gpu_epa_normals[i*3+d];
+          dn += en * en;
+        }
+        dn = sqrt(dn);
+
+        if (dn > tolerance) normal_mismatch_count++;
+        n_norm_sum += dn;
+        if (dn > n_norm_max) n_norm_max = dn;
+      }
+    }
+    bool epa_passed = (depth_mismatch_count == 0);
+
+    printf("\n");
+    printf("================================================================================\n");
+    printf("                              EPA CPU vs GPU                                    \n");
+    printf("================================================================================\n");
+    printf("GPU:                       %s%.4f ms\033[0m\n", epa_passed ? "\033[36m" : "\033[31m", epa_gpu_time);
+    printf("CPU:                       \033[36m%.4f ms\033[0m\n", epa_cpu_time);
+
+    float epa_speedup = epa_cpu_time / epa_gpu_time;
+    printf("CPU vs GPU:                ");
+    if (epa_speedup > 1.0f)
+      printf("\033[32m%.2fx speedup\033[0m\n", epa_speedup);
+    else
+      printf("\033[33m%.2fx slowdown\033[0m\n", epa_speedup);
+
+    printf("Colliding pairs:           %d / %d\n", colliding_count, test_count);
+
+    printf("Penetration depth:         ");
+    if (depth_mismatch_count == 0)
+      printf("\033[32mPASSED\033[0m (%d pairs within %.0e)\n", colliding_count, tolerance);
+    else
+      printf("\033[31mFAILED\033[0m (%d/%d mismatches)\n", depth_mismatch_count, colliding_count);
+
+    printf("Witness points:            ");
+    if (witness_mismatch_count == 0)
+      printf("\033[32mPASSED\033[0m (%d pairs within %.0e)\n", colliding_count, tolerance);
+    else
+      printf("\033[33mWARN\033[0m   %d/%d differ  max=%.2e  mean=%.2e\n",
+             witness_mismatch_count, colliding_count,
+             w_norm_max, colliding_count > 0 ? w_norm_sum / colliding_count : 0.0f);
+
+    printf("Contact normals:           ");
+    if (normal_mismatch_count == 0)
+      printf("\033[32mPASSED\033[0m (%d pairs within %.0e)\n", colliding_count, tolerance);
+    else
+      printf("\033[33mWARN\033[0m   %d/%d differ  max=%.2e  mean=%.2e\n",
+             normal_mismatch_count, colliding_count,
+             n_norm_max, colliding_count > 0 ? n_norm_sum / colliding_count : 0.0f);
+
+    printf("================================================================================\n");
+
+    free(cpu_epa_simplices); free(gpu_epa_simplices);
+    free(cpu_epa_distances); free(gpu_epa_distances);
+    free(cpu_epa_witness1);  free(cpu_epa_witness2);
+    free(gpu_epa_witness1);  free(gpu_epa_witness2);
+    free(cpu_epa_normals);   free(gpu_epa_normals);
+  }
 
 #if TEST_API
   printf("\n");

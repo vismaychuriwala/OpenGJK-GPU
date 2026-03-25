@@ -1,12 +1,14 @@
 set(headers
     "gpu/openGJK.h"
     "cpu/openGJK.h"
+    "cpu/EPA.h"
     "common.h"
     )
 
 set(sources
     "gpu/openGJK.cu"
     "cpu/openGJK.c"
+    "cpu/EPA.c"
     )
 
 list(SORT headers)
@@ -27,3 +29,4 @@ else()
     set_target_properties(GJK PROPERTIES CUDA_ARCHITECTURES native)
 endif()
 target_compile_options(GJK PRIVATE "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G;-src-in-ptx>")
+target_compile_options(GJK PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")

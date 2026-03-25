@@ -38,8 +38,8 @@
 
 #include "math.h"
 
-#define eps_rel22 (gkFloat) gkEpsilon * 1e4f
-#define eps_tot22 (gkFloat) gkEpsilon * 1e2f
+#define eps_rel22 ((gkFloat)(gkEpsilon) * (gkFloat)1e4)
+#define eps_tot22 ((gkFloat)(gkEpsilon) * (gkFloat)1e2)
 
 // Threads per computation for parallel kernels (must be 8, 16 or 32)
 #define THREADS_PER_GJK 8  // GJK: 8, 16 (half-warp) or 32 (full-warp)
@@ -1500,7 +1500,7 @@ typedef struct {
 } EPAPolytope;
 
 // Compute face normal and distance of face from origin
-__device__ inline static void compute_face_normal_distance(EPAPolytope* poly, int face_idx, const gkFloat* centroid) {
+__device__ inline static void compute_face_normal_distance(EPAPolytope* poly, int face_idx) {
   EPAFace* face = &poly->faces[face_idx];
   if (!face->valid) return;
 
@@ -1527,21 +1527,6 @@ __device__ inline static void compute_face_normal_distance(EPAPolytope* poly, in
       face->normal[i] /= norm;
     }
 
-    // Ensure normal points away from centroid (outward from polytope interior)
-    gkFloat to_centroid[3];
-    #pragma unroll
-    for (int i = 0; i < 3; i++) {
-      to_centroid[i] = centroid[i] - v0[i];
-    }
-
-    // If normal points toward centroid flip it
-    if (dotProduct(face->normal, to_centroid) > 0) {
-      #pragma unroll
-      for (int i = 0; i < 3; i++) {
-        face->normal[i] = -face->normal[i];
-      }
-    }
-
     face->distance = dotProduct(face->normal, v0);
 
     if (face->distance < 0) {
@@ -1556,7 +1541,7 @@ __device__ inline static void compute_face_normal_distance(EPAPolytope* poly, in
   else {
     // Degenerate face
     face->valid = false;
-    face->distance = 1e10f;
+    face->distance = (gkFloat)1e10;
   }
 }
 
@@ -1619,7 +1604,7 @@ __device__ inline static void support_epa_parallel(const gkPolytope* body1, cons
   for (int offset = 16; offset > 0; offset /= 2) {
     gkFloat other_max = __shfl_down_sync(warp_mask, local_max1, offset);
     int other_best = __shfl_down_sync(warp_mask, local_best1, offset);
-    if (other_max > local_max1) {
+    if (other_max > local_max1 || (other_max == local_max1 && other_best < local_best1)) {
       local_max1 = other_max;
       local_best1 = other_best;
     }
@@ -1630,7 +1615,7 @@ __device__ inline static void support_epa_parallel(const gkPolytope* body1, cons
   for (int offset = 16; offset > 0; offset /= 2) {
     gkFloat other_max = __shfl_down_sync(warp_mask, local_max2, offset);
     int other_best = __shfl_down_sync(warp_mask, local_best2, offset);
-    if (other_max > local_max2) {
+    if (other_max > local_max2 || (other_max == local_max2 && other_best < local_best2)) {
       local_max2 = other_max;
       local_best2 = other_best;
     }
@@ -1796,7 +1781,7 @@ __device__ inline static void compute_barycentric_origin(
 
   gkFloat denom = d00 * d11 - d01 * d01;
 
-  if (fabs(denom) < gkEpsilon) {
+  if (gkFabs(denom) < gkEpsilon) {
     // Degenerate
     *a0 = *a1 = *a2 = (gkFloat)1.0 / (gkFloat)3.0;
     return;
@@ -1818,7 +1803,7 @@ __device__ inline static void compute_barycentric_origin(
       v1_neg[i] = -v1[i];
     }
     gkFloat t = dotProduct(v1_neg, e12) / dotProduct(e12, e12);
-    t = fmax((gkFloat)0.0, fmin((gkFloat)1.0, t));
+    t = gkFmax((gkFloat)0.0, gkFmin((gkFloat)1.0, t));
     *a0 = 0;
     *a1 = (gkFloat)1.0 - t;
     *a2 = t;
@@ -1826,7 +1811,7 @@ __device__ inline static void compute_barycentric_origin(
   else if (u < 0) {
     // Origin projects outside edge v0-v2
     gkFloat t = dotProduct(v0_neg, e1) / dotProduct(e1, e1);
-    t = fmax((gkFloat)0.0, fmin((gkFloat)1.0, t));
+    t = gkFmax((gkFloat)0.0, gkFmin((gkFloat)1.0, t));
     *a0 = (gkFloat)1.0 - t;
     *a1 = 0;
     *a2 = t;
@@ -1834,7 +1819,7 @@ __device__ inline static void compute_barycentric_origin(
   else if (v < 0) {
     // Origin projects outside edge v0-v1
     gkFloat t = dotProduct(v0_neg, e0) / dotProduct(e0, e0);
-    t = fmax((gkFloat)0.0, fmin((gkFloat)1.0, t));
+    t = gkFmax((gkFloat)0.0, gkFmin((gkFloat)1.0, t));
     *a0 = (gkFloat)1.0 - t;
     *a1 = t;
     *a2 = 0;
@@ -2026,7 +2011,7 @@ __device__ __forceinline__ void epa_core(
         // Build a perpindicular
         gkFloat axis[3] = { 1.0f, 0.0f, 0.0f };
         gkFloat edge_norm = gkSqrt(edge[0] * edge[0] + edge[1] * edge[1] + edge[2] * edge[2]);
-        if (edge_norm > gkEpsilon && fabs(edge[0]) > 0.9f * edge_norm) {
+        if (edge_norm > gkEpsilon && gkFabs(edge[0]) > 0.9f * edge_norm) {
           axis[0] = 0.0f; axis[1] = 1.0f; axis[2] = 0.0f;
         }
 
@@ -2365,7 +2350,7 @@ __device__ __forceinline__ void epa_core(
     // Recompute normals & distances for assigned faces
     for (int i = start_face; i < end_face; ++i) {
       if (poly.faces[i].valid) {
-        compute_face_normal_distance(&poly, i, centroid);
+        compute_face_normal_distance(&poly, i);
       }
     }
 
@@ -2406,7 +2391,8 @@ __device__ __forceinline__ void epa_core(
       gkFloat other_dist = __shfl_down_sync(warp_mask, local_closest_distance, offset);
       int other_face = __shfl_down_sync(warp_mask, local_closest_face, offset);
       
-      if (other_face >= 0 && (local_closest_face < 0 || other_dist < local_closest_distance)) {
+      if (other_face >= 0 && (local_closest_face < 0 || other_dist < local_closest_distance ||
+          (other_dist == local_closest_distance && other_face < local_closest_face))) {
         local_closest_distance = other_dist;
         local_closest_face = other_face;
       }
@@ -2440,7 +2426,7 @@ __device__ __forceinline__ void epa_core(
     __syncwarp(warp_mask);
 
     // Check termination condition: if distance to new vertex along normal is not more than tolerance further than closest face
-    gkFloat dist_to_new = dir_x * new_vertex[0] + dir_y * new_vertex[1] + dir_z * new_vertex[2];
+    gkFloat dist_to_new = dotProduct(direction, new_vertex);
     gkFloat improvement = dist_to_new - closest_distance;
 
     if (improvement < tolerance) {
@@ -2576,23 +2562,13 @@ __device__ __forceinline__ void epa_core(
     // Only create new faces from horizon edges
     // Maybe some way to leverage multiple threads in warp to speed this up
     if (warp_lane_idx == 0) {
-      // Mark visible faces
-      for (int i = 0; i < poly.max_face_index; i++) {
-        if (poly.faces[i].valid && is_face_visible(&poly, i, new_vertex)) {
-          poly.faces[i].valid = false;
-        }
-      }
-
-      // Collect horizon edges from invalid faces
+      // Collect horizon edges from faces visible to new vertex (mark and collect in one pass)
       EPAEdge edges[MAX_EPA_FACES * 3];
       int num_edges = 0;
 
       for (int f = 0; f < poly.max_face_index; f++) {
-        if (poly.faces[f].valid) continue;  // Skip valid faces
-
-        // face was just invalidated so collect edges
-        // But only if face was actually valid before this iteration
-        // We need to check if it has valid vertex indices
+        if (!poly.faces[f].valid) continue;
+        if (!is_face_visible(&poly, f, new_vertex)) continue;
 
         // Edge 0-1
         if (num_edges < MAX_EPA_FACES * 3) {
@@ -2629,6 +2605,8 @@ __device__ __forceinline__ void epa_core(
           edges[num_edges].valid = true;
           num_edges++;
         }
+
+        poly.faces[f].valid = false;
       }
 
       // Remove duplicate edges (edges shared by two removed faces)
@@ -2742,7 +2720,7 @@ __device__ __forceinline__ void epa_core(
     // Find closest face and compute result
     for (int i = 0; i < poly.max_face_index; ++i) {
       if (!poly.faces[i].valid) continue;
-      compute_face_normal_distance(&poly, i, centroid);
+      compute_face_normal_distance(&poly, i);
     }
 
     int closest_face = -1;
