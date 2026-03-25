@@ -61,10 +61,9 @@ __global__ void compute_minimum_distance_kernel(const gkPolytope* polytopes1, co
  * @param polytopes2 Second set of polytopes
  * @param simplices Simplex results from GJK (should have 4 vertices for collisions)
  * @param distances Output array for penetration depths (or distances if no collision)
- * @param witness1 Output array for witness points on first polytope (3 floats per collision)
- * @param witness2 Output array for witness points on second polytope (3 floats per collision)
  * @param contact_normals Output array for contact normals (3 floats per collision, points from polytope1 to polytope2)
  * @param n Number of polytope pairs to process
+ * @note Witness points are written to simplices[i].witnesses[0] and simplices[i].witnesses[1]
  */
 __global__ void compute_epa_kernel(const gkPolytope* polytopes1, const gkPolytope* polytypes2,
   gkSimplex* simplices, gkFloat* distances, gkFloat* contact_normals, const int n);
@@ -106,11 +105,9 @@ void compute_minimum_distance(
  * @param n               Number of polytope pairs to process
  * @param bd1             Array of first polytopes (host memory)
  * @param bd2             Array of second polytopes (host memory)
- * @param simplices       Array of simplices (host memory, input/output)
+ * @param simplices       Array of simplices (host memory, input/output); witness points written to simplices[i].witnesses[0/1]
  * @param distances       Array of distances (host memory, input/output)
- * @param witness1        Array to store witness points on first polytope (n*3 floats)
- * @param witness2        Array to store witness points on second polytope (n*3 floats)
- * @param contact_normals Optional array to store contact normals (n*3 floats, can be nullptr)
+ * @param contact_normals Array to store contact normals (n*3 floats)
  */
 void computeCollisionInformation(
     const int n,
@@ -202,10 +199,8 @@ void compute_minimum_distance_device(
  * @param n               Number of polytope pairs
  * @param d_bd1           Device pointer to first polytopes
  * @param d_bd2           Device pointer to second polytopes
- * @param d_simplices     Device pointer to simplices
- * @param d_distances     Device pointer to distances
- * @param d_witness1      Device pointer to witness points for bd1
- * @param d_witness2      Device pointer to witness points for bd2
+ * @param d_simplices       Device pointer to simplices; witness points written to simplices[i].witnesses[0/1]
+ * @param d_distances       Device pointer to distances
  * @param d_contact_normals Device pointer to contact normals (n*3 floats)
  */
 void compute_epa_device(
@@ -339,10 +334,8 @@ __global__ void compute_epa_kernel_indexed_kernel(
  * @param num_pairs       Number of collision pairs
  * @param d_polytopes     Device pointer to polytope array
  * @param d_pairs         Device pointer to collision pairs
- * @param d_simplices     Device pointer to simplex array (input/output)
- * @param d_distances     Device pointer to distance array (input/output)
- * @param d_witness1      Device pointer to witness points for first polytope
- * @param d_witness2      Device pointer to witness points for second polytope
+ * @param d_simplices       Device pointer to simplex array (input/output); witness points written to simplices[i].witnesses[0/1]
+ * @param d_distances       Device pointer to distance array (input/output)
  * @param d_contact_normals Device pointer to contact normals (num_pairs*3 floats)
  */
 void compute_epa_indexed_device(
@@ -364,10 +357,8 @@ void compute_epa_indexed_device(
  * @param num_pairs       Number of collision pairs
  * @param polytopes       Array of all polytopes (host memory)
  * @param pairs           Array of index pairs (host memory)
- * @param simplices       Simplex array from GJK (host memory, input/output)
+ * @param simplices       Simplex array from GJK (host memory, input/output); witness points written to simplices[i].witnesses[0/1]
  * @param distances       Distance array from GJK (host memory, input/output)
- * @param witness1        Output witness points for first polytope (n*3 floats)
- * @param witness2        Output witness points for second polytope (n*3 floats)
  * @param contact_normals Output contact normals (num_pairs*3 floats)
  */
 void compute_epa_indexed(
@@ -390,10 +381,8 @@ void compute_epa_indexed(
  * @param num_pairs       Number of collision pairs
  * @param polytopes       Array of all polytopes (host memory)
  * @param pairs           Array of index pairs (host memory)
- * @param simplices       Output simplex array (host memory)
+ * @param simplices       Output simplex array (host memory); witness points written to simplices[i].witnesses[0/1]
  * @param distances       Output distances/penetration depths (host memory)
- * @param witness1        Output witness points for first polytope (n*3 floats)
- * @param witness2        Output witness points for second polytope (n*3 floats)
  * @param contact_normals Output contact normals (num_pairs*3 floats)
  */
 void compute_gjk_epa_indexed(
