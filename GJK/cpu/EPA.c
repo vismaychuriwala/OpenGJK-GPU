@@ -92,7 +92,6 @@ inline static void crossProduct(const gkFloat* a,
 // direction is trusted directly — no centroid-based orientation check needed.
 inline static void compute_face_normal_distance(EPAPolytope* poly, int face_idx) {
   EPAFace* face = &poly->faces[face_idx];
-  if (!face->valid) return;
 
   gkFloat* v0 = poly->vertices[face->v[0]];
   gkFloat* v1 = poly->vertices[face->v[1]];
@@ -137,23 +136,14 @@ inline static bool is_face_visible(EPAPolytope* poly, int face_idx, const gkFloa
 
   gkFloat* v0 = poly->vertices[face->v[0]];
   gkFloat diff[3];
-  
-  for (int i = 0; i < 3; i++) {
-    diff[i] = point[i] - v0[i];
-  }
-
+  for (int i = 0; i < 3; i++) diff[i] = point[i] - v0[i];
   return dotProduct(face->normal, diff) > gkEpsilon;
 }
 
 
 // Initialize EPA polytope from GJK simplex (should be a tetrahedron)
 inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex, gkFloat* centroid) {
-  // Clear all faces first
-  
-  for (int i = 0; i < MAX_EPA_FACES; ++i) {
-    poly->faces[i].valid = false;
-    poly->faces[i].distance = 1e10f;
-  }
+  memset(poly->faces, 0, sizeof(poly->faces));
 
   // Copy vertices from simplex
   poly->num_vertices = 4;
@@ -168,11 +158,14 @@ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex
 
   // Compute centroid of the tetrahedron
   centroid[0] = centroid[1] = centroid[2] = 0.0f;
-  
+
   for (int i = 0; i < 4; i++) {
     for (int j = 0; j < 3; j++) {
-      centroid[j] += poly->vertices[i][j] / 4.f;
+      centroid[j] += poly->vertices[i][j];
     }
+  }
+  for (int j = 0; j < 3; j++) {
+    centroid[j] *= (gkFloat)0.25;
   }
 
   // Create 4 faces of tetrahedron
@@ -225,14 +218,9 @@ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex
     }
     crossProduct(e0, e1, normal);
 
-    // Vector from face to centroid
-    gkFloat to_centroid[3];
-    
-    for (int i = 0; i < 3; i++) {
-      to_centroid[i] = centroid[i] - v0[i];
-    }
-
     // If normal points toward centroid need to flip the winding
+    gkFloat to_centroid[3];
+    for (int i = 0; i < 3; i++) to_centroid[i] = centroid[i] - v0[i];
     if (dotProduct(normal, to_centroid) > 0) {
       int tmp = poly->faces[f].v[1];
       poly->faces[f].v[1] = poly->faces[f].v[2];
@@ -256,20 +244,19 @@ inline static void compute_barycentric_origin(
   gkFloat* a0, gkFloat* a1, gkFloat* a2) {
 
   // Compute vectors
-  gkFloat e0[3], e1[3], v0_neg[3];
-  
+  gkFloat e0[3], e1[3];
+
   for (int i = 0; i < 3; i++) {
     e0[i] = v1[i] - v0[i];
     e1[i] = v2[i] - v0[i];
-    v0_neg[i] = -v0[i];
   }
 
   // Compute dot products for barycentric coords
   gkFloat d00 = dotProduct(e0, e0);
   gkFloat d01 = dotProduct(e0, e1);
   gkFloat d11 = dotProduct(e1, e1);
-  gkFloat d20 = dotProduct(v0_neg, e0);
-  gkFloat d21 = dotProduct(v0_neg, e1);
+  gkFloat d20 = -dotProduct(v0, e0);
+  gkFloat d21 = -dotProduct(v0, e1);
 
   gkFloat denom = d00 * d11 - d01 * d01;
 
@@ -288,13 +275,9 @@ inline static void compute_barycentric_origin(
   if (w < 0) {
     // Origin projects outside edge v1-v2
     // Project onto edge v1-v2
-    gkFloat e12[3], v1_neg[3];
-    
-    for (int i = 0; i < 3; i++) {
-      e12[i] = v2[i] - v1[i];
-      v1_neg[i] = -v1[i];
-    }
-    gkFloat t = dotProduct(v1_neg, e12) / dotProduct(e12, e12);
+    gkFloat e12[3];
+    for (int i = 0; i < 3; i++) e12[i] = v2[i] - v1[i];
+    gkFloat t = -dotProduct(v1, e12) / dotProduct(e12, e12);
     t = gkFmax((gkFloat)0.0, gkFmin((gkFloat)1.0, t));
     *a0 = 0;
     *a1 = (gkFloat)1.0 - t;
@@ -302,7 +285,7 @@ inline static void compute_barycentric_origin(
   }
   else if (u < 0) {
     // Origin projects outside edge v0-v2
-    gkFloat t = dotProduct(v0_neg, e1) / dotProduct(e1, e1);
+    gkFloat t = -dotProduct(v0, e1) / dotProduct(e1, e1);
     t = gkFmax((gkFloat)0.0, gkFmin((gkFloat)1.0, t));
     *a0 = (gkFloat)1.0 - t;
     *a1 = 0;
@@ -310,7 +293,7 @@ inline static void compute_barycentric_origin(
   }
   else if (v < 0) {
     // Origin projects outside edge v0-v1
-    gkFloat t = dotProduct(v0_neg, e0) / dotProduct(e0, e0);
+    gkFloat t = -dotProduct(v0, e0) / dotProduct(e0, e0);
     t = gkFmax((gkFloat)0.0, gkFmin((gkFloat)1.0, t));
     *a0 = (gkFloat)1.0 - t;
     *a1 = t;
@@ -332,30 +315,25 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
   gkFloat local_max2 = -1e10f;
   int local_best1 = -1;
   int local_best2 = -1;
-  gkFloat vrt[3];
 
-  // Searches every vertex
   // Search body1
-  for (int i = 0; i < body1->numpoints; i ++) {
-    for (int j = 0; j < 3; j++) {
-      vrt[j] = getCoord(body1, i, j);
-    }
-    gkFloat s = dotProduct(vrt, direction);
+  for (int i = 0; i < body1->numpoints; i++) {
+    gkFloat s = getCoord(body1, i, 0) * direction[0]
+              + getCoord(body1, i, 1) * direction[1]
+              + getCoord(body1, i, 2) * direction[2];
     if (s > local_max1) {
       local_max1 = s;
       local_best1 = i;
     }
   }
 
-  // Search body2 opposite direction
-  gkFloat neg_dir[3] = { -direction[0], -direction[1], -direction[2] };
-  for (int i = 0; i < body2->numpoints; i ++) {
-    for (int j = 0; j < 3; j++) {
-      vrt[j] = getCoord(body2, i, j);
-    }
-    gkFloat s = dotProduct(vrt, neg_dir);
-    if (s > local_max2) {
-      local_max2 = s;
+  // Search body2 in opposite direction
+  for (int i = 0; i < body2->numpoints; i++) {
+    gkFloat s = getCoord(body2, i, 0) * direction[0]
+              + getCoord(body2, i, 1) * direction[1]
+              + getCoord(body2, i, 2) * direction[2];
+    if (-s > local_max2) {
+      local_max2 = -s;
       local_best2 = i;
     }
   }
@@ -372,6 +350,18 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
 //*******************************************************************************************
 // EPA Implementation
 //*******************************************************************************************
+
+static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* contact_normal) {
+  gkFloat d[3] = { w2[0] - w1[0], w2[1] - w1[1], w2[2] - w1[2] };
+  gkFloat n = gkSqrt(norm2(d));
+  if (n > gkEpsilon) {
+    contact_normal[0] = d[0] / n;
+    contact_normal[1] = d[1] / n;
+    contact_normal[2] = d[2] / n;
+  } else {
+    contact_normal[0] = 1.0f; contact_normal[1] = 0.0f; contact_normal[2] = 0.0f;
+  }
+}
 
   void compute_epa(
   const gkPolytope* bd1,
@@ -390,25 +380,7 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
       witness2[i] = simplex->witnesses[1][i];
     }
 
-    // Compute contact normal from witness1 to witness2 (for non-colliding case)
-    gkFloat w1_to_w2[3];
-    gkFloat norm = 0.0f;
-
-    for (int i = 0; i < 3; i++) {
-      w1_to_w2[i] = witness2[i] - witness1[i];
-      norm += w1_to_w2[i] * w1_to_w2[i];
-    }
-    norm = gkSqrt(norm);
-    if (norm > gkEpsilon) {
-      for (int i = 0; i < 3; i++) {
-        contact_normal[i] = w1_to_w2[i] / norm;
-      }
-    } else {
-      // Default normal if witnesses are too close
-      contact_normal[0] = 1.0f;
-      contact_normal[1] = 0.0f;
-      contact_normal[2] = 0.0f;
-    }
+    set_contact_normal(witness1, witness2, contact_normal);
     return;
   }
 
@@ -449,32 +421,11 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
         else {
           // No new support point means penetration depth effectively zero.
           *distance = 0.0f;
-          
           for (int c = 0; c < 3; ++c) {
-            gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
-            gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
-            witness1[c] = p1;
-            witness2[c] = p2;
+            witness1[c] = getCoord(bd1, new_vertex_idx[0], c);
+            witness2[c] = getCoord(bd2, new_vertex_idx[1], c);
           }
-          // Compute contact normal from witness1 to witness2
-          gkFloat w1_to_w2[3];
-          gkFloat norm = 0.0f;
-          
-          for (int c = 0; c < 3; ++c) {
-            w1_to_w2[c] = witness2[c] - witness1[c];
-            norm += w1_to_w2[c] * w1_to_w2[c];
-          }
-          norm = gkSqrt(norm);
-          if (norm > gkEpsilon) {
-            
-            for (int c = 0; c < 3; ++c) {
-              contact_normal[c] = w1_to_w2[c] / norm;
-            }
-          } else {
-            contact_normal[0] = 1.0f;
-            contact_normal[1] = 0.0f;
-            contact_normal[2] = 0.0f;
-          }
+          set_contact_normal(witness1, witness2, contact_normal);
           return;
         }
     }
@@ -486,17 +437,15 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
       int new_vertex_idx[2];
       const gkFloat eps_sq = gkEpsilon * gkEpsilon;
 
-    gkFloat p0[3], p1[3], edge[3];
-    
+    gkFloat edge[3];
+
     for (int c = 0; c < 3; ++c) {
-        p0[c] = simplex->vrtx[0][c];
-        p1[c] = simplex->vrtx[1][c];
-        edge[c] = p1[c] - p0[c];
+        edge[c] = simplex->vrtx[1][c] - simplex->vrtx[0][c];
     }
 
     // Build a perpindicular
     gkFloat axis[3] = { 1.0f, 0.0f, 0.0f };
-    gkFloat edge_norm = gkSqrt(edge[0] * edge[0] + edge[1] * edge[1] + edge[2] * edge[2]);
+    gkFloat edge_norm = gkSqrt(norm2(edge));
     if (edge_norm > gkEpsilon && gkFabs(edge[0]) > 0.9f * edge_norm) {
         axis[0] = 0.0f; axis[1] = 1.0f; axis[2] = 0.0f;
     }
@@ -537,32 +486,11 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
         else {
           // No new support point means penetration depth effectively zero.
           *distance = 0.0f;
-          
           for (int c = 0; c < 3; ++c) {
-            gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
-            gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
-            witness1[c] = p1;
-            witness2[c] = p2;
+            witness1[c] = getCoord(bd1, new_vertex_idx[0], c);
+            witness2[c] = getCoord(bd2, new_vertex_idx[1], c);
           }
-          // Compute contact normal from witness1 to witness2
-          gkFloat w1_to_w2[3];
-          gkFloat norm = 0.0f;
-          
-          for (int c = 0; c < 3; ++c) {
-            w1_to_w2[c] = witness2[c] - witness1[c];
-            norm += w1_to_w2[c] * w1_to_w2[c];
-          }
-          norm = gkSqrt(norm);
-          if (norm > gkEpsilon) {
-            
-            for (int c = 0; c < 3; ++c) {
-              contact_normal[c] = w1_to_w2[c] / norm;
-            }
-          } else {
-            contact_normal[0] = 1.0f;
-            contact_normal[1] = 0.0f;
-            contact_normal[2] = 0.0f;
-          }
+          set_contact_normal(witness1, witness2, contact_normal);
           return;
         }
     }
@@ -574,15 +502,11 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
       int new_vertex_idx[2];
       const gkFloat eps_sq = gkEpsilon * gkEpsilon;
 
-        gkFloat p0[3], p1[3], p2[3];
         gkFloat e0[3], e1[3];
-        
+
         for (int c = 0; c < 3; ++c) {
-            p0[c] = simplex->vrtx[0][c];
-            p1[c] = simplex->vrtx[1][c];
-            p2[c] = simplex->vrtx[2][c];
-            e0[c] = p1[c] - p0[c];
-            e1[c] = p2[c] - p0[c];
+            e0[c] = simplex->vrtx[1][c] - simplex->vrtx[0][c];
+            e1[c] = simplex->vrtx[2][c] - simplex->vrtx[0][c];
         }
         // dir = e0 x e1 (normal to the triangle)
         crossProduct(e0, e1, dir);
@@ -646,32 +570,11 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
           }
           else {
             *distance = 0.0f;
-            
             for (int c = 0; c < 3; ++c) {
-              gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
-              gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
-              witness1[c] = p1;
-              witness2[c] = p2;
+              witness1[c] = getCoord(bd1, new_vertex_idx[0], c);
+              witness2[c] = getCoord(bd2, new_vertex_idx[1], c);
             }
-            // Compute contact normal from witness1 to witness2
-            gkFloat w1_to_w2[3];
-            gkFloat norm = 0.0f;
-            
-            for (int c = 0; c < 3; ++c) {
-              w1_to_w2[c] = witness2[c] - witness1[c];
-              norm += w1_to_w2[c] * w1_to_w2[c];
-            }
-            norm = gkSqrt(norm);
-            if (norm > gkEpsilon) {
-              
-              for (int c = 0; c < 3; ++c) {
-                contact_normal[c] = w1_to_w2[c] / norm;
-              }
-            } else {
-              contact_normal[0] = 1.0f;
-              contact_normal[1] = 0.0f;
-              contact_normal[2] = 0.0f;
-            }
+            set_contact_normal(witness1, witness2, contact_normal);
             return;
           }
       }
@@ -686,25 +589,7 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
             witness1[c] = getCoord(bd1, simplex->vrtx_idx[best][0], c);
             witness2[c] = getCoord(bd2, simplex->vrtx_idx[best][1], c);
         }
-        // Compute contact normal from witness points
-        gkFloat w1_to_w2[3];
-        gkFloat norm = 0.0f;
-
-        for (int c = 0; c < 3; ++c) {
-            w1_to_w2[c] = witness2[c] - witness1[c];
-            norm += w1_to_w2[c] * w1_to_w2[c];
-        }
-        norm = gkSqrt(norm);
-        if (norm > gkEpsilon) {
-            
-            for (int c = 0; c < 3; ++c) {
-            contact_normal[c] = w1_to_w2[c] / norm;
-            }
-        } else {
-            contact_normal[0] = 1.0f;
-            contact_normal[1] = 0.0f;
-            contact_normal[2] = 0.0f;
-        }
+        set_contact_normal(witness1, witness2, contact_normal);
         return;
     }
   }
@@ -761,39 +646,20 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
 
     if (improvement < tolerance) {
       // Converged, compute witness points with bary coords
-        gkFloat* v0 = poly.vertices[closest->v[0]];
-        gkFloat* v1 = poly.vertices[closest->v[1]];
-        gkFloat* v2 = poly.vertices[closest->v[2]];
-
-        // bary computation
-        gkFloat a0, a1, a2;
-        compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
-
-        // Compute witness points using barycentric coords
-        int idx0[2] = { closest->v_idx[0][0], closest->v_idx[0][1] };
-        int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
-        int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
-
-        
-        for (int i = 0; i < 3; i++) {
-          witness1[i] =
-            getCoord(bd1, idx0[0], i) * a0 +
-            getCoord(bd1, idx1[0], i) * a1 +
-            getCoord(bd1, idx2[0], i) * a2;
-          witness2[i] =
-            getCoord(bd2, idx0[1], i) * a0 +
-            getCoord(bd2, idx1[1], i) * a1 +
-            getCoord(bd2, idx2[1], i) * a2;
-        }
-
-        // Penetration depth is negative distance (objects overlap)
-        *distance = -closest_distance;
-        
-        // Store contact normal (points from polytope1 to polytope2)
-        
-        for (int i = 0; i < 3; i++) {
-          contact_normal[i] = closest->normal[i];
-        }
+      gkFloat a0, a1, a2;
+      compute_barycentric_origin(poly.vertices[closest->v[0]],
+                                 poly.vertices[closest->v[1]],
+                                 poly.vertices[closest->v[2]], &a0, &a1, &a2);
+      for (int i = 0; i < 3; i++) {
+        witness1[i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
+                    + getCoord(bd1, closest->v_idx[1][0], i) * a1
+                    + getCoord(bd1, closest->v_idx[2][0], i) * a2;
+        witness2[i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
+                    + getCoord(bd2, closest->v_idx[1][1], i) * a1
+                    + getCoord(bd2, closest->v_idx[2][1], i) * a2;
+        contact_normal[i] = closest->normal[i];
+      }
+      *distance = -closest_distance;
       break;
     }
 
@@ -812,56 +678,37 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
 
     if (is_duplicate) {
       // Can't make progress, use current best
-        gkFloat* v0 = poly.vertices[closest->v[0]];
-        gkFloat* v1 = poly.vertices[closest->v[1]];
-        gkFloat* v2 = poly.vertices[closest->v[2]];
-
-        gkFloat a0, a1, a2;
-        compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
-
-        int idx0[2] = { closest->v_idx[0][0], closest->v_idx[0][1] };
-        int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
-        int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
-
-        
-        for (int i = 0; i < 3; i++) {
-          witness1[i] =
-            getCoord(bd1, idx0[0], i) * a0 +
-            getCoord(bd1, idx1[0], i) * a1 +
-            getCoord(bd1, idx2[0], i) * a2;
-          witness2[i] =
-            getCoord(bd2, idx0[1], i) * a0 +
-            getCoord(bd2, idx1[1], i) * a1 +
-            getCoord(bd2, idx2[1], i) * a2;
-        }
-
-        *distance = -closest_distance;
-        
-        // Store contact normal (points from polytope1 to polytope2)
-        
-        for (int i = 0; i < 3; i++) {
-          contact_normal[i] = closest->normal[i];
-        }
+      gkFloat a0, a1, a2;
+      compute_barycentric_origin(poly.vertices[closest->v[0]],
+                                 poly.vertices[closest->v[1]],
+                                 poly.vertices[closest->v[2]], &a0, &a1, &a2);
+      for (int i = 0; i < 3; i++) {
+        witness1[i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
+                    + getCoord(bd1, closest->v_idx[1][0], i) * a1
+                    + getCoord(bd1, closest->v_idx[2][0], i) * a2;
+        witness2[i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
+                    + getCoord(bd2, closest->v_idx[1][1], i) * a1
+                    + getCoord(bd2, closest->v_idx[2][1], i) * a2;
+        contact_normal[i] = closest->normal[i];
+      }
+      *distance = -closest_distance;
       break;
     }
 
     // Add new vertex to polytope
-    int new_vertex_id = -1;
-      new_vertex_id = poly.num_vertices;
-      
-      for (int i = 0; i < 3; i++) {
-        poly.vertices[new_vertex_id][i] = new_vertex[i];
-      }
-      poly.vertex_indices[new_vertex_id][0] = new_vertex_idx[0];
-      poly.vertex_indices[new_vertex_id][1] = new_vertex_idx[1];
-      poly.num_vertices++;
+    int new_vertex_id = poly.num_vertices;
+    for (int i = 0; i < 3; i++) {
+      poly.vertices[new_vertex_id][i] = new_vertex[i];
+    }
+    poly.vertex_indices[new_vertex_id][0] = new_vertex_idx[0];
+    poly.vertex_indices[new_vertex_id][1] = new_vertex_idx[1];
+    poly.num_vertices++;
 
-      // Update centroid incrementally
-      gkFloat n = (gkFloat)poly.num_vertices;
-      
-      for (int i = 0; i < 3; i++) {
-        centroid[i] = centroid[i] * (n - 1.0f) / n + new_vertex[i] / n;
-      }
+    // Update centroid incrementally (running mean)
+    gkFloat inv_n = (gkFloat)1.0 / (gkFloat)poly.num_vertices;
+    for (int i = 0; i < 3; i++) {
+      centroid[i] += (new_vertex[i] - centroid[i]) * inv_n;
+    }
     // Find horizon edges: collect edges from faces being removed this iteration
     // only, then mark them invalid. Collecting from ALL invalid faces (including
     // ones from previous iterations) would pull in stale interior edges.
@@ -959,21 +806,16 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
         gkFloat* fv2 = poly.vertices[poly.faces[new_face_idx].v[2]];
 
         gkFloat fe0[3], fe1[3], fnormal[3];
-        
+
         for (int c = 0; c < 3; c++) {
           fe0[c] = fv1[c] - fv0[c];
           fe1[c] = fv2[c] - fv0[c];
         }
         crossProduct(fe0, fe1, fnormal);
 
-        // Vector from face to centroid
-        gkFloat to_cent[3];
-        
-        for (int c = 0; c < 3; c++) {
-          to_cent[c] = centroid[c] - fv0[c];
-        }
-
         // If normal points toward centroid flip winding
+        gkFloat to_cent[3];
+        for (int c = 0; c < 3; c++) to_cent[c] = centroid[c] - fv0[c];
         if (dotProduct(fnormal, to_cent) > 0) {
           // Swap v[1] and v[2]
           int tmp_v = poly.faces[new_face_idx].v[1];
@@ -1013,39 +855,22 @@ inline static void support_epa(const gkPolytope* body1, const gkPolytope* body2,
       }
     }
 
-    if (closest_face >= 0 && poly.faces[closest_face].valid) {
+    if (closest_face >= 0) {
       EPAFace* closest = &poly.faces[closest_face];
-
-      gkFloat* v0 = poly.vertices[closest->v[0]];
-      gkFloat* v1 = poly.vertices[closest->v[1]];
-      gkFloat* v2 = poly.vertices[closest->v[2]];
-
       gkFloat a0, a1, a2;
-      compute_barycentric_origin(v0, v1, v2, &a0, &a1, &a2);
-
-      int idx0[2] = { closest->v_idx[0][0], closest->v_idx[0][1] };
-      int idx1[2] = { closest->v_idx[1][0], closest->v_idx[1][1] };
-      int idx2[2] = { closest->v_idx[2][0], closest->v_idx[2][1] };
-
-      
+      compute_barycentric_origin(poly.vertices[closest->v[0]],
+                                 poly.vertices[closest->v[1]],
+                                 poly.vertices[closest->v[2]], &a0, &a1, &a2);
       for (int i = 0; i < 3; i++) {
-        witness1[i] =
-          getCoord(bd1, idx0[0], i) * a0 +
-          getCoord(bd1, idx1[0], i) * a1 +
-          getCoord(bd1, idx2[0], i) * a2;
-        witness2[i] =
-          getCoord(bd2, idx0[1], i) * a0 +
-          getCoord(bd2, idx1[1], i) * a1 +
-          getCoord(bd2, idx2[1], i) * a2;
-      }
-
-      *distance = -closest_distance;
-      
-      // Store contact normal (points from polytope1 to polytope2)
-      
-      for (int i = 0; i < 3; i++) {
+        witness1[i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
+                    + getCoord(bd1, closest->v_idx[1][0], i) * a1
+                    + getCoord(bd1, closest->v_idx[2][0], i) * a2;
+        witness2[i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
+                    + getCoord(bd2, closest->v_idx[1][1], i) * a1
+                    + getCoord(bd2, closest->v_idx[2][1], i) * a2;
         contact_normal[i] = closest->normal[i];
       }
+      *distance = -closest_distance;
     }
   }
 }

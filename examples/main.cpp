@@ -13,7 +13,7 @@
 #define fscanf_s fscanf
 #define M_PI 3.14159265358979323846  /* pi */
 
-#define NUM_POLYTOPES 10000
+#define NUM_POLYTOPES 100000
 #define RANDOM_VERTS 0
 
 #if RANDOM_VERTS

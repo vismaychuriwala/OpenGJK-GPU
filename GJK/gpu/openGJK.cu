@@ -1556,7 +1556,6 @@ __device__ inline static bool is_face_visible(EPAPolytope* poly, int face_idx, c
   for (int i = 0; i < 3; i++) {
     diff[i] = point[i] - v0[i];
   }
-
   return dotProduct(face->normal, diff) > gkEpsilon;
 }
 
@@ -1733,14 +1732,12 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
     }
     crossProduct(e0, e1, normal);
 
-    // Vector from face to centroid
+    // If normal points toward centroid need to flip the winding
     gkFloat to_centroid[3];
     #pragma unroll
     for (int i = 0; i < 3; i++) {
       to_centroid[i] = centroid[i] - v0[i];
     }
-
-    // If normal points toward centroid need to flip the winding
     if (dotProduct(normal, to_centroid) > 0) {
       int tmp = poly->faces[f].v[1];
       poly->faces[f].v[1] = poly->faces[f].v[2];
@@ -2668,14 +2665,12 @@ __device__ __forceinline__ void epa_core(
         }
         crossProduct(fe0, fe1, fnormal);
 
-        // Vector from face to centroid
+        // If normal points toward centroid flip winding
         gkFloat to_cent[3];
         #pragma unroll
         for (int c = 0; c < 3; c++) {
           to_cent[c] = centroid[c] - fv0[c];
         }
-
-        // If normal points toward centroid flip winding
         if (dotProduct(fnormal, to_cent) > 0) {
           // Swap v[1] and v[2]
           int tmp_v = poly.faces[new_face_idx].v[1];
