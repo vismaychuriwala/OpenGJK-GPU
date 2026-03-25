@@ -3,10 +3,9 @@ project(usage_examples
     VERSION 1.0.0
 )
 
-# Force C++ compiler for C files (required for GPU API which uses C++ namespaces)
+# Force C++ compiler for GJKUsage.c (required for GPU API which uses C++ namespaces)
 file(GLOB_RECURSE GJK_FILES "${CMAKE_CURRENT_SOURCE_DIR}/GJKUsage.c")
-file(GLOB_RECURSE EPA_FILES "${CMAKE_CURRENT_SOURCE_DIR}/EPAUsage.c")
-SET_SOURCE_FILES_PROPERTIES(${GJK_FILES} ${EPA_FILES} PROPERTIES LANGUAGE CXX)
+SET_SOURCE_FILES_PROPERTIES(${GJK_FILES} PROPERTIES LANGUAGE CXX)
 
 # GJK Usage Example
 add_executable(GJKUsage 
@@ -34,7 +33,7 @@ add_custom_command(
 
 # EPA Usage Example
 add_executable(EPAUsage 
-    ${CMAKE_CURRENT_SOURCE_DIR}/EPAUsage.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/EPAUsage.cpp
     ${CMAKE_SOURCE_DIR}/examples/gpu/example.cu
     ${CMAKE_SOURCE_DIR}/examples/cpu/example.cpp
 )

@@ -67,7 +67,7 @@ __global__ void compute_minimum_distance_kernel(const gkPolytope* polytopes1, co
  * @param n Number of polytope pairs to process
  */
 __global__ void compute_epa_kernel(const gkPolytope* polytopes1, const gkPolytope* polytypes2,
-  gkSimplex* simplices, gkFloat* distances, gkFloat* witness1, gkFloat* witness2, gkFloat* contact_normals, const int n);
+  gkSimplex* simplices, gkFloat* distances, gkFloat* contact_normals, const int n);
 
 // ============================================================================
 // HIGH-LEVEL API: Automatic memory management
@@ -112,15 +112,13 @@ void compute_minimum_distance(
  * @param witness2        Array to store witness points on second polytope (n*3 floats)
  * @param contact_normals Optional array to store contact normals (n*3 floats, can be nullptr)
  */
-void compute_epa(
+void computeCollisionInformation(
     const int n,
     const gkPolytope* bd1,
     const gkPolytope* bd2,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
-    gkFloat* contact_normals = nullptr
+    gkFloat* contact_normals
 );
 
 /**
@@ -129,13 +127,12 @@ void compute_epa(
  * First runs GJK to detect collisions, then runs EPA for colliding pairs.
  * Handles all GPU memory allocation and transfers internally.
  *
- * @param n         Number of polytope pairs to process
- * @param bd1       Array of first polytopes (host memory)
- * @param bd2       Array of second polytopes (host memory)
- * @param simplices Array to store resulting simplices (host memory)
- * @param distances Array to store distances/penetration depths (host memory)
- * @param witness1  Array to store witness points on first polytope (n*3 floats)
- * @param witness2  Array to store witness points on second polytope (n*3 floats)
+ * @param n               Number of polytope pairs to process
+ * @param bd1             Array of first polytopes (host memory)
+ * @param bd2             Array of second polytopes (host memory)
+ * @param simplices       Array to store resulting simplices (host memory)
+ * @param distances       Array to store distances/penetration depths (host memory)
+ * @param contact_normals Array to store contact normals (n*3 floats, host memory)
  */
 void compute_gjk_epa(
     const int n,
@@ -143,8 +140,7 @@ void compute_gjk_epa(
     const gkPolytope* bd2,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2
+    gkFloat* contact_normals
 );
 
 // ============================================================================
@@ -179,23 +175,6 @@ void allocate_and_copy_device_arrays(
     gkFloat** d_distances
 );
 
-/**
- * @brief Allocate device memory for EPA outputs only.
- *
- * Call this separately if you need EPA. More efficient than allocating
- * witness points when only running GJK.
- *
- * @param n               Number of polytope pairs
- * @param d_witness1      Output: device pointer to witness points for bd1
- * @param d_witness2      Output: device pointer to witness points for bd2
- * @param d_contact_normals Output: device pointer to contact normals (nullptr to skip)
- */
-void allocate_epa_device_arrays(
-    const int n,
-    gkFloat** d_witness1,
-    gkFloat** d_witness2,
-    gkFloat** d_contact_normals = nullptr
-);
 
 /**
  * @brief Computes minimum distance using GPU pointers (device memory).
@@ -227,7 +206,7 @@ void compute_minimum_distance_device(
  * @param d_distances     Device pointer to distances
  * @param d_witness1      Device pointer to witness points for bd1
  * @param d_witness2      Device pointer to witness points for bd2
- * @param d_contact_normals Device pointer to contact normals (can be nullptr)
+ * @param d_contact_normals Device pointer to contact normals (n*3 floats)
  */
 void compute_epa_device(
     const int n,
@@ -235,9 +214,7 @@ void compute_epa_device(
     const gkPolytope* d_bd2,
     gkSimplex* d_simplices,
     gkFloat* d_distances,
-    gkFloat* d_witness1,
-    gkFloat* d_witness2,
-    gkFloat* d_contact_normals = nullptr
+    gkFloat* d_contact_normals
 );
 
 /**
@@ -257,26 +234,6 @@ void copy_results_from_device(
     gkFloat* distances
 );
 
-/**
- * @brief Copy EPA results from device to host memory.
- *
- * @param n               Number of polytope pairs
- * @param d_witness1      Device pointer to witness points for bd1
- * @param d_witness2      Device pointer to witness points for bd2
- * @param d_contact_normals Device pointer to contact normals (nullptr to skip)
- * @param witness1        Host array for witness points (destination)
- * @param witness2        Host array for witness points (destination)
- * @param contact_normals Host array for contact normals (destination, nullptr to skip)
- */
-void copy_epa_results_from_device(
-    const int n,
-    const gkFloat* d_witness1,
-    const gkFloat* d_witness2,
-    const gkFloat* d_contact_normals,
-    gkFloat* witness1,
-    gkFloat* witness2,
-    gkFloat* contact_normals = nullptr
-);
 
 /**
  * @brief Free device memory allocated by allocate_and_copy_device_arrays.
@@ -297,18 +254,6 @@ void free_device_arrays(
     gkFloat* d_distances
 );
 
-/**
- * @brief Free EPA device arrays allocated by allocate_epa_device_arrays.
- *
- * @param d_witness1      Device pointer to witness points for bd1
- * @param d_witness2      Device pointer to witness points for bd2
- * @param d_contact_normals Device pointer to contact normals (nullptr to skip)
- */
-void free_epa_device_arrays(
-    gkFloat* d_witness1,
-    gkFloat* d_witness2,
-    gkFloat* d_contact_normals = nullptr
-);
 
 // ============================================================================
 // INDEXED API: For reusable polytopes with index pairs
@@ -381,8 +326,6 @@ __global__ void compute_epa_kernel_indexed_kernel(
   const gkCollisionPair* pairs,
   gkSimplex* simplices,
   gkFloat* distances,
-  gkFloat* witness1,
-  gkFloat* witness2,
   gkFloat* contact_normals,
   const int n
 );
@@ -400,7 +343,7 @@ __global__ void compute_epa_kernel_indexed_kernel(
  * @param d_distances     Device pointer to distance array (input/output)
  * @param d_witness1      Device pointer to witness points for first polytope
  * @param d_witness2      Device pointer to witness points for second polytope
- * @param d_contact_normals Device pointer to contact normals (nullptr to skip)
+ * @param d_contact_normals Device pointer to contact normals (num_pairs*3 floats)
  */
 void compute_epa_indexed_device(
     const int num_pairs,
@@ -408,9 +351,7 @@ void compute_epa_indexed_device(
     const gkCollisionPair* d_pairs,
     gkSimplex* d_simplices,
     gkFloat* d_distances,
-    gkFloat* d_witness1,
-    gkFloat* d_witness2,
-    gkFloat* d_contact_normals = nullptr
+    gkFloat* d_contact_normals
 );
 
 /**
@@ -427,7 +368,7 @@ void compute_epa_indexed_device(
  * @param distances       Distance array from GJK (host memory, input/output)
  * @param witness1        Output witness points for first polytope (n*3 floats)
  * @param witness2        Output witness points for second polytope (n*3 floats)
- * @param contact_normals Output contact normals (n*3 floats, nullptr to skip)
+ * @param contact_normals Output contact normals (num_pairs*3 floats)
  */
 void compute_epa_indexed(
     const int num_polytopes,
@@ -436,9 +377,7 @@ void compute_epa_indexed(
     const gkCollisionPair* pairs,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
-    gkFloat* contact_normals = nullptr
+    gkFloat* contact_normals
 );
 
 /**
@@ -455,7 +394,7 @@ void compute_epa_indexed(
  * @param distances       Output distances/penetration depths (host memory)
  * @param witness1        Output witness points for first polytope (n*3 floats)
  * @param witness2        Output witness points for second polytope (n*3 floats)
- * @param contact_normals Output contact normals (n*3 floats, nullptr to skip)
+ * @param contact_normals Output contact normals (num_pairs*3 floats)
  */
 void compute_gjk_epa_indexed(
     const int num_polytopes,
@@ -464,9 +403,7 @@ void compute_gjk_epa_indexed(
     const gkCollisionPair* pairs,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
-    gkFloat* contact_normals = nullptr
+    gkFloat* contact_normals
 );
 
 #endif  // OPENGJK_H__

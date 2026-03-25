@@ -94,33 +94,31 @@ main() {
   gkFloat distance;
   
   // Arrays for EPA results
-  gkFloat witness1[3], witness2[3];
   gkFloat contact_normal[3];
-  
+
   // Step 1: Run GJK to detect collision
   gkFloat distances[1];
   gkSimplex simplices[1] = {simplex};
   simplices[0].nvrtx = 0;
-  
+
   GJK::GPU::computeDistances(1, &polytope1, &polytope2, simplices, distances);
-  
+
   distance = distances[0];
   simplex = simplices[0];
-  
-  
+
   // Step 2: Run EPA to compute penetration depth and contact information
-  GJK::GPU::computeCollisionInformation(1, &polytope1, &polytope2, simplices, distances, 
-                                        witness1, witness2, contact_normal);
-  
+  GJK::GPU::computeEPA(1, &polytope1, &polytope2, simplices, distances,
+                                        contact_normal);
+
   distance = distances[0];
   simplex = simplices[0];
-  
+
   printf("Penetration depth: %.6f\n", -distance);
-  printf("Witness point on cube 1: (%.6f, %.6f, %.6f)\n", 
-         witness1[0], witness1[1], witness1[2]);
-  printf("Witness point on cube 2: (%.6f, %.6f, %.6f)\n", 
-         witness2[0], witness2[1], witness2[2]);
-  printf("Contact normal (from cube 1 to cube 2): (%.6f, %.6f, %.6f)\n", 
+  printf("Witness point on cube 1: (%.6f, %.6f, %.6f)\n",
+         simplices[0].witnesses[0][0], simplices[0].witnesses[0][1], simplices[0].witnesses[0][2]);
+  printf("Witness point on cube 2: (%.6f, %.6f, %.6f)\n",
+         simplices[0].witnesses[1][0], simplices[0].witnesses[1][1], simplices[0].witnesses[1][2]);
+  printf("Contact normal (from cube 1 to cube 2): (%.6f, %.6f, %.6f)\n",
          contact_normal[0], contact_normal[1], contact_normal[2]);
   printf("\n");
   

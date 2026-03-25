@@ -70,8 +70,6 @@ static gkSimplex*  d_simplices;
 static gkFloat*    d_distances;
 
 // EPA output buffers (allocated alongside GJK buffers)
-static gkFloat* d_epa_w1;
-static gkFloat* d_epa_w2;
 static gkFloat* d_epa_normals;
 
 // Body/sub-mesh mapping
@@ -581,8 +579,7 @@ __global__ void collision_response_kernel(
     const float3*          inv_inertia,
     const gkCollisionPair* sub_pairs,
     const gkFloat*         distances,
-    const gkFloat*         epa_w1,
-    const gkFloat*         epa_w2,
+    const gkSimplex*       simplices,
     const gkFloat*         epa_normals,
     const int*             sub_mesh_body,
     float                  epsilon,
@@ -614,8 +611,8 @@ __global__ void collision_response_kernel(
     float inv_n = 1.0f / nlen;
     nx *= inv_n; ny *= inv_n; nz *= inv_n;
 
-    float eAx = (float)epa_w1[p*3], eAy = (float)epa_w1[p*3+1], eAz = (float)epa_w1[p*3+2];
-    float eBx = (float)epa_w2[p*3], eBy = (float)epa_w2[p*3+1], eBz = (float)epa_w2[p*3+2];
+    float eAx = (float)simplices[p].witnesses[0][0], eAy = (float)simplices[p].witnesses[0][1], eAz = (float)simplices[p].witnesses[0][2];
+    float eBx = (float)simplices[p].witnesses[1][0], eBy = (float)simplices[p].witnesses[1][1], eBz = (float)simplices[p].witnesses[1][2];
     float3 rA = make_float3(eAx - posA.x, eAy - posA.y, eAz - posA.z);
     float3 rB = make_float3(eBx - posB.x, eBy - posB.y, eBz - posB.z);
 
@@ -810,8 +807,6 @@ bool sim_init(const ObjectInitData* objects, int num_objects,
     CUDA_CHECK(cudaMalloc(&d_polytopes,    g_num_submeshes * sizeof(gkPolytope)));
     CUDA_CHECK(cudaMalloc(&d_simplices,    g_max_pairs * sizeof(gkSimplex)));
     CUDA_CHECK(cudaMalloc(&d_distances,    g_max_pairs * sizeof(gkFloat)));
-    CUDA_CHECK(cudaMalloc(&d_epa_w1,       g_max_pairs * 3 * sizeof(gkFloat)));
-    CUDA_CHECK(cudaMalloc(&d_epa_w2,       g_max_pairs * 3 * sizeof(gkFloat)));
     CUDA_CHECK(cudaMalloc(&d_epa_normals,  g_max_pairs * 3 * sizeof(gkFloat)));
 
     // Compute runtime grid size from max bounding radius
@@ -907,7 +902,7 @@ void sim_cleanup(void) {
     cudaFree(d_verts_local); cudaFree(d_verts_world);
     cudaFree(d_vert_offsets); cudaFree(d_vert_counts);
     cudaFree(d_polytopes); cudaFree(d_simplices); cudaFree(d_distances);
-    cudaFree(d_epa_w1); cudaFree(d_epa_w2); cudaFree(d_epa_normals);
+    cudaFree(d_epa_normals);
     cudaFree(d_body_sub_offsets); cudaFree(d_body_sub_counts); cudaFree(d_sub_mesh_body);
     cudaFree(d_grid_counts); cudaFree(d_grid_objects);
     cudaFree(d_collision_pairs); cudaFree(d_sub_pairs);
@@ -1038,7 +1033,7 @@ void sim_step(const PhysicsParams* params) {
         //     provides correct contact normals + witnesses for all collision cases
         compute_epa_indexed_device(
             num_pairs, d_polytopes, d_sub_pairs, d_simplices, d_distances,
-            d_epa_w1, d_epa_w2, d_epa_normals);
+            d_epa_normals);
         CUDA_CHECK_LAST();
 
         // 4. Collision response (ping → pong, linear + angular)
@@ -1054,7 +1049,7 @@ void sim_step(const PhysicsParams* params) {
             d_ang_buf[g_vel_ping], d_ang_buf[g_vel_pong],
             d_quats, d_inv_inertia,
             d_sub_pairs, d_distances,
-            d_epa_w1, d_epa_w2, d_epa_normals, d_sub_mesh_body,
+            d_simplices, d_epa_normals, d_sub_mesh_body,
             params->collision_epsilon, num_pairs, num_objs);
         CUDA_CHECK_LAST();
 

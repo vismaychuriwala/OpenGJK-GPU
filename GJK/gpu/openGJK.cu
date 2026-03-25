@@ -1502,7 +1502,6 @@ typedef struct {
 // Compute face normal and distance of face from origin
 __device__ inline static void compute_face_normal_distance(EPAPolytope* poly, int face_idx) {
   EPAFace* face = &poly->faces[face_idx];
-  if (!face->valid) return;
 
   gkFloat* v0 = poly->vertices[face->v[0]];
   gkFloat* v1 = poly->vertices[face->v[1]];
@@ -1842,8 +1841,6 @@ __device__ __forceinline__ void epa_core(
     const gkPolytope* bd2,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
     gkFloat* contact_normals,
     int warp_idx) {
       // Get thread index within warp (0-31)
@@ -1856,18 +1853,12 @@ __device__ __forceinline__ void epa_core(
   // if distance isn't 0 didn't detect collision - skip EPA
   if (distance > gkEpsilon) {
     if (warp_lane_idx == 0) {
-      // Witness points already computed by GJK: todo: witness points seem to be off in testing right now
-      #pragma unroll
-      for (int i = 0; i < 3; i++) {
-        witness1[warp_idx * 3 + i] = simplex.witnesses[0][i];
-        witness2[warp_idx * 3 + i] = simplex.witnesses[1][i];
-      }
-      // Compute contact normal from witness1 to witness2 (for non-colliding case)
+      // Compute contact normal from GJK witnesses (non-colliding case)
       gkFloat w1_to_w2[3];
       gkFloat norm = 0.0f;
       #pragma unroll
       for (int i = 0; i < 3; i++) {
-        w1_to_w2[i] = witness2[warp_idx * 3 + i] - witness1[warp_idx * 3 + i];
+        w1_to_w2[i] = simplex.witnesses[1][i] - simplex.witnesses[0][i];
         norm += w1_to_w2[i] * w1_to_w2[i];
       }
       norm = gkSqrt(norm);
@@ -1944,15 +1935,15 @@ __device__ __forceinline__ void epa_core(
           for (int c = 0; c < 3; ++c) {
             gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
             gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
-            witness1[warp_idx * 3 + c] = p1;
-            witness2[warp_idx * 3 + c] = p2;
+            simplices[warp_idx].witnesses[0][c] = p1;
+            simplices[warp_idx].witnesses[1][c] = p2;
           }
           // Compute contact normal from witness1 to witness2
           gkFloat w1_to_w2[3];
           gkFloat norm = 0.0f;
           #pragma unroll
           for (int c = 0; c < 3; ++c) {
-            w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+            w1_to_w2[c] = simplices[warp_idx].witnesses[1][c] - simplices[warp_idx].witnesses[0][c];
             norm += w1_to_w2[c] * w1_to_w2[c];
           }
           norm = gkSqrt(norm);
@@ -2065,15 +2056,15 @@ __device__ __forceinline__ void epa_core(
           for (int c = 0; c < 3; ++c) {
             gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
             gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
-            witness1[warp_idx * 3 + c] = p1;
-            witness2[warp_idx * 3 + c] = p2;
+            simplices[warp_idx].witnesses[0][c] = p1;
+            simplices[warp_idx].witnesses[1][c] = p2;
           }
           // Compute contact normal from witness1 to witness2
           gkFloat w1_to_w2[3];
           gkFloat norm = 0.0f;
           #pragma unroll
           for (int c = 0; c < 3; ++c) {
-            w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+            w1_to_w2[c] = simplices[warp_idx].witnesses[1][c] - simplices[warp_idx].witnesses[0][c];
             norm += w1_to_w2[c] * w1_to_w2[c];
           }
           norm = gkSqrt(norm);
@@ -2218,15 +2209,15 @@ __device__ __forceinline__ void epa_core(
             for (int c = 0; c < 3; ++c) {
               gkFloat p1 = getCoord(bd1, new_vertex_idx[0], c);
               gkFloat p2 = getCoord(bd2, new_vertex_idx[1], c);
-              witness1[warp_idx * 3 + c] = p1;
-              witness2[warp_idx * 3 + c] = p2;
+              simplices[warp_idx].witnesses[0][c] = p1;
+              simplices[warp_idx].witnesses[1][c] = p2;
             }
             // Compute contact normal from witness1 to witness2
             gkFloat w1_to_w2[3];
             gkFloat norm = 0.0f;
             #pragma unroll
             for (int c = 0; c < 3; ++c) {
-              w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+              w1_to_w2[c] = simplices[warp_idx].witnesses[1][c] - simplices[warp_idx].witnesses[0][c];
               norm += w1_to_w2[c] * w1_to_w2[c];
             }
             norm = gkSqrt(norm);
@@ -2271,7 +2262,7 @@ __device__ __forceinline__ void epa_core(
         gkFloat norm = 0.0f;
         #pragma unroll
         for (int c = 0; c < 3; ++c) {
-          w1_to_w2[c] = witness2[warp_idx * 3 + c] - witness1[warp_idx * 3 + c];
+          w1_to_w2[c] = simplices[warp_idx].witnesses[1][c] - simplices[warp_idx].witnesses[0][c];
           norm += w1_to_w2[c] * w1_to_w2[c];
         }
         norm = gkSqrt(norm);
@@ -2444,11 +2435,11 @@ __device__ __forceinline__ void epa_core(
 
         #pragma unroll
         for (int i = 0; i < 3; i++) {
-          witness1[warp_idx * 3 + i] =
+          simplices[warp_idx].witnesses[0][i] =
             getCoord(bd1, idx0[0], i) * a0 +
             getCoord(bd1, idx1[0], i) * a1 +
             getCoord(bd1, idx2[0], i) * a2;
-          witness2[warp_idx * 3 + i] =
+          simplices[warp_idx].witnesses[1][i] =
             getCoord(bd2, idx0[1], i) * a0 +
             getCoord(bd2, idx1[1], i) * a1 +
             getCoord(bd2, idx2[1], i) * a2;
@@ -2499,11 +2490,11 @@ __device__ __forceinline__ void epa_core(
 
         #pragma unroll
         for (int i = 0; i < 3; i++) {
-          witness1[warp_idx * 3 + i] =
+          simplices[warp_idx].witnesses[0][i] =
             getCoord(bd1, idx0[0], i) * a0 +
             getCoord(bd1, idx1[0], i) * a1 +
             getCoord(bd1, idx2[0], i) * a2;
-          witness2[warp_idx * 3 + i] =
+          simplices[warp_idx].witnesses[1][i] =
             getCoord(bd2, idx0[1], i) * a0 +
             getCoord(bd2, idx1[1], i) * a1 +
             getCoord(bd2, idx2[1], i) * a2;
@@ -2532,11 +2523,11 @@ __device__ __forceinline__ void epa_core(
       poly.vertex_indices[new_vertex_id][1] = new_vertex_idx[1];
       poly.num_vertices++;
 
-      // Update centroid incrementally
-      gkFloat n = (gkFloat)poly.num_vertices;
+      // Update centroid incrementally (running mean)
+      gkFloat inv_n = (gkFloat)1.0 / (gkFloat)poly.num_vertices;
       #pragma unroll
       for (int i = 0; i < 3; i++) {
-        centroid[i] = centroid[i] * (n - 1.0f) / n + new_vertex[i] / n;
+        centroid[i] += (new_vertex[i] - centroid[i]) * inv_n;
       }
     }
 
@@ -2744,11 +2735,11 @@ __device__ __forceinline__ void epa_core(
 
       #pragma unroll
       for (int i = 0; i < 3; i++) {
-        witness1[warp_idx * 3 + i] =
+        simplices[warp_idx].witnesses[0][i] =
           getCoord(bd1, idx0[0], i) * a0 +
           getCoord(bd1, idx1[0], i) * a1 +
           getCoord(bd1, idx2[0], i) * a2;
-        witness2[warp_idx * 3 + i] =
+        simplices[warp_idx].witnesses[1][i] =
           getCoord(bd2, idx0[1], i) * a0 +
           getCoord(bd2, idx1[1], i) * a1 +
           getCoord(bd2, idx2[1], i) * a2;
@@ -2771,8 +2762,6 @@ __global__ void compute_epa_kernel(
   const gkPolytope* polytopes2,
   gkSimplex* simplices,
   gkFloat* distances,
-  gkFloat* witness1,
-  gkFloat* witness2,
   gkFloat* contact_normals,
   const int n) {
 
@@ -2790,7 +2779,7 @@ __global__ void compute_epa_kernel(
   gkPolytope* bd1 = &bd1_local;
   gkPolytope* bd2 = &bd2_local;
 
-  epa_core(bd1, bd2, simplices, distances, witness1, witness2, contact_normals, warp_idx);
+  epa_core(bd1, bd2, simplices, distances, contact_normals, warp_idx);
 }
 
 
@@ -2800,8 +2789,6 @@ __global__ void compute_epa_kernel_indexed_kernel(
   const gkCollisionPair* pairs,
   gkSimplex* simplices,
   gkFloat* distances,
-  gkFloat* witness1,
-  gkFloat* witness2,
   gkFloat* contact_normals,
   const int n) {
 
@@ -2819,7 +2806,7 @@ __global__ void compute_epa_kernel_indexed_kernel(
   gkPolytope* bd1 = &bd1_local;
   gkPolytope* bd2 = &bd2_local;
 
-  epa_core(bd1, bd2, simplices, distances, witness1, witness2, contact_normals, warp_idx);
+  epa_core(bd1, bd2, simplices, distances, contact_normals, warp_idx);
 }
 
 // ============================================================================
@@ -2856,19 +2843,16 @@ void compute_minimum_distance(
     free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
 }
 
-void compute_epa(
+void computeCollisionInformation(
     const int n,
     const gkPolytope* bd1,
     const gkPolytope* bd2,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
     gkFloat* contact_normals) {
 
     if (n <= 0) return;
 
-    // Allocate device memory for GJK inputs
     gkPolytope* d_bd1 = nullptr;
     gkPolytope* d_bd2 = nullptr;
     gkFloat* d_coord1 = nullptr;
@@ -2880,24 +2864,16 @@ void compute_epa(
                                      &d_coord1, &d_coord2, &d_simplices, &d_distances);
     cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
 
-    gkFloat* d_witness1 = nullptr;
-    gkFloat* d_witness2 = nullptr;
     gkFloat* d_contact_normals = nullptr;
-    allocate_epa_device_arrays(n, &d_witness1, &d_witness2,
-                               contact_normals ? &d_contact_normals : nullptr);
+    cudaMalloc((void**)&d_contact_normals, n * 3 * sizeof(gkFloat));
 
-    // Launch EPA kernel
-    compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
-                      d_witness1, d_witness2, d_contact_normals);
+    compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances, d_contact_normals);
 
-    // Copy results back
     copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
-    copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
-                                 witness1, witness2, contact_normals);
+    cudaMemcpy(contact_normals, d_contact_normals, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
 
-    // Free device memory
     free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
-    free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
+    cudaFree(d_contact_normals);
 }
 
 void compute_gjk_epa(
@@ -2906,44 +2882,29 @@ void compute_gjk_epa(
     const gkPolytope* bd2,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2) {
+    gkFloat* contact_normals) {
 
     if (n <= 0) return;
 
-    // Allocate device memory for GJK inputs
     gkPolytope* d_bd1 = nullptr;
     gkPolytope* d_bd2 = nullptr;
     gkFloat* d_coord1 = nullptr;
     gkFloat* d_coord2 = nullptr;
     gkSimplex* d_simplices = nullptr;
     gkFloat* d_distances = nullptr;
+    gkFloat* d_contact_normals = nullptr;
 
     allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
                                      &d_coord1, &d_coord2, &d_simplices, &d_distances);
+    cudaMalloc((void**)&d_contact_normals, n * 3 * sizeof(gkFloat));
 
-    // Allocate device memory for EPA outputs
-    gkFloat* d_witness1 = nullptr;
-    gkFloat* d_witness2 = nullptr;
-    gkFloat* d_contact_normals = nullptr;  // Always allocated but not copied back
-
-    allocate_epa_device_arrays(n, &d_witness1, &d_witness2, &d_contact_normals);
-
-    // Launch GJK kernel
     compute_minimum_distance_device(n, d_bd1, d_bd2, d_simplices, d_distances);
+    compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances, d_contact_normals);
 
-    // Launch EPA kernel
-    compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
-                      d_witness1, d_witness2, d_contact_normals);
-
-    // Copy results back (contact_normals not copied, pass nullptr for host)
     copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
-    copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
-                                 witness1, witness2, nullptr);
-
-    // Free device memory
+    cudaMemcpy(contact_normals, d_contact_normals, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
     free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
-    free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
+    cudaFree(d_contact_normals);
 }
 
 // ============================================================================
@@ -3053,8 +3014,6 @@ void compute_epa_device(
     const gkPolytope* d_bd2,
     gkSimplex* d_simplices,
     gkFloat* d_distances,
-    gkFloat* d_witness1,
-    gkFloat* d_witness2,
     gkFloat* d_contact_normals) {
 
     // Each collision uses 32 threads (one full warp)
@@ -3064,7 +3023,7 @@ void compute_epa_device(
 
     compute_epa_kernel<<<numBlocks, blockSize>>>(
         d_bd1, d_bd2, d_simplices, d_distances,
-        d_witness1, d_witness2, d_contact_normals, n);
+        d_contact_normals, n);
 
     cudaDeviceSynchronize();
 }
@@ -3213,8 +3172,6 @@ void compute_epa_indexed_device(
     const gkCollisionPair* d_pairs,
     gkSimplex* d_simplices,
     gkFloat* d_distances,
-    gkFloat* d_witness1,
-    gkFloat* d_witness2,
     gkFloat* d_contact_normals) {
 
     int blockSize = 256;
@@ -3223,7 +3180,7 @@ void compute_epa_indexed_device(
 
     compute_epa_kernel_indexed_kernel<<<numBlocks, blockSize>>>(
         d_polytopes, d_pairs, d_simplices, d_distances,
-        d_witness1, d_witness2, d_contact_normals, num_pairs);
+        d_contact_normals, num_pairs);
 
     cudaDeviceSynchronize();
 }
@@ -3264,8 +3221,6 @@ void compute_epa_indexed(
     const gkCollisionPair* pairs,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
     gkFloat* contact_normals) {
 
     if (num_pairs <= 0) return;
@@ -3275,8 +3230,6 @@ void compute_epa_indexed(
     gkCollisionPair* d_pairs     = nullptr;
     gkSimplex*       d_simplices = nullptr;
     gkFloat*         d_distances = nullptr;
-    gkFloat*         d_witness1  = nullptr;
-    gkFloat*         d_witness2  = nullptr;
     gkFloat*         d_contact_normals = nullptr;
 
     allocate_and_copy_indexed_polytopes(num_polytopes, polytopes, &d_polytopes, &d_coords);
@@ -3284,32 +3237,20 @@ void compute_epa_indexed(
     cudaMalloc(&d_pairs,     num_pairs * sizeof(gkCollisionPair));
     cudaMalloc(&d_simplices, num_pairs * sizeof(gkSimplex));
     cudaMalloc(&d_distances, num_pairs * sizeof(gkFloat));
-    cudaMalloc(&d_witness1,  num_pairs * 3 * sizeof(gkFloat));
-    cudaMalloc(&d_witness2,  num_pairs * 3 * sizeof(gkFloat));
     cudaMalloc(&d_contact_normals, num_pairs * 3 * sizeof(gkFloat));
 
     cudaMemcpy(d_pairs,     pairs,     num_pairs * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
     cudaMemcpy(d_simplices, simplices, num_pairs * sizeof(gkSimplex),       cudaMemcpyHostToDevice);
     cudaMemcpy(d_distances, distances, num_pairs * sizeof(gkFloat),          cudaMemcpyHostToDevice);
 
-    compute_epa_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances,
-                               d_witness1, d_witness2, d_contact_normals);
+    compute_epa_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances, d_contact_normals);
 
     cudaMemcpy(simplices, d_simplices, num_pairs * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
     cudaMemcpy(distances, d_distances, num_pairs * sizeof(gkFloat),   cudaMemcpyDeviceToHost);
-    cudaMemcpy(witness1,  d_witness1,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-    cudaMemcpy(witness2,  d_witness2,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-    if (contact_normals)
-        cudaMemcpy(contact_normals, d_contact_normals, num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    cudaMemcpy(contact_normals, d_contact_normals, num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
 
-    cudaFree(d_polytopes);
-    cudaFree(d_coords);
-    cudaFree(d_pairs);
-    cudaFree(d_simplices);
-    cudaFree(d_distances);
-    cudaFree(d_witness1);
-    cudaFree(d_witness2);
-    cudaFree(d_contact_normals);
+    cudaFree(d_polytopes); cudaFree(d_coords); cudaFree(d_pairs);
+    cudaFree(d_simplices); cudaFree(d_distances); cudaFree(d_contact_normals);
 }
 
 void compute_gjk_epa_indexed(
@@ -3319,8 +3260,6 @@ void compute_gjk_epa_indexed(
     const gkCollisionPair* pairs,
     gkSimplex* simplices,
     gkFloat* distances,
-    gkFloat* witness1,
-    gkFloat* witness2,
     gkFloat* contact_normals) {
 
     if (num_pairs <= 0) return;
@@ -3330,8 +3269,6 @@ void compute_gjk_epa_indexed(
     gkCollisionPair* d_pairs     = nullptr;
     gkSimplex*       d_simplices = nullptr;
     gkFloat*         d_distances = nullptr;
-    gkFloat*         d_witness1  = nullptr;
-    gkFloat*         d_witness2  = nullptr;
     gkFloat*         d_contact_normals = nullptr;
 
     allocate_and_copy_indexed_polytopes(num_polytopes, polytopes, &d_polytopes, &d_coords);
@@ -3339,31 +3276,18 @@ void compute_gjk_epa_indexed(
     cudaMalloc(&d_pairs,     num_pairs * sizeof(gkCollisionPair));
     cudaMalloc(&d_simplices, num_pairs * sizeof(gkSimplex));
     cudaMalloc(&d_distances, num_pairs * sizeof(gkFloat));
-    cudaMalloc(&d_witness1,  num_pairs * 3 * sizeof(gkFloat));
-    cudaMalloc(&d_witness2,  num_pairs * 3 * sizeof(gkFloat));
     cudaMalloc(&d_contact_normals, num_pairs * 3 * sizeof(gkFloat));
 
     cudaMemcpy(d_pairs, pairs, num_pairs * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
     cudaMemset(d_simplices, 0, num_pairs * sizeof(gkSimplex));
 
     compute_minimum_distance_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances);
-
-    compute_epa_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances,
-                               d_witness1, d_witness2, d_contact_normals);
+    compute_epa_indexed_device(num_pairs, d_polytopes, d_pairs, d_simplices, d_distances, d_contact_normals);
 
     cudaMemcpy(simplices, d_simplices, num_pairs * sizeof(gkSimplex), cudaMemcpyDeviceToHost);
     cudaMemcpy(distances, d_distances, num_pairs * sizeof(gkFloat),   cudaMemcpyDeviceToHost);
-    cudaMemcpy(witness1,  d_witness1,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-    cudaMemcpy(witness2,  d_witness2,  num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
-    if (contact_normals)
-        cudaMemcpy(contact_normals, d_contact_normals, num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
+    cudaMemcpy(contact_normals, d_contact_normals, num_pairs * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
 
-    cudaFree(d_polytopes);
-    cudaFree(d_coords);
-    cudaFree(d_pairs);
-    cudaFree(d_simplices);
-    cudaFree(d_distances);
-    cudaFree(d_witness1);
-    cudaFree(d_witness2);
-    cudaFree(d_contact_normals);
+    cudaFree(d_polytopes); cudaFree(d_coords); cudaFree(d_pairs);
+    cudaFree(d_simplices); cudaFree(d_distances); cudaFree(d_contact_normals);
 }

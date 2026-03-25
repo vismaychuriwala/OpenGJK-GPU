@@ -161,11 +161,8 @@ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex
 
   for (int i = 0; i < 4; i++) {
     for (int j = 0; j < 3; j++) {
-      centroid[j] += poly->vertices[i][j];
+      centroid[j] += poly->vertices[i][j] * 0.25f;
     }
-  }
-  for (int j = 0; j < 3; j++) {
-    centroid[j] *= (gkFloat)0.25;
   }
 
   // Create 4 faces of tetrahedron
@@ -363,24 +360,16 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
   }
 }
 
-  void compute_epa(
+  void computeCollisionInformation(
   const gkPolytope* bd1,
   const gkPolytope* bd2,
   gkSimplex* simplex,
   gkFloat* distance,
-  gkFloat witness1[3],
-  gkFloat witness2[3],
   gkFloat contact_normal[3]) {
 
   // if distance isn't 0 didn't detect collision - skip EPA
   if (*distance > gkEpsilon) {
-    
-    for (int i = 0; i < 3; i++) {
-      witness1[i] = simplex->witnesses[0][i];
-      witness2[i] = simplex->witnesses[1][i];
-    }
-
-    set_contact_normal(witness1, witness2, contact_normal);
+    set_contact_normal(simplex->witnesses[0], simplex->witnesses[1], contact_normal);
     return;
   }
 
@@ -422,10 +411,10 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
           // No new support point means penetration depth effectively zero.
           *distance = 0.0f;
           for (int c = 0; c < 3; ++c) {
-            witness1[c] = getCoord(bd1, new_vertex_idx[0], c);
-            witness2[c] = getCoord(bd2, new_vertex_idx[1], c);
+            simplex->witnesses[0][c] = getCoord(bd1, new_vertex_idx[0], c);
+            simplex->witnesses[1][c] = getCoord(bd2, new_vertex_idx[1], c);
           }
-          set_contact_normal(witness1, witness2, contact_normal);
+          set_contact_normal(simplex->witnesses[0], simplex->witnesses[1], contact_normal);
           return;
         }
     }
@@ -487,10 +476,10 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
           // No new support point means penetration depth effectively zero.
           *distance = 0.0f;
           for (int c = 0; c < 3; ++c) {
-            witness1[c] = getCoord(bd1, new_vertex_idx[0], c);
-            witness2[c] = getCoord(bd2, new_vertex_idx[1], c);
+            simplex->witnesses[0][c] = getCoord(bd1, new_vertex_idx[0], c);
+            simplex->witnesses[1][c] = getCoord(bd2, new_vertex_idx[1], c);
           }
-          set_contact_normal(witness1, witness2, contact_normal);
+          set_contact_normal(simplex->witnesses[0], simplex->witnesses[1], contact_normal);
           return;
         }
     }
@@ -571,10 +560,10 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
           else {
             *distance = 0.0f;
             for (int c = 0; c < 3; ++c) {
-              witness1[c] = getCoord(bd1, new_vertex_idx[0], c);
-              witness2[c] = getCoord(bd2, new_vertex_idx[1], c);
+              simplex->witnesses[0][c] = getCoord(bd1, new_vertex_idx[0], c);
+              simplex->witnesses[1][c] = getCoord(bd2, new_vertex_idx[1], c);
             }
-            set_contact_normal(witness1, witness2, contact_normal);
+            set_contact_normal(simplex->witnesses[0], simplex->witnesses[1], contact_normal);
             return;
           }
       }
@@ -586,10 +575,10 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
         // Set witness points from best available simplex vertex
         int best = simplex->nvrtx > 0 ? simplex->nvrtx - 1 : 0;
         for (int c = 0; c < 3; ++c) {
-            witness1[c] = getCoord(bd1, simplex->vrtx_idx[best][0], c);
-            witness2[c] = getCoord(bd2, simplex->vrtx_idx[best][1], c);
+            simplex->witnesses[0][c] = getCoord(bd1, simplex->vrtx_idx[best][0], c);
+            simplex->witnesses[1][c] = getCoord(bd2, simplex->vrtx_idx[best][1], c);
         }
-        set_contact_normal(witness1, witness2, contact_normal);
+        set_contact_normal(simplex->witnesses[0], simplex->witnesses[1], contact_normal);
         return;
     }
   }
@@ -616,7 +605,7 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
     }
 
     // parallel reduction to find closest face
-    // Each thread finds the closest face in its assigned range
+    // finds the closest face in the range
     int closest_face = -1;
     gkFloat closest_distance = 1e10f;
 
@@ -651,10 +640,10 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
                                  poly.vertices[closest->v[1]],
                                  poly.vertices[closest->v[2]], &a0, &a1, &a2);
       for (int i = 0; i < 3; i++) {
-        witness1[i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
+        simplex->witnesses[0][i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
                     + getCoord(bd1, closest->v_idx[1][0], i) * a1
                     + getCoord(bd1, closest->v_idx[2][0], i) * a2;
-        witness2[i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
+        simplex->witnesses[1][i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
                     + getCoord(bd2, closest->v_idx[1][1], i) * a1
                     + getCoord(bd2, closest->v_idx[2][1], i) * a2;
         contact_normal[i] = closest->normal[i];
@@ -683,10 +672,10 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
                                  poly.vertices[closest->v[1]],
                                  poly.vertices[closest->v[2]], &a0, &a1, &a2);
       for (int i = 0; i < 3; i++) {
-        witness1[i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
+        simplex->witnesses[0][i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
                     + getCoord(bd1, closest->v_idx[1][0], i) * a1
                     + getCoord(bd1, closest->v_idx[2][0], i) * a2;
-        witness2[i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
+        simplex->witnesses[1][i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
                     + getCoord(bd2, closest->v_idx[1][1], i) * a1
                     + getCoord(bd2, closest->v_idx[2][1], i) * a2;
         contact_normal[i] = closest->normal[i];
@@ -862,10 +851,10 @@ static void set_contact_normal(const gkFloat* w1, const gkFloat* w2, gkFloat* co
                                  poly.vertices[closest->v[1]],
                                  poly.vertices[closest->v[2]], &a0, &a1, &a2);
       for (int i = 0; i < 3; i++) {
-        witness1[i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
+        simplex->witnesses[0][i] = getCoord(bd1, closest->v_idx[0][0], i) * a0
                     + getCoord(bd1, closest->v_idx[1][0], i) * a1
                     + getCoord(bd1, closest->v_idx[2][0], i) * a2;
-        witness2[i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
+        simplex->witnesses[1][i] = getCoord(bd2, closest->v_idx[0][1], i) * a0
                     + getCoord(bd2, closest->v_idx[1][1], i) * a1
                     + getCoord(bd2, closest->v_idx[2][1], i) * a2;
         contact_normal[i] = closest->normal[i];

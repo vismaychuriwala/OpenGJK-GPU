@@ -24,22 +24,17 @@ namespace GJK {
             timer().endCpuTimer();
         }
 
-        void computeCollisionInformation(int n,
+        void computeEPA(int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
                             gkFloat* distances,
-                            gkFloat* witness1,
-                            gkFloat* witness2,
                             gkFloat* contact_normals) {
             if (n <= 0) return;
 
-            gkFloat dummy_normal[3];
             timer().startCpuTimer();
             for (int i = 0; i < n; i++) {
-                gkFloat* cn = contact_normals ? &contact_normals[i*3] : dummy_normal;
-                compute_epa(&bd1[i], &bd2[i], &simplices[i], &distances[i],
-                                   &witness1[i*3], &witness2[i*3], cn);
+                ::computeCollisionInformation(&bd1[i], &bd2[i], &simplices[i], &distances[i], &contact_normals[i*3]);
             }
             timer().endCpuTimer();
         }

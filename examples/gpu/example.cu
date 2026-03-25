@@ -56,13 +56,9 @@ namespace GJK {
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
                             gkFloat* distances,
-                            gkFloat* witness1,
-                            gkFloat* witness2,
                             gkFloat* contact_normals) {
             if (n <= 0) return;
 
-            // Use mid-level API with explicit memory management
-            // Allocate device memory for GJK
             gkPolytope* d_bd1 = nullptr;
             gkPolytope* d_bd2 = nullptr;
             gkFloat* d_coord1 = nullptr;
@@ -73,46 +69,28 @@ namespace GJK {
             allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
                                              &d_coord1, &d_coord2, &d_simplices, &d_distances);
 
-            // Allocate device memory for EPA outputs
-            gkFloat* d_witness1 = nullptr;
-            gkFloat* d_witness2 = nullptr;
-            gkFloat* d_contact_normals = nullptr;  // Always allocate but don't copy back
-            allocate_epa_device_arrays(n, &d_witness1, &d_witness2, &d_contact_normals);
+            gkFloat* d_contact_normals = nullptr;
+            cudaMalloc((void**)&d_contact_normals, n * 3 * sizeof(gkFloat));
 
-            // Time kernel execution only
             timer().startGpuTimer();
-
-            // Run GJK kernel
             compute_minimum_distance_device(n, d_bd1, d_bd2, d_simplices, d_distances);
-
-            // Run EPA kernel
-            compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
-                              d_witness1, d_witness2, d_contact_normals);
-
+            compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances, d_contact_normals);
             timer().endGpuTimer();
 
-            // Copy results back (contact_normals not copied, pass nullptr for host)
             copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
-            copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
-                                        witness1, witness2, nullptr);
-
-            // Free device memory
+            cudaMemcpy(contact_normals, d_contact_normals, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
             free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
-            free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
+            cudaFree(d_contact_normals);
         }
 
-        void computeCollisionInformation(const int n,
+        void computeEPA(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
                             gkFloat* distances,
-                            gkFloat* witness1,
-                            gkFloat* witness2,
                             gkFloat* contact_normals) {
             if (n <= 0) return;
 
-            // Use mid-level API with explicit memory management
-            // Allocate device memory for GJK (assume simplices/distances already set from GJK)
             gkPolytope* d_bd1 = nullptr;
             gkPolytope* d_bd2 = nullptr;
             gkFloat* d_coord1 = nullptr;
@@ -123,30 +101,21 @@ namespace GJK {
             allocate_and_copy_device_arrays(n, bd1, bd2, &d_bd1, &d_bd2,
                                              &d_coord1, &d_coord2, &d_simplices, &d_distances);
 
-            // Copy input simplices and distances to device
             cudaMemcpy(d_simplices, simplices, n * sizeof(gkSimplex), cudaMemcpyHostToDevice);
             cudaMemcpy(d_distances, distances, n * sizeof(gkFloat), cudaMemcpyHostToDevice);
 
-            // Allocate device memory for EPA outputs
-            gkFloat* d_witness1 = nullptr;
-            gkFloat* d_witness2 = nullptr;
             gkFloat* d_contact_normals = nullptr;
-            allocate_epa_device_arrays(n, &d_witness1, &d_witness2, &d_contact_normals);
+            cudaMalloc((void**)&d_contact_normals, n * 3 * sizeof(gkFloat));
 
-            // Time only kernel execution
             timer().startGpuTimer();
-            compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances,
-                              d_witness1, d_witness2, d_contact_normals);
+            compute_epa_device(n, d_bd1, d_bd2, d_simplices, d_distances, d_contact_normals);
             timer().endGpuTimer();
 
-            // Copy results back
             copy_results_from_device(n, d_simplices, d_distances, simplices, distances);
-            copy_epa_results_from_device(n, d_witness1, d_witness2, d_contact_normals,
-                                        witness1, witness2, contact_normals);
+            cudaMemcpy(contact_normals, d_contact_normals, n * 3 * sizeof(gkFloat), cudaMemcpyDeviceToHost);
 
-            // Free device memory
             free_device_arrays(d_bd1, d_bd2, d_coord1, d_coord2, d_simplices, d_distances);
-            free_epa_device_arrays(d_witness1, d_witness2, d_contact_normals);
+            cudaFree(d_contact_normals);
         }
 
         /// @brief Generate a polytope with specified number of vertices and random offset
@@ -467,16 +436,15 @@ namespace GJK {
                gkSimplex simplex;
                simplex.nvrtx = 0;
                gkFloat distance;
-               gkFloat witness1[3], witness2[3];
                gkFloat contact_normal[3];
 
-               computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
+               computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, contact_normal);
 
                printf("  Simplex vertices: %d\n", simplex.nvrtx);
                printf("  Distance/Penetration: %.6f\n", distance);
                printf("  Expected: Collision (distance should be small/negative)\n");
-               printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
-               printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+               printf("  Witness 1: (%.6f, %.6f, %.6f)\n", simplex.witnesses[0][0], simplex.witnesses[0][1], simplex.witnesses[0][2]);
+               printf("  Witness 2: (%.6f, %.6f, %.6f)\n", simplex.witnesses[1][0], simplex.witnesses[1][1], simplex.witnesses[1][2]);
                printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
                
                if (distance < -0.8 && distance > -1.2) {
@@ -533,16 +501,15 @@ namespace GJK {
                gkSimplex simplex;
                simplex.nvrtx = 0;
                gkFloat distance;
-               gkFloat witness1[3], witness2[3];
                gkFloat contact_normal[3];
 
-               computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
+               computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, contact_normal);
 
                printf("  Simplex vertices: %d\n", simplex.nvrtx);
                printf("  Distance: %.6f\n", distance);
                printf("  Expected: Very small distance (near zero)\n");
-               printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
-               printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+               printf("  Witness 1: (%.6f, %.6f, %.6f)\n", simplex.witnesses[0][0], simplex.witnesses[0][1], simplex.witnesses[0][2]);
+               printf("  Witness 2: (%.6f, %.6f, %.6f)\n", simplex.witnesses[1][0], simplex.witnesses[1][1], simplex.witnesses[1][2]);
                printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
                
                if (distance >= 0 && distance < 0.01f) {
@@ -599,16 +566,15 @@ namespace GJK {
               gkSimplex simplex;
               simplex.nvrtx = 0;
               gkFloat distance;
-              gkFloat witness1[3], witness2[3];
               gkFloat contact_normal[3];
 
-              computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
+              computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, contact_normal);
 
               printf("  Simplex vertices: %d\n", simplex.nvrtx);
               printf("  Distance: %.6f\n", distance);
               printf("  Expected: Distance ≈ 3.0 (separation between cubes)\n");
-              printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
-              printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+              printf("  Witness 1: (%.6f, %.6f, %.6f)\n", simplex.witnesses[0][0], simplex.witnesses[0][1], simplex.witnesses[0][2]);
+              printf("  Witness 2: (%.6f, %.6f, %.6f)\n", simplex.witnesses[1][0], simplex.witnesses[1][1], simplex.witnesses[1][2]);
               printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
               
               if (simplex.nvrtx < 4 && distance > 2.9f && distance < 3.1f) {
@@ -646,15 +612,14 @@ namespace GJK {
                 gkSimplex simplex;
                 simplex.nvrtx = 0;
                 gkFloat distance;
-                gkFloat witness1[3], witness2[3];
                 gkFloat contact_normal[3];
-                
-                computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
-                
+
+                computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, contact_normal);
+
                 printf("  Simplex vertices: %d\n", simplex.nvrtx);
                 printf("  Distance/Penetration: %.6f\n", distance);
-                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
-                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", simplex.witnesses[0][0], simplex.witnesses[0][1], simplex.witnesses[0][2]);
+                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", simplex.witnesses[1][0], simplex.witnesses[1][1], simplex.witnesses[1][2]);
                 printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
                 
                 // Check penetration distance
@@ -741,26 +706,25 @@ namespace GJK {
                 gkSimplex simplex;
                 simplex.nvrtx = 0;
                 gkFloat distance;
-                gkFloat witness1[3], witness2[3];
                 gkFloat contact_normal[3];
 
                 printf("  Running GJK and EPA...\n");
-                computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
+                computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, contact_normal);
 
                 printf("  Simplex vertices: %d\n", simplex.nvrtx);
                 printf("  Distance/Penetration: %.6f\n", distance);
                 printf("  Expected: May overlap or be close depending on rotation\n");
-                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
-                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", simplex.witnesses[0][0], simplex.witnesses[0][1], simplex.witnesses[0][2]);
+                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", simplex.witnesses[1][0], simplex.witnesses[1][1], simplex.witnesses[1][2]);
                 printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
-                
+
                 // Verify witness points are reasonable (expanded bounds for rotated cube)
-                bool valid1 = (witness1[0] >= -2.0f && witness1[0] <= 2.0f) &&
-                             (witness1[1] >= -2.0f && witness1[1] <= 2.0f) &&
-                             (witness1[2] >= -2.0f && witness1[2] <= 2.0f);
-                bool valid2 = (witness2[0] >= -1.0f && witness2[0] <= 3.0f) &&
-                             (witness2[1] >= -2.0f && witness2[1] <= 2.0f) &&
-                             (witness2[2] >= -2.0f && witness2[2] <= 2.0f);
+                bool valid1 = (simplex.witnesses[0][0] >= -2.0f && simplex.witnesses[0][0] <= 2.0f) &&
+                             (simplex.witnesses[0][1] >= -2.0f && simplex.witnesses[0][1] <= 2.0f) &&
+                             (simplex.witnesses[0][2] >= -2.0f && simplex.witnesses[0][2] <= 2.0f);
+                bool valid2 = (simplex.witnesses[1][0] >= -1.0f && simplex.witnesses[1][0] <= 3.0f) &&
+                             (simplex.witnesses[1][1] >= -2.0f && simplex.witnesses[1][1] <= 2.0f) &&
+                             (simplex.witnesses[1][2] >= -2.0f && simplex.witnesses[1][2] <= 2.0f);
                 
                 if (simplex.nvrtx == 4 && valid1 && valid2) {
                     if (distance < 0.0f) {
@@ -804,25 +768,24 @@ namespace GJK {
                 gkSimplex simplex;
                 simplex.nvrtx = 0;
                 gkFloat distance;
-                gkFloat witness1[3], witness2[3];
                 gkFloat contact_normal[3];
 
                 printf("  Running GJK and EPA...\n");
-                computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
+                computeGJKAndEPA(1, &polytope1, &polytope2, &simplex, &distance, contact_normal);
 
                 printf("  Simplex vertices: %d\n", simplex.nvrtx);
                 printf("  Distance/Penetration: %.6f\n", distance);
                 printf("  Expected: Collision (spheres overlap, centers 1 unit apart, each radius 2)\n");
                 printf("  Expected overlap: ~3 units (2+2-1=3)\n");
-                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
-                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", simplex.witnesses[0][0], simplex.witnesses[0][1], simplex.witnesses[0][2]);
+                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", simplex.witnesses[1][0], simplex.witnesses[1][1], simplex.witnesses[1][2]);
                 printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
-                
+
                 // Verify witness points are within sphere bounds
                 // Sphere 1: centered at (0,0,0), radius 2
                 // Sphere 2: centered at (1,0,0), radius 2
-                gkFloat dist1 = sqrt(witness1[0]*witness1[0] + witness1[1]*witness1[1] + witness1[2]*witness1[2]);
-                gkFloat dist2 = sqrt((witness2[0]-1.0f)*(witness2[0]-1.0f) + witness2[1]*witness2[1] + witness2[2]*witness2[2]);
+                gkFloat dist1 = sqrt(simplex.witnesses[0][0]*simplex.witnesses[0][0] + simplex.witnesses[0][1]*simplex.witnesses[0][1] + simplex.witnesses[0][2]*simplex.witnesses[0][2]);
+                gkFloat dist2 = sqrt((simplex.witnesses[1][0]-1.0f)*(simplex.witnesses[1][0]-1.0f) + simplex.witnesses[1][1]*simplex.witnesses[1][1] + simplex.witnesses[1][2]*simplex.witnesses[1][2]);
                 
                 bool valid1 = dist1 <= radius + 0.1f; // Allow small tolerance
                 bool valid2 = dist2 <= radius + 0.1f;
@@ -875,33 +838,32 @@ namespace GJK {
                 gkSimplex simplex;
                 simplex.nvrtx = 0;
                 gkFloat distance;
-                gkFloat witness1[3], witness2[3];
                 gkFloat contact_normal[3];
 
                 printf("  Running GPU GJK...\n");
                 computeDistances(1, &polytope1, &polytope2, &simplex, &distance);
-                
+
                 printf("  GJK Results:\n");
                 printf("    Simplex vertices: %d\n", simplex.nvrtx);
                 printf("    Distance: %.6f\n", distance);
-                
+
                 printf("  Running GPU EPA...\n");
-                computeCollisionInformation(1, &polytope1, &polytope2, &simplex, &distance, witness1, witness2, contact_normal);
+                computeEPA(1, &polytope1, &polytope2, &simplex, &distance, contact_normal);
 
                 printf("  Final Results:\n");
                 printf("  Simplex vertices: %d\n", simplex.nvrtx);
                 printf("  Distance/Penetration: %.6f\n", distance);
                 printf("  Expected: Collision (spheres overlap, centers 1 unit apart, each radius 2)\n");
                 printf("  Expected overlap: ~3 units (2+2-1=3)\n");
-                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", witness1[0], witness1[1], witness1[2]);
-                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", witness2[0], witness2[1], witness2[2]);
+                printf("  Witness 1: (%.6f, %.6f, %.6f)\n", simplex.witnesses[0][0], simplex.witnesses[0][1], simplex.witnesses[0][2]);
+                printf("  Witness 2: (%.6f, %.6f, %.6f)\n", simplex.witnesses[1][0], simplex.witnesses[1][1], simplex.witnesses[1][2]);
                 printf("  Contact Normal: (%.6f, %.6f, %.6f)\n", contact_normal[0], contact_normal[1], contact_normal[2]);
-                
+
                 // Verify witness points are within sphere bounds
                 // Sphere 1: centered at (0,0,0), radius 2
                 // Sphere 2: centered at (1,0,0), radius 2
-                gkFloat dist1 = sqrt(witness1[0]*witness1[0] + witness1[1]*witness1[1] + witness1[2]*witness1[2]);
-                gkFloat dist2 = sqrt((witness2[0]-1.0f)*(witness2[0]-1.0f) + witness2[1]*witness2[1] + witness2[2]*witness2[2]);
+                gkFloat dist1 = sqrt(simplex.witnesses[0][0]*simplex.witnesses[0][0] + simplex.witnesses[0][1]*simplex.witnesses[0][1] + simplex.witnesses[0][2]*simplex.witnesses[0][2]);
+                gkFloat dist2 = sqrt((simplex.witnesses[1][0]-1.0f)*(simplex.witnesses[1][0]-1.0f) + simplex.witnesses[1][1]*simplex.witnesses[1][1] + simplex.witnesses[1][2]*simplex.witnesses[1][2]);
                 
                 bool valid1 = dist1 <= radius + 0.1f; // Allow small tolerance
                 bool valid2 = dist2 <= radius + 0.1f;

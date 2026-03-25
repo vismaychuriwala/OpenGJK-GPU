@@ -34,20 +34,16 @@ namespace GJK {
          * @param n         Number of polytope pairs
          * @param bd1       Array of first polytopes (host memory)
          * @param bd2       Array of second polytopes (host memory)
-         * @param simplices Array of input simplices from GJK (host memory, will be updated with results)
+         * @param simplices Array of input simplices from GJK (host memory, updated with witness points in simplices[i].witnesses[0/1])
          * @param distances Array of input distances from GJK (host memory, will be updated with negative penetration depths for colliding objects)
-         * @param witness1   Array to store witness points on first polytope (n*3 floats, host memory)
-         * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
          * @param contact_normals Optional array to store contact normals from bd1 to bd2 (n*3 floats, host memory, can be nullptr)
          */
-        void computeCollisionInformation(const int n,
+        void computeEPA(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
                             gkFloat* distances,
-                            gkFloat* witness1,
-                            gkFloat* witness2,
-                            gkFloat* contact_normals = nullptr);
+                            gkFloat* contact_normals);
 
         
         /**
@@ -60,19 +56,15 @@ namespace GJK {
          * @param n         Number of polytope pairs
          * @param bd1       Array of first polytopes (host memory)
          * @param bd2       Array of second polytopes (host memory)
-         * @param simplices Array to store resulting simplices (host memory)
+         * @param simplices Array to store resulting simplices (host memory, witness points stored in simplices[i].witnesses[0/1])
          * @param distances Array to store distances/penetration depths (host memory)
-         * @param witness1   Array to store witness points on first polytope (n*3 floats, host memory)
-         * @param witness2   Array to store witness points on second polytope (n*3 floats, host memory)
          */
         void computeGJKAndEPA(const int n,
                             const gkPolytope* bd1,
                             const gkPolytope* bd2,
                             gkSimplex* simplices,
                             gkFloat* distances,
-                            gkFloat* witness1,
-                            gkFloat* witness2,
-                            gkFloat* contact_normals = nullptr);
+                            gkFloat* contact_normals);
 
 
 

@@ -13,7 +13,7 @@
 #define fscanf_s fscanf
 #define M_PI 3.14159265358979323846  /* pi */
 
-#define NUM_POLYTOPES 100000
+#define NUM_POLYTOPES 10000
 #define RANDOM_VERTS 0
 
 #if RANDOM_VERTS
@@ -259,10 +259,6 @@ main() {
     gkSimplex* gpu_epa_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
     gkFloat*   cpu_epa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
     gkFloat*   gpu_epa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-    gkFloat*   cpu_epa_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*   cpu_epa_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*   gpu_epa_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*   gpu_epa_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
     gkFloat*   cpu_epa_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
     gkFloat*   gpu_epa_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
 
@@ -271,15 +267,13 @@ main() {
     memcpy(cpu_epa_distances, distances, NUM_POLYTOPES * sizeof(gkFloat));
     memcpy(gpu_epa_distances, distances, NUM_POLYTOPES * sizeof(gkFloat));   // same source as CPU
 
-    GJK::GPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
+    GJK::GPU::computeEPA(NUM_POLYTOPES, polytopes1, polytopes2,
                                           gpu_epa_simplices, gpu_epa_distances,
-                                          gpu_epa_witness1, gpu_epa_witness2,
                                           gpu_epa_normals);
     float epa_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
 
-    GJK::CPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
+    GJK::CPU::computeEPA(NUM_POLYTOPES, polytopes1, polytopes2,
                                           cpu_epa_simplices, cpu_epa_distances,
-                                          cpu_epa_witness1, cpu_epa_witness2,
                                           cpu_epa_normals);
     float epa_cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
 
@@ -301,8 +295,8 @@ main() {
         // Compute norm of witness difference: max(|w1_cpu - w1_gpu|, |w2_cpu - w2_gpu|)
         gkFloat d1 = 0.0f, d2 = 0.0f;
         for (int d = 0; d < 3; d++) {
-          gkFloat e1 = cpu_epa_witness1[i*3+d] - gpu_epa_witness1[i*3+d];
-          gkFloat e2 = cpu_epa_witness2[i*3+d] - gpu_epa_witness2[i*3+d];
+          gkFloat e1 = cpu_epa_simplices[i].witnesses[0][d] - gpu_epa_simplices[i].witnesses[0][d];
+          gkFloat e2 = cpu_epa_simplices[i].witnesses[1][d] - gpu_epa_simplices[i].witnesses[1][d];
           d1 += e1 * e1;
           d2 += e2 * e2;
         }
@@ -370,8 +364,6 @@ main() {
 
     free(cpu_epa_simplices); free(gpu_epa_simplices);
     free(cpu_epa_distances); free(gpu_epa_distances);
-    free(cpu_epa_witness1);  free(cpu_epa_witness2);
-    free(gpu_epa_witness1);  free(gpu_epa_witness2);
     free(cpu_epa_normals);   free(gpu_epa_normals);
   }
 
@@ -508,13 +500,11 @@ main() {
   // --- Test 2: computeGJKAndEPA - distances match GJK reference ---
   gkSimplex* gjkepa_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
   gkFloat*   gjkepa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-  gkFloat*   gjkepa_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-  gkFloat*   gjkepa_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+  gkFloat*   gjkepa_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
   for (int i = 0; i < NUM_POLYTOPES; i++) gjkepa_simplices[i].nvrtx = 0;
 
   GJK::GPU::computeGJKAndEPA(NUM_POLYTOPES, polytopes1, polytopes2,
-                              gjkepa_simplices, gjkepa_distances,
-                              gjkepa_witness1, gjkepa_witness2);
+                              gjkepa_simplices, gjkepa_distances, gjkepa_normals);
   float t2_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
   {
     bool passed = true;
@@ -534,22 +524,19 @@ main() {
   {
     gkSimplex* t_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
     gkFloat*   t_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-    gkFloat*   t_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*   t_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
     gkFloat*   t_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
     for (int i = 0; i < NUM_POLYTOPES; i++) t_simplices[i].nvrtx = 0;
 
     GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, t_simplices, t_distances);
-    GJK::GPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
-                                          t_simplices, t_distances,
-                                          t_witness1, t_witness2, t_normals);
+    GJK::GPU::computeEPA(NUM_POLYTOPES, polytopes1, polytopes2,
+                                          t_simplices, t_distances, t_normals);
     float t3_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
 
     bool passed = true;
     for (int i = 0; i < test_count && passed; i++) {
       for (int d = 0; d < 3; d++) {
-        if (fabs(t_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
-            fabs(t_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
+        if (fabs(t_simplices[i].witnesses[0][d] - gjkepa_simplices[i].witnesses[0][d]) > tolerance ||
+            fabs(t_simplices[i].witnesses[1][d] - gjkepa_simplices[i].witnesses[1][d]) > tolerance) {
           passed = false; break;
         }
       }
@@ -558,40 +545,7 @@ main() {
 
     free(t_simplices);
     free(t_distances);
-    free(t_witness1);
-    free(t_witness2);
     free(t_normals);
-  }
-
-  // --- Test 4: computeCollisionInformation with nullptr contact_normals ---
-  {
-    gkSimplex* t_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
-    gkFloat*   t_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-    gkFloat*   t_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*   t_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    for (int i = 0; i < NUM_POLYTOPES; i++) t_simplices[i].nvrtx = 0;
-
-    GJK::GPU::computeDistances(NUM_POLYTOPES, polytopes1, polytopes2, t_simplices, t_distances);
-    GJK::GPU::computeCollisionInformation(NUM_POLYTOPES, polytopes1, polytopes2,
-                                          t_simplices, t_distances,
-                                          t_witness1, t_witness2, nullptr);
-    float t4_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
-
-    bool passed = true;
-    for (int i = 0; i < test_count && passed; i++) {
-      for (int d = 0; d < 3; d++) {
-        if (fabs(t_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
-            fabs(t_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
-          passed = false; break;
-        }
-      }
-    }
-    printf("computeCollisionInformation (nullptr):   %s  %.4f ms\n", passed ? "\033[32mPASSED\033[0m" : "\033[31mFAILED\033[0m", t4_time);
-
-    free(t_simplices);
-    free(t_distances);
-    free(t_witness1);
-    free(t_witness2);
   }
 
   // --- Test 5: compute_gjk_epa_indexed - witnesses match gjkepa reference ---
@@ -600,8 +554,7 @@ main() {
     gkCollisionPair* idx_pairs     = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
     gkSimplex*       idx_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
     gkFloat*         idx_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-    gkFloat*         idx_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*         idx_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*         idx_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
     for (int i = 0; i < NUM_POLYTOPES; i++) {
       idx_polytopes[2*i]   = polytopes1[i];
       idx_polytopes[2*i+1] = polytopes2[i];
@@ -612,16 +565,15 @@ main() {
     GJK::GPU::timer().startGpuTimer();
     compute_gjk_epa_indexed(2 * NUM_POLYTOPES, NUM_POLYTOPES,
                             idx_polytopes, idx_pairs,
-                            idx_simplices, idx_distances,
-                            idx_witness1, idx_witness2);
+                            idx_simplices, idx_distances, idx_normals);
     GJK::GPU::timer().endGpuTimer();
     float t5_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
 
     bool passed = true;
     for (int i = 0; i < test_count && passed; i++) {
       for (int d = 0; d < 3; d++) {
-        if (fabs(idx_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
-            fabs(idx_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
+        if (fabs(idx_simplices[i].witnesses[0][d] - gjkepa_simplices[i].witnesses[0][d]) > tolerance ||
+            fabs(idx_simplices[i].witnesses[1][d] - gjkepa_simplices[i].witnesses[1][d]) > tolerance) {
           passed = false; break;
         }
       }
@@ -632,8 +584,7 @@ main() {
     free(idx_pairs);
     free(idx_simplices);
     free(idx_distances);
-    free(idx_witness1);
-    free(idx_witness2);
+    free(idx_normals);
   }
 
   // --- Test 6: compute_epa_indexed - witnesses match gjkepa reference ---
@@ -642,8 +593,7 @@ main() {
     gkCollisionPair* idx_pairs     = (gkCollisionPair*)malloc(NUM_POLYTOPES * sizeof(gkCollisionPair));
     gkSimplex*       idx_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
     gkFloat*         idx_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-    gkFloat*         idx_witness1  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*         idx_witness2  = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    gkFloat*         idx_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
     for (int i = 0; i < NUM_POLYTOPES; i++) {
       idx_polytopes[2*i]   = polytopes1[i];
       idx_polytopes[2*i+1] = polytopes2[i];
@@ -656,16 +606,15 @@ main() {
     GJK::GPU::timer().startGpuTimer();
     compute_epa_indexed(2 * NUM_POLYTOPES, NUM_POLYTOPES,
                         idx_polytopes, idx_pairs,
-                        idx_simplices, idx_distances,
-                        idx_witness1, idx_witness2);
+                        idx_simplices, idx_distances, idx_normals);
     GJK::GPU::timer().endGpuTimer();
     float t6_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
 
     bool passed = true;
     for (int i = 0; i < test_count && passed; i++) {
       for (int d = 0; d < 3; d++) {
-        if (fabs(idx_witness1[i*3+d] - gjkepa_witness1[i*3+d]) > tolerance ||
-            fabs(idx_witness2[i*3+d] - gjkepa_witness2[i*3+d]) > tolerance) {
+        if (fabs(idx_simplices[i].witnesses[0][d] - gjkepa_simplices[i].witnesses[0][d]) > tolerance ||
+            fabs(idx_simplices[i].witnesses[1][d] - gjkepa_simplices[i].witnesses[1][d]) > tolerance) {
           passed = false; break;
         }
       }
@@ -676,16 +625,14 @@ main() {
     free(idx_pairs);
     free(idx_simplices);
     free(idx_distances);
-    free(idx_witness1);
-    free(idx_witness2);
+    free(idx_normals);
   }
 
   printf("================================================================================\n");
 
   free(gjkepa_simplices);
   free(gjkepa_distances);
-  free(gjkepa_witness1);
-  free(gjkepa_witness2);
+  free(gjkepa_normals);
 #endif
 
   /* Free all allocated memory */

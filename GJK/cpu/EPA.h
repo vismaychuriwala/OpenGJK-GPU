@@ -47,13 +47,11 @@ extern "C" {
  * polytopes.
  *
  * The simplex has to be initialised prior the call to this function. */
-  void compute_epa(
+  void computeCollisionInformation(
   const gkPolytope* bd1,
   const gkPolytope* bd2,
   gkSimplex* simplex,
   gkFloat* distance,
-  gkFloat witness1[3],
-  gkFloat witness2[3],
   gkFloat contact_normal[3]);
 
 #ifdef __cplusplus
