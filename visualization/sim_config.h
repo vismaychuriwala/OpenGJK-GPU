@@ -5,7 +5,7 @@
 // SHARED SIMULATION CONFIGURATION
 // ============================================================================
 
-#define NUM_OBJECTS 10000           // Number of physics objects
+#define NUM_OBJECTS 1000           // Number of physics objects
 #define MAX_PAIRS (NUM_OBJECTS * 500)  // Preallocated pair buffer (avg 50 neighbors per object with broad-phase)
 
 // Kernel launch configuration
@@ -44,7 +44,7 @@
 #define SCALE_AXIS_MAX   1.6f
 
 // OBJ-specific placement (uniform scale, fixed spacing between object centres)
-#define OBJ_SCALE        30.0f   // uniform scale applied to all OBJ meshes
+#define OBJ_SCALE        10.0f   // uniform scale applied to all OBJ meshes
 #define OBJ_SPACING     40.0f   // distance between OBJ object centres
 
 // Spatial configuration (scales with number of objects)
