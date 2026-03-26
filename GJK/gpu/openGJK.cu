@@ -1745,6 +1745,7 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
       poly->faces[f].v_idx[2][0] = tmp_idx0;
       poly->faces[f].v_idx[2][1] = tmp_idx1;
     }
+    compute_face_normal_distance(poly, f);
   }
 
   poly->max_face_index = 4;
@@ -2314,21 +2315,12 @@ __device__ __forceinline__ void epa_core(
   while (iteration < max_iterations && poly->num_vertices < MAX_EPA_VERTICES - 1) {
     iteration++;
 
-    // Compute face normals and distances in parallel across warp
-    // Each thread processes a subset of faces
+    // Each thread searches its slice of faces for the closest one
+    // Normals/distances are already current: computed at face-creation time
     const int faces_per_thread = (poly->max_face_index + THREADS_PER_EPA - 1) / THREADS_PER_EPA;
     const int start_face = lane_in_group * faces_per_thread;
-    const int end_face = (start_face + faces_per_thread < poly->max_face_index) ? 
+    const int end_face = (start_face + faces_per_thread < poly->max_face_index) ?
                          (start_face + faces_per_thread) : poly->max_face_index;
-
-    // Recompute normals & distances for assigned faces
-    for (int i = start_face; i < end_face; ++i) {
-      if (poly->faces[i].valid) {
-        compute_face_normal_distance(poly, i);
-      }
-    }
-
-    __syncwarp(group_mask);
 
     // parallel reduction to find closest face
     // Each thread finds the closest face in its assigned range
@@ -2633,6 +2625,9 @@ __device__ __forceinline__ void epa_core(
           poly->faces[new_face_idx].v_idx[2][1] = tmp_idx1;
         }
 
+        // Compute normal now so the recompute-all pass is not needed
+        compute_face_normal_distance(poly, new_face_idx);
+
         // Update max face index
         if (new_face_idx >= poly->max_face_index) {
           poly->max_face_index = new_face_idx + 1;
@@ -2643,14 +2638,9 @@ __device__ __forceinline__ void epa_core(
     __syncwarp(group_mask);
   }
 
-  // If we exited due to max iterations, recompute closest face and use it
+  // If we exited due to max iterations, use best face found so far
+  // Normals/distances are already current (computed eagerly at face-creation time)
   if (iteration >= max_iterations && lane_in_group == 0) {
-    // Find closest face and compute result
-    for (int i = 0; i < poly->max_face_index; ++i) {
-      if (!poly->faces[i].valid) continue;
-      compute_face_normal_distance(poly, i);
-    }
-
     int closest_face = -1;
     gkFloat closest_distance = 1e10f;
     for (int i = 0; i < poly->max_face_index; ++i) {
