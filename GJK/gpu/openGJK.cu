@@ -1645,36 +1645,41 @@ __device__ inline static void support_epa_parallel(const gkPolytope* body1, cons
 }
 
 // Initialize EPA polytope from GJK simplex (should be a tetrahedron)
-__device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex, gkFloat* centroid) {
-  // Clear all faces first
-  #pragma unroll
-  for (int i = 0; i < MAX_EPA_FACES; ++i) {
+__device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimplex* simplex, gkFloat* centroid,
+    int lane_in_group, unsigned int group_mask) {
+  // Clear all faces in parallel across warp
+  for (int i = lane_in_group; i < MAX_EPA_FACES; i += THREADS_PER_EPA) {
     poly->faces[i].valid = false;
     poly->faces[i].distance = 1e10f;
   }
+  __syncwarp(group_mask);
 
-  // Copy vertices from simplex
-  poly->num_vertices = 4;
-  #pragma unroll
-  for (int i = 0; i < 4; i++) {
+  // Only lane 0 sets up the vertices and faces (small fixed-size work)
+  if (lane_in_group == 0) {
+    // Copy vertices from simplex
+    poly->num_vertices = 4;
     #pragma unroll
-    for (int j = 0; j < 3; j++) {
-      poly->vertices[i][j] = simplex->vrtx[i][j];
+    for (int i = 0; i < 4; i++) {
+      #pragma unroll
+      for (int j = 0; j < 3; j++) {
+        poly->vertices[i][j] = simplex->vrtx[i][j];
+      }
+      poly->vertex_indices[i][0] = simplex->vrtx_idx[i][0];
+      poly->vertex_indices[i][1] = simplex->vrtx_idx[i][1];
     }
-    poly->vertex_indices[i][0] = simplex->vrtx_idx[i][0];
-    poly->vertex_indices[i][1] = simplex->vrtx_idx[i][1];
+
+    // Compute centroid of the tetrahedron
+    centroid[0] = centroid[1] = centroid[2] = 0.0f;
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+      #pragma unroll
+      for (int j = 0; j < 3; j++) {
+        centroid[j] += poly->vertices[i][j] * 0.25f;
+      }
+    }
   }
 
-  // Compute centroid of the tetrahedron
-  centroid[0] = centroid[1] = centroid[2] = 0.0f;
-  #pragma unroll
-  for (int i = 0; i < 4; i++) {
-    #pragma unroll
-    for (int j = 0; j < 3; j++) {
-      centroid[j] += poly->vertices[i][j] * 0.25f;
-    }
-  }
-
+  if (lane_in_group == 0) {
   // Create 4 faces of tetrahedron
   // set up the faces and then fix winding based on normal direction
   // Face 0: vertices 0, 1, 2
@@ -1749,6 +1754,7 @@ __device__ inline static void init_epa_polytope(EPAPolytope* poly, const gkSimpl
   }
 
   poly->max_face_index = 4;
+  } // end lane_in_group == 0
 }
 
 // barycentric coordinate compute closest point on triangle to origin
@@ -2300,9 +2306,7 @@ __device__ __forceinline__ void epa_core(
   // On to actual EPA alg with a valid tetrahedron simplex
   // Initialize EPA polytope from simplex
   gkFloat centroid[3] = {0, 0, 0};
-  if (lane_in_group == 0) {
-    init_epa_polytope(poly, &simplex, centroid);
-  }
+  init_epa_polytope(poly, &simplex, centroid, lane_in_group, group_mask);
 
   __syncwarp(group_mask);
 
@@ -2419,22 +2423,20 @@ __device__ __forceinline__ void epa_core(
       break;
     }
 
-    /// Check if new vertex is duplicate
-    bool is_duplicate = false;
-    if (lane_in_group == 0) {
+    /// Check if new vertex is duplicate (parallel across warp)
+    bool local_dup = false;
+    {
       const gkFloat eps_sq = gkEpsilon * gkEpsilon;
-      for (int i = 0; i < poly->num_vertices; i++) {
+      for (int i = lane_in_group; i < poly->num_vertices; i += THREADS_PER_EPA) {
         gkFloat dx = new_vertex[0] - poly->vertices[i][0];
         gkFloat dy = new_vertex[1] - poly->vertices[i][1];
         gkFloat dz = new_vertex[2] - poly->vertices[i][2];
         if (dx * dx + dy * dy + dz * dz < eps_sq) {
-          is_duplicate = true;
-          break;
+          local_dup = true;
         }
       }
     }
-
-    is_duplicate = __shfl_sync(group_mask, is_duplicate ? 1 : 0, group_leader_lane) != 0;
+    bool is_duplicate = (__ballot_sync(group_mask, local_dup) != 0);
 
     if (is_duplicate) {
       // Can't make progress, use current best
@@ -2496,16 +2498,25 @@ __device__ __forceinline__ void epa_core(
     __syncwarp(group_mask);
 
     // Find horizon edges (edges shared by exactly one invalid face and one valid face)
-    // Only create new faces from horizon edges
-    // Maybe some way to leverage multiple threads in warp to speed this up
+    // Phase 1: parallel visibility test — mark visible faces with sentinel distance
+    {
+      const int mfi = poly->max_face_index;
+      for (int f = lane_in_group; f < mfi; f += THREADS_PER_EPA) {
+        if (poly->faces[f].valid && is_face_visible(poly, f, new_vertex)) {
+          poly->faces[f].distance = -2.0f; // sentinel: marked for removal
+        }
+      }
+    }
+    __syncwarp(group_mask);
+
+    // Phase 2: lane 0 collects edges from marked faces and invalidates them
     if (lane_in_group == 0) {
-      // Collect horizon edges from faces visible to new vertex (mark and collect in one pass)
       EPAEdge edges[MAX_EPA_FACES * 3];
       int num_edges = 0;
 
       for (int f = 0; f < poly->max_face_index; f++) {
         if (!poly->faces[f].valid) continue;
-        if (!is_face_visible(poly, f, new_vertex)) continue;
+        if (poly->faces[f].distance != -2.0f) continue; // not marked visible
 
         // Edge 0-1
         if (num_edges < MAX_EPA_FACES * 3) {
@@ -2640,18 +2651,38 @@ __device__ __forceinline__ void epa_core(
 
   // If we exited due to max iterations, use best face found so far
   // Normals/distances are already current (computed eagerly at face-creation time)
-  if (iteration >= max_iterations && lane_in_group == 0) {
-    int closest_face = -1;
-    gkFloat closest_distance = 1e10f;
-    for (int i = 0; i < poly->max_face_index; ++i) {
+  if (iteration >= max_iterations) {
+    // Parallel reduction to find closest face (same pattern as main loop)
+    const int fb_faces_per_thread = (poly->max_face_index + THREADS_PER_EPA - 1) / THREADS_PER_EPA;
+    const int fb_start = lane_in_group * fb_faces_per_thread;
+    const int fb_end = (fb_start + fb_faces_per_thread < poly->max_face_index) ?
+                       (fb_start + fb_faces_per_thread) : poly->max_face_index;
+
+    int fb_closest_face = -1;
+    gkFloat fb_closest_dist = 1e10f;
+    for (int i = fb_start; i < fb_end; ++i) {
       if (!poly->faces[i].valid) continue;
-      if (poly->faces[i].distance >= 0.0f && poly->faces[i].distance < closest_distance) {
-        closest_distance = poly->faces[i].distance;
-        closest_face = i;
+      if (poly->faces[i].distance >= 0.0f && poly->faces[i].distance < fb_closest_dist) {
+        fb_closest_dist = poly->faces[i].distance;
+        fb_closest_face = i;
       }
     }
 
-    if (closest_face >= 0 && poly->faces[closest_face].valid) {
+    #pragma unroll
+    for (int offset = THREADS_PER_EPA / 2; offset > 0; offset /= 2) {
+      gkFloat other_dist = __shfl_down_sync(group_mask, fb_closest_dist, offset);
+      int other_face = __shfl_down_sync(group_mask, fb_closest_face, offset);
+      if (other_face >= 0 && (fb_closest_face < 0 || other_dist < fb_closest_dist ||
+          (other_dist == fb_closest_dist && other_face < fb_closest_face))) {
+        fb_closest_dist = other_dist;
+        fb_closest_face = other_face;
+      }
+    }
+
+    int closest_face = __shfl_sync(group_mask, fb_closest_face, group_leader_lane);
+    gkFloat closest_distance = __shfl_sync(group_mask, fb_closest_dist, group_leader_lane);
+
+    if (closest_face >= 0 && poly->faces[closest_face].valid && lane_in_group == 0) {
       EPAFace* closest = &poly->faces[closest_face];
 
       gkFloat* v0 = poly->vertices[closest->v[0]];
