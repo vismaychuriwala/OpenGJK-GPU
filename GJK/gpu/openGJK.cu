@@ -2964,14 +2964,12 @@ void compute_epa_device(
     gkFloat* d_distances,
     gkFloat* d_contact_normals) {
 
-    // Each collision uses 32 threads (one full warp)
-    int blockSize = 256;  // 256 threads = 8 collisions per block
+    // 4 groups of 32 threads = 128 threads/block, smem = 4*9816 = 39264 bytes < 48KB default
+    int blockSize = 128;
     int collisionsPerBlock = blockSize / THREADS_PER_EPA;
     int numBlocks = (n + collisionsPerBlock - 1) / collisionsPerBlock;
 
     int smem_size = collisionsPerBlock * (int)sizeof(EPAPolytope);
-    cudaFuncSetAttribute(compute_epa_kernel,
-        cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
     compute_epa_kernel<<<numBlocks, blockSize, smem_size>>>(
         d_bd1, d_bd2, d_simplices, d_distances,
         d_contact_normals, n);
@@ -3125,13 +3123,11 @@ void compute_epa_indexed_device(
     gkFloat* d_distances,
     gkFloat* d_contact_normals) {
 
-    int blockSize = 256;
+    int blockSize = 128;
     int collisionsPerBlock = blockSize / THREADS_PER_EPA;
     int numBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
 
     int smem_size = collisionsPerBlock * (int)sizeof(EPAPolytope);
-    cudaFuncSetAttribute(compute_epa_kernel_indexed_kernel,
-        cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
     compute_epa_kernel_indexed_kernel<<<numBlocks, blockSize, smem_size>>>(
         d_polytopes, d_pairs, d_simplices, d_distances,
         d_contact_normals, num_pairs);

@@ -255,70 +255,77 @@ main() {
 
 /* ── EPA: CPU vs GPU ─────────────────────────────────────────────────────── */
   {
-    gkSimplex* cpu_epa_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
-    gkSimplex* gpu_epa_simplices = (gkSimplex*)malloc(NUM_POLYTOPES * sizeof(gkSimplex));
-    gkFloat*   cpu_epa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-    gkFloat*   gpu_epa_distances = (gkFloat*)malloc(NUM_POLYTOPES * sizeof(gkFloat));
-    gkFloat*   cpu_epa_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
-    gkFloat*   gpu_epa_normals   = (gkFloat*)malloc(NUM_POLYTOPES * 3 * sizeof(gkFloat));
+    // Compact to colliding pairs only for fair performance comparison
+    int n_col = 0;
+    for (int i = 0; i < test_count; i++)
+      if (distances[i] <= tolerance) n_col++;
 
-    memcpy(cpu_epa_simplices, simplices, NUM_POLYTOPES * sizeof(gkSimplex));
-    memcpy(gpu_epa_simplices, simplices, NUM_POLYTOPES * sizeof(gkSimplex));  // same source as CPU
-    memcpy(cpu_epa_distances, distances, NUM_POLYTOPES * sizeof(gkFloat));
-    memcpy(gpu_epa_distances, distances, NUM_POLYTOPES * sizeof(gkFloat));   // same source as CPU
+    gkPolytope* col_p1       = (gkPolytope*)malloc(n_col * sizeof(gkPolytope));
+    gkPolytope* col_p2       = (gkPolytope*)malloc(n_col * sizeof(gkPolytope));
+    gkSimplex*  col_cpu_simp = (gkSimplex*) malloc(n_col * sizeof(gkSimplex));
+    gkSimplex*  col_gpu_simp = (gkSimplex*) malloc(n_col * sizeof(gkSimplex));
+    gkFloat*    col_cpu_dist = (gkFloat*)   malloc(n_col * sizeof(gkFloat));
+    gkFloat*    col_gpu_dist = (gkFloat*)   malloc(n_col * sizeof(gkFloat));
+    gkFloat*    cpu_epa_normals = (gkFloat*)malloc(n_col * 3 * sizeof(gkFloat));
+    gkFloat*    gpu_epa_normals = (gkFloat*)malloc(n_col * 3 * sizeof(gkFloat));
 
-    GJK::GPU::computeEPA(NUM_POLYTOPES, polytopes1, polytopes2,
-                                          gpu_epa_simplices, gpu_epa_distances,
-                                          gpu_epa_normals);
+    int j = 0;
+    for (int i = 0; i < test_count; i++) {
+      if (distances[i] <= tolerance) {
+        col_p1[j]       = polytopes1[i];
+        col_p2[j]       = polytopes2[i];
+        col_cpu_simp[j] = simplices[i];
+        col_gpu_simp[j] = gpu_simplices[i];
+        col_cpu_dist[j] = distances[i];
+        col_gpu_dist[j] = gpu_distances[i];
+        j++;
+      }
+    }
+
+    GJK::GPU::computeEPA(n_col, col_p1, col_p2,
+                         col_gpu_simp, col_gpu_dist, gpu_epa_normals);
     float epa_gpu_time = GJK::GPU::timer().getGpuElapsedTimeForPreviousOperation();
 
-    GJK::CPU::computeEPA(NUM_POLYTOPES, polytopes1, polytopes2,
-                                          cpu_epa_simplices, cpu_epa_distances,
-                                          cpu_epa_normals);
+    GJK::CPU::computeEPA(n_col, col_p1, col_p2,
+                         col_cpu_simp, col_cpu_dist, cpu_epa_normals);
     float epa_cpu_time = GJK::CPU::timer().getCpuElapsedTimeForPreviousOperation();
 
-    int colliding_count = 0;
+    int colliding_count = n_col;
     int depth_mismatch_count = 0;
     int witness_mismatch_count = 0;
     int normal_mismatch_count = 0;
     gkFloat w_norm_sum = 0.0f, w_norm_max = 0.0f;
     gkFloat n_norm_sum = 0.0f, n_norm_max = 0.0f;
 
-    for (int i = 0; i < test_count; i++) {
-      if (gpu_distances[i] <= tolerance) {
-        colliding_count++;
+    for (int i = 0; i < n_col; i++) {
+      gkFloat depth_diff = fabs(col_cpu_dist[i] - col_gpu_dist[i]);
+      if (depth_diff > tolerance)
+        depth_mismatch_count++;
 
-        gkFloat depth_diff = fabs(cpu_epa_distances[i] - gpu_epa_distances[i]);
-        if (depth_diff > tolerance)
-          depth_mismatch_count++;
-
-        // Compute norm of witness difference: max(|w1_cpu - w1_gpu|, |w2_cpu - w2_gpu|)
-        gkFloat d1 = 0.0f, d2 = 0.0f;
-        for (int d = 0; d < 3; d++) {
-          gkFloat e1 = cpu_epa_simplices[i].witnesses[0][d] - gpu_epa_simplices[i].witnesses[0][d];
-          gkFloat e2 = cpu_epa_simplices[i].witnesses[1][d] - gpu_epa_simplices[i].witnesses[1][d];
-          d1 += e1 * e1;
-          d2 += e2 * e2;
-        }
-        d1 = sqrt(d1); d2 = sqrt(d2);
-        gkFloat w_norm = d1 > d2 ? d1 : d2;
-
-        if (w_norm > tolerance) witness_mismatch_count++;
-        w_norm_sum += w_norm;
-        if (w_norm > w_norm_max) w_norm_max = w_norm;
-
-        // Compute norm of contact normal difference
-        gkFloat dn = 0.0f;
-        for (int d = 0; d < 3; d++) {
-          gkFloat en = cpu_epa_normals[i*3+d] - gpu_epa_normals[i*3+d];
-          dn += en * en;
-        }
-        dn = sqrt(dn);
-
-        if (dn > tolerance) normal_mismatch_count++;
-        n_norm_sum += dn;
-        if (dn > n_norm_max) n_norm_max = dn;
+      gkFloat d1 = 0.0f, d2 = 0.0f;
+      for (int d = 0; d < 3; d++) {
+        gkFloat e1 = col_cpu_simp[i].witnesses[0][d] - col_gpu_simp[i].witnesses[0][d];
+        gkFloat e2 = col_cpu_simp[i].witnesses[1][d] - col_gpu_simp[i].witnesses[1][d];
+        d1 += e1 * e1;
+        d2 += e2 * e2;
       }
+      d1 = sqrt(d1); d2 = sqrt(d2);
+      gkFloat w_norm = d1 > d2 ? d1 : d2;
+
+      if (w_norm > tolerance) witness_mismatch_count++;
+      w_norm_sum += w_norm;
+      if (w_norm > w_norm_max) w_norm_max = w_norm;
+
+      gkFloat dn = 0.0f;
+      for (int d = 0; d < 3; d++) {
+        gkFloat en = cpu_epa_normals[i*3+d] - gpu_epa_normals[i*3+d];
+        dn += en * en;
+      }
+      dn = sqrt(dn);
+
+      if (dn > tolerance) normal_mismatch_count++;
+      n_norm_sum += dn;
+      if (dn > n_norm_max) n_norm_max = dn;
     }
     bool epa_passed = (depth_mismatch_count == 0);
 
@@ -362,9 +369,10 @@ main() {
 
     printf("================================================================================\n");
 
-    free(cpu_epa_simplices); free(gpu_epa_simplices);
-    free(cpu_epa_distances); free(gpu_epa_distances);
-    free(cpu_epa_normals);   free(gpu_epa_normals);
+    free(col_p1); free(col_p2);
+    free(col_cpu_simp); free(col_gpu_simp);
+    free(col_cpu_dist); free(col_gpu_dist);
+    free(cpu_epa_normals); free(gpu_epa_normals);
   }
 
 #if TEST_API
