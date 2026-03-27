@@ -3187,6 +3187,48 @@ static void allocate_and_copy_indexed_polytopes(
     free(temp);
 }
 
+void allocate_indexed_device(
+    const int num_polytopes,
+    const int max_pairs,
+    const gkPolytope* polytopes,
+    gkPolytope**      d_polytopes,
+    gkFloat**         d_coords,
+    gkCollisionPair** d_pairs,
+    gkSimplex**       d_simplices,
+    gkFloat**         d_distances,
+    gkFloat**         d_contact_normals) {
+
+    allocate_and_copy_indexed_polytopes(num_polytopes, polytopes, d_polytopes, d_coords);
+    cudaMalloc(d_pairs,     max_pairs * sizeof(gkCollisionPair));
+    cudaMalloc(d_simplices, max_pairs * sizeof(gkSimplex));
+    cudaMalloc(d_distances, max_pairs * sizeof(gkFloat));
+    if (d_contact_normals) cudaMalloc(d_contact_normals, max_pairs * 3 * sizeof(gkFloat));
+}
+
+void free_indexed_device(
+    gkPolytope*      d_polytopes,
+    gkFloat*         d_coords,
+    gkCollisionPair* d_pairs,
+    gkSimplex*       d_simplices,
+    gkFloat*         d_distances,
+    gkFloat*         d_contact_normals) {
+
+    cudaFree(d_polytopes);
+    cudaFree(d_coords);
+    cudaFree(d_pairs);
+    cudaFree(d_simplices);
+    cudaFree(d_distances);
+    if (d_contact_normals) cudaFree(d_contact_normals);
+}
+
+void upload_pairs_device(
+    const int num_pairs,
+    const gkCollisionPair* pairs,
+    gkCollisionPair* d_pairs) {
+
+    cudaMemcpy(d_pairs, pairs, num_pairs * sizeof(gkCollisionPair), cudaMemcpyHostToDevice);
+}
+
 void compute_epa_indexed(
     const int num_polytopes,
     const int num_pairs,
