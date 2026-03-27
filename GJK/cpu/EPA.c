@@ -43,7 +43,6 @@
 #define MAX_EPA_FACES 128
 #define MAX_EPA_VERTICES (MAX_EPA_FACES + 4)
 
-#define eps_rel22 ((gkFloat)(gkEpsilon) * (gkFloat)1e4)
 #define eps_tot22 ((gkFloat)(gkEpsilon) * (gkFloat)1e2)
 
 #define norm2(a) (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
