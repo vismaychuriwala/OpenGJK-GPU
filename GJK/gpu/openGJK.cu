@@ -48,6 +48,7 @@
 // Maximum number of faces in the EPA polytope
 #define MAX_EPA_FACES 128
 #define MAX_EPA_VERTICES (MAX_EPA_FACES + 4)
+#define MAX_HORIZON_PER_THREAD (((MAX_EPA_FACES + THREADS_PER_EPA - 1) / THREADS_PER_EPA) * 3)
 
 #define getCoord(body, index, component) body->coord[(index) * 3 + (component)]
 
@@ -1831,13 +1832,6 @@ __device__ inline static void compute_barycentric_origin(
   }
 }
 
-// Structure for horizon edge collection
-typedef struct {
-  int v1, v2;  // Vertex indices in polytope
-  int v_idx1[2], v_idx2[2];  // Original vertex indices for witness computation
-  bool valid;
-} EPAEdge;
-
 // Core EPA logic
 __device__ __forceinline__ void epa_core(
     const gkPolytope* bd1,
@@ -2495,154 +2489,162 @@ __device__ __forceinline__ void epa_core(
       }
     }
 
+    // Broadcast register-local values (no smem fence needed for these)
+    new_vertex_id = __shfl_sync(group_mask, new_vertex_id, group_leader_lane);
+    centroid[0] = __shfl_sync(group_mask, centroid[0], group_leader_lane);
+    centroid[1] = __shfl_sync(group_mask, centroid[1], group_leader_lane);
+    centroid[2] = __shfl_sync(group_mask, centroid[2], group_leader_lane);
+
+    // smem fence so all threads see poly->vertices writes
     __syncwarp(group_mask);
 
-    // Find horizon edges (edges shared by exactly one invalid face and one valid face)
-    // Phase 1: parallel visibility test — mark visible faces with sentinel distance
-    {
-      const int mfi = poly->max_face_index;
-      for (int f = lane_in_group; f < mfi; f += THREADS_PER_EPA) {
-        if (poly->faces[f].valid && is_face_visible(poly, f, new_vertex)) {
-          poly->faces[f].distance = -2.0f; // sentinel: marked for removal
-        }
+    // ---- Parallel visibility mark + invalidate ----
+    const int mfi = poly->max_face_index;
+    for (int f = lane_in_group; f < mfi; f += THREADS_PER_EPA) {
+      if (poly->faces[f].valid && is_face_visible(poly, f, new_vertex)) {
+        poly->faces[f].distance = -2.0f; // sentinel: marked for removal
+        poly->faces[f].valid = false;
       }
     }
     __syncwarp(group_mask);
 
-    // Phase 2: lane 0 collects edges from marked faces and invalidates them
-    if (lane_in_group == 0) {
-      EPAEdge edges[MAX_EPA_FACES * 3];
-      int num_edges = 0;
+    // ---- Parallel horizon edge detection (no edge list, no dedup) ----
+    // Each thread checks edges of visible faces in its stripe.
+    // An edge (va,vb) is horizon iff no OTHER visible face shares it.
+    int my_horizon_v1[MAX_HORIZON_PER_THREAD];
+    int my_horizon_v2[MAX_HORIZON_PER_THREAD];
+    int my_horizon_idx1[MAX_HORIZON_PER_THREAD][2];
+    int my_horizon_idx2[MAX_HORIZON_PER_THREAD][2];
+    int my_count = 0;
 
-      for (int f = 0; f < poly->max_face_index; f++) {
-        if (!poly->faces[f].valid) continue;
-        if (poly->faces[f].distance != -2.0f) continue; // not marked visible
+    for (int f = lane_in_group; f < mfi; f += THREADS_PER_EPA) {
+      if (poly->faces[f].distance != -2.0f) continue; // not visible this iteration
 
-        // Edge 0-1
-        if (num_edges < MAX_EPA_FACES * 3) {
-          edges[num_edges].v1 = poly->faces[f].v[0];
-          edges[num_edges].v2 = poly->faces[f].v[1];
-          edges[num_edges].v_idx1[0] = poly->faces[f].v_idx[0][0];
-          edges[num_edges].v_idx1[1] = poly->faces[f].v_idx[0][1];
-          edges[num_edges].v_idx2[0] = poly->faces[f].v_idx[1][0];
-          edges[num_edges].v_idx2[1] = poly->faces[f].v_idx[1][1];
-          edges[num_edges].valid = true;
-          num_edges++;
+      for (int e = 0; e < 3; e++) {
+        int va = poly->faces[f].v[e];
+        int vb = poly->faces[f].v[(e + 1) % 3];
+
+        // Check if any OTHER visible face shares this edge
+        bool shared = false;
+        for (int g = 0; g < mfi && !shared; g++) {
+          if (g == f) continue;
+          if (poly->faces[g].distance != -2.0f) continue;
+          bool has_a = false, has_b = false;
+          #pragma unroll
+          for (int v = 0; v < 3; v++) {
+            if (poly->faces[g].v[v] == va) has_a = true;
+            if (poly->faces[g].v[v] == vb) has_b = true;
+          }
+          if (has_a && has_b) shared = true;
         }
 
-        // Edge 1-2
-        if (num_edges < MAX_EPA_FACES * 3) {
-          edges[num_edges].v1 = poly->faces[f].v[1];
-          edges[num_edges].v2 = poly->faces[f].v[2];
-          edges[num_edges].v_idx1[0] = poly->faces[f].v_idx[1][0];
-          edges[num_edges].v_idx1[1] = poly->faces[f].v_idx[1][1];
-          edges[num_edges].v_idx2[0] = poly->faces[f].v_idx[2][0];
-          edges[num_edges].v_idx2[1] = poly->faces[f].v_idx[2][1];
-          edges[num_edges].valid = true;
-          num_edges++;
+        if (!shared && my_count < MAX_HORIZON_PER_THREAD) {
+          my_horizon_v1[my_count] = va;
+          my_horizon_v2[my_count] = vb;
+          my_horizon_idx1[my_count][0] = poly->faces[f].v_idx[e][0];
+          my_horizon_idx1[my_count][1] = poly->faces[f].v_idx[e][1];
+          my_horizon_idx2[my_count][0] = poly->faces[f].v_idx[(e + 1) % 3][0];
+          my_horizon_idx2[my_count][1] = poly->faces[f].v_idx[(e + 1) % 3][1];
+          my_count++;
         }
-
-        // Edge 2-0
-        if (num_edges < MAX_EPA_FACES * 3) {
-          edges[num_edges].v1 = poly->faces[f].v[2];
-          edges[num_edges].v2 = poly->faces[f].v[0];
-          edges[num_edges].v_idx1[0] = poly->faces[f].v_idx[2][0];
-          edges[num_edges].v_idx1[1] = poly->faces[f].v_idx[2][1];
-          edges[num_edges].v_idx2[0] = poly->faces[f].v_idx[0][0];
-          edges[num_edges].v_idx2[1] = poly->faces[f].v_idx[0][1];
-          edges[num_edges].valid = true;
-          num_edges++;
-        }
-
-        poly->faces[f].valid = false;
       }
+    }
 
-      // Remove duplicate edges (edges shared by two removed faces)
-      for (int i = 0; i < num_edges; i++) {
-        if (!edges[i].valid) continue;
+    // ---- Warp exclusive prefix sum for face slot assignment ----
+    int prefix = my_count;
+    #pragma unroll
+    for (int d = 1; d < THREADS_PER_EPA; d <<= 1) {
+      int tmp = __shfl_up_sync(group_mask, prefix, d);
+      if (lane_in_group >= d) prefix += tmp;
+    }
+    int my_offset = prefix - my_count; // exclusive sum
 
-        for (int j = i + 1; j < num_edges; j++) {
-          if (!edges[j].valid) continue;
-
-          // Check if same edge (either direction)
-          if ((edges[i].v1 == edges[j].v1 && edges[i].v2 == edges[j].v2) ||
-            (edges[i].v1 == edges[j].v2 && edges[i].v2 == edges[j].v1)) {
-            edges[i].valid = false;
-            edges[j].valid = false;
+    // ---- Each thread finds its assigned free face slots ----
+    // All threads see same validity state; prefix sum guarantees non-overlapping claims
+    int my_slots[MAX_HORIZON_PER_THREAD];
+    {
+      int skip = my_offset;
+      int claimed = 0;
+      for (int s = 0; s < MAX_EPA_FACES && claimed < my_count; s++) {
+        if (!poly->faces[s].valid) {
+          if (skip > 0) {
+            skip--;
+          } else {
+            my_slots[claimed] = s;
+            claimed++;
           }
         }
       }
+      my_count = claimed;
+    }
 
-      // Create new faces from horizon edges
-      for (int i = 0; i < num_edges; i++) {
-        if (!edges[i].valid) continue;
+    // ---- Parallel face creation (winding check + normal) ----
+    int my_max_face = 0;
+    for (int h = 0; h < my_count; h++) {
+      int fi = my_slots[h];
 
-        // Find next available face slot
-        int new_face_idx = -1;
-        #pragma unroll
-        for (int j = 0; j < MAX_EPA_FACES; j++) {
-          if (!poly->faces[j].valid) {
-            new_face_idx = j;
-            break;
-          }
-        }
+      poly->faces[fi].v[0] = my_horizon_v1[h];
+      poly->faces[fi].v[1] = my_horizon_v2[h];
+      poly->faces[fi].v[2] = new_vertex_id;
 
-        if (new_face_idx < 0 || new_face_idx >= MAX_EPA_FACES) break;
+      poly->faces[fi].v_idx[0][0] = my_horizon_idx1[h][0];
+      poly->faces[fi].v_idx[0][1] = my_horizon_idx1[h][1];
+      poly->faces[fi].v_idx[1][0] = my_horizon_idx2[h][0];
+      poly->faces[fi].v_idx[1][1] = my_horizon_idx2[h][1];
+      poly->faces[fi].v_idx[2][0] = new_vertex_idx[0];
+      poly->faces[fi].v_idx[2][1] = new_vertex_idx[1];
 
-        // Create new face: edge horizon vertices + new vertex
-        poly->faces[new_face_idx].v[0] = edges[i].v1;
-        poly->faces[new_face_idx].v[1] = edges[i].v2;
-        poly->faces[new_face_idx].v[2] = new_vertex_id;
+      // Winding check
+      gkFloat* fv0 = poly->vertices[poly->faces[fi].v[0]];
+      gkFloat* fv1 = poly->vertices[poly->faces[fi].v[1]];
+      gkFloat* fv2 = poly->vertices[poly->faces[fi].v[2]];
 
-        poly->faces[new_face_idx].v_idx[0][0] = edges[i].v_idx1[0];
-        poly->faces[new_face_idx].v_idx[0][1] = edges[i].v_idx1[1];
-        poly->faces[new_face_idx].v_idx[1][0] = edges[i].v_idx2[0];
-        poly->faces[new_face_idx].v_idx[1][1] = edges[i].v_idx2[1];
-        poly->faces[new_face_idx].v_idx[2][0] = new_vertex_idx[0];
-        poly->faces[new_face_idx].v_idx[2][1] = new_vertex_idx[1];
+      gkFloat fe0[3], fe1[3], fnormal[3];
+      #pragma unroll
+      for (int c = 0; c < 3; c++) {
+        fe0[c] = fv1[c] - fv0[c];
+        fe1[c] = fv2[c] - fv0[c];
+      }
+      crossProduct(fe0, fe1, fnormal);
 
-        poly->faces[new_face_idx].valid = true;
+      gkFloat to_cent[3];
+      #pragma unroll
+      for (int c = 0; c < 3; c++) {
+        to_cent[c] = centroid[c] - fv0[c];
+      }
+      if (dotProduct(fnormal, to_cent) > 0) {
+        int tmp_v = poly->faces[fi].v[1];
+        poly->faces[fi].v[1] = poly->faces[fi].v[2];
+        poly->faces[fi].v[2] = tmp_v;
 
-        // Check winding and fix if necessary
-        gkFloat* fv0 = poly->vertices[poly->faces[new_face_idx].v[0]];
-        gkFloat* fv1 = poly->vertices[poly->faces[new_face_idx].v[1]];
-        gkFloat* fv2 = poly->vertices[poly->faces[new_face_idx].v[2]];
+        int tmp_idx0 = poly->faces[fi].v_idx[1][0];
+        int tmp_idx1 = poly->faces[fi].v_idx[1][1];
+        poly->faces[fi].v_idx[1][0] = poly->faces[fi].v_idx[2][0];
+        poly->faces[fi].v_idx[1][1] = poly->faces[fi].v_idx[2][1];
+        poly->faces[fi].v_idx[2][0] = tmp_idx0;
+        poly->faces[fi].v_idx[2][1] = tmp_idx1;
+      }
 
-        gkFloat fe0[3], fe1[3], fnormal[3];
-        #pragma unroll
-        for (int c = 0; c < 3; c++) {
-          fe0[c] = fv1[c] - fv0[c];
-          fe1[c] = fv2[c] - fv0[c];
-        }
-        crossProduct(fe0, fe1, fnormal);
+      compute_face_normal_distance(poly, fi);
+      poly->faces[fi].valid = true;
 
-        // If normal points toward centroid flip winding
-        gkFloat to_cent[3];
-        #pragma unroll
-        for (int c = 0; c < 3; c++) {
-          to_cent[c] = centroid[c] - fv0[c];
-        }
-        if (dotProduct(fnormal, to_cent) > 0) {
-          // Swap v[1] and v[2]
-          int tmp_v = poly->faces[new_face_idx].v[1];
-          poly->faces[new_face_idx].v[1] = poly->faces[new_face_idx].v[2];
-          poly->faces[new_face_idx].v[2] = tmp_v;
+      if (fi + 1 > my_max_face) my_max_face = fi + 1;
+    }
 
-          int tmp_idx0 = poly->faces[new_face_idx].v_idx[1][0];
-          int tmp_idx1 = poly->faces[new_face_idx].v_idx[1][1];
-          poly->faces[new_face_idx].v_idx[1][0] = poly->faces[new_face_idx].v_idx[2][0];
-          poly->faces[new_face_idx].v_idx[1][1] = poly->faces[new_face_idx].v_idx[2][1];
-          poly->faces[new_face_idx].v_idx[2][0] = tmp_idx0;
-          poly->faces[new_face_idx].v_idx[2][1] = tmp_idx1;
-        }
+    // Update max_face_index via warp max reduction
+    #pragma unroll
+    for (int d = THREADS_PER_EPA / 2; d > 0; d /= 2) {
+      int other = __shfl_down_sync(group_mask, my_max_face, d);
+      if (other > my_max_face) my_max_face = other;
+    }
+    if (lane_in_group == 0 && my_max_face > poly->max_face_index) {
+      poly->max_face_index = my_max_face;
+    }
 
-        // Compute normal now so the recompute-all pass is not needed
-        compute_face_normal_distance(poly, new_face_idx);
-
-        // Update max face index
-        if (new_face_idx >= poly->max_face_index) {
-          poly->max_face_index = new_face_idx + 1;
-        }
+    // Clean up sentinel values from visible faces not overwritten
+    for (int f = lane_in_group; f < mfi; f += THREADS_PER_EPA) {
+      if (!poly->faces[f].valid && poly->faces[f].distance == -2.0f) {
+        poly->faces[f].distance = 1e10f;
       }
     }
 
