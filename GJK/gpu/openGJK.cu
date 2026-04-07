@@ -280,19 +280,9 @@ __device__ inline static int hff2(const gkFloat* p, const gkFloat* q,
 
 __device__ inline static int hff3(const gkFloat* p, const gkFloat* q,
   const gkFloat* r) {
-  gkFloat n[3], pq[3], pr[3];
-
-  #pragma unroll
-  for (int i = 0; i < 3; i++) {
-    pq[i] = q[i] - p[i];
-  }
-  #pragma unroll
-  for (int i = 0; i < 3; i++) {
-    pr[i] = r[i] - p[i];
-  }
-
-  crossProduct(pq, pr, n);
-  return dotProduct(p, n) <= 0;  // discard s if true
+    gkFloat n[3];
+    crossProduct(q, r, n);
+    return dotProduct(p, n) <= 0;  // discard s if true
 }
 
 __device__ inline static void S1D(gkSimplex* s, gkFloat* v) {
