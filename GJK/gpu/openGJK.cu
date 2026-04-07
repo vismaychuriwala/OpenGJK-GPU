@@ -50,6 +50,16 @@
 #define MAX_EPA_VERTICES (MAX_EPA_FACES + 4)
 #define MAX_HORIZON_PER_THREAD (((MAX_EPA_FACES + THREADS_PER_EPA - 1) / THREADS_PER_EPA) * 3)
 
+// EPA groups per block limited by 48KB shared memory default per block:
+//   float:  sizeof(EPAPolytope) ~ 9816 bytes  -> 4 groups (4*9816=39264 < 49152)
+//   double: sizeof(EPAPolytope) ~ 14480 bytes -> 3 groups (3*14480=43440 < 49152)
+#ifdef USE_32BITS
+#define EPA_GROUPS_PER_BLOCK 4
+#else
+#define EPA_GROUPS_PER_BLOCK 3
+#endif
+#define BLOCK_SIZE_EPA (EPA_GROUPS_PER_BLOCK * THREADS_PER_EPA)
+
 #define getCoord(body, index, component) body->coord[(index) * 3 + (component)]
 
 #define norm2(a) (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
@@ -2339,8 +2349,10 @@ __device__ __forceinline__ void epa_core(
       gkFloat other_dist = __shfl_down_sync(group_mask, local_closest_distance, offset);
       int other_face = __shfl_down_sync(group_mask, local_closest_face, offset);
       
+      // Tie-break on vertex index, not face slot, so result is stable across parallel slot assignments
       if (other_face >= 0 && (local_closest_face < 0 || other_dist < local_closest_distance ||
-          (other_dist == local_closest_distance && other_face < local_closest_face))) {
+          (other_dist == local_closest_distance &&
+           poly->faces[other_face].v[0] < poly->faces[local_closest_face].v[0]))) {
         local_closest_distance = other_dist;
         local_closest_face = other_face;
       }
@@ -2674,8 +2686,10 @@ __device__ __forceinline__ void epa_core(
     for (int offset = THREADS_PER_EPA / 2; offset > 0; offset /= 2) {
       gkFloat other_dist = __shfl_down_sync(group_mask, fb_closest_dist, offset);
       int other_face = __shfl_down_sync(group_mask, fb_closest_face, offset);
+      // Tie-break on vertex index, not face slot, so result is stable across parallel slot assignments
       if (other_face >= 0 && (fb_closest_face < 0 || other_dist < fb_closest_dist ||
-          (other_dist == fb_closest_dist && other_face < fb_closest_face))) {
+          (other_dist == fb_closest_dist &&
+           poly->faces[other_face].v[0] < poly->faces[fb_closest_face].v[0]))) {
         fb_closest_dist = other_dist;
         fb_closest_face = other_face;
       }
@@ -2987,9 +3001,8 @@ void compute_epa_device(
     gkFloat* d_distances,
     gkFloat* d_contact_normals) {
 
-    // 4 groups of 32 threads = 128 threads/block, smem = 4*9816 = 39264 bytes < 48KB default
-    int blockSize = 128;
-    int collisionsPerBlock = blockSize / THREADS_PER_EPA;
+    const int blockSize = BLOCK_SIZE_EPA;
+    const int collisionsPerBlock = EPA_GROUPS_PER_BLOCK;
     int numBlocks = (n + collisionsPerBlock - 1) / collisionsPerBlock;
 
     int smem_size = collisionsPerBlock * (int)sizeof(EPAPolytope);
@@ -3146,8 +3159,8 @@ void compute_epa_indexed_device(
     gkFloat* d_distances,
     gkFloat* d_contact_normals) {
 
-    int blockSize = 128;
-    int collisionsPerBlock = blockSize / THREADS_PER_EPA;
+    const int blockSize = BLOCK_SIZE_EPA;
+    const int collisionsPerBlock = EPA_GROUPS_PER_BLOCK;
     int numBlocks = (num_pairs + collisionsPerBlock - 1) / collisionsPerBlock;
 
     int smem_size = collisionsPerBlock * (int)sizeof(EPAPolytope);
