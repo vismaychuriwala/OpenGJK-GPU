@@ -32,6 +32,10 @@
     "stone.jpg",             \
     "whitebubble.jpg"
 
+// PBR material randomisation (per-object roughness range)
+#define MAT_ROUGHNESS_MIN 0.15f
+#define MAT_ROUGHNESS_MAX 0.90f
+
 // Random convex hull shape generation
 #define MAX_HULL_VERTS    32     // maximum GJK vertices per random hull
 #define MIN_HULL_VERTS     8     // minimum GJK vertices per random hull

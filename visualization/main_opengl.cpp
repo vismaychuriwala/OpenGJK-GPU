@@ -53,6 +53,10 @@ static void object_color(int i, float* rgba) {
     float sat = 0.65f + std::fmod(i * 0.127f, 0.25f);     // 0.65–0.90
     float val = 0.75f + std::fmod(i * 0.211f, 0.20f);     // 0.75–0.95
     hsv_to_rgb(hue, sat, val, &rgba[0], &rgba[1], &rgba[2]);
+    // HSV produces perceptual (sRGB) values; the PBR shader wants linear albedo
+    rgba[0] = std::pow(rgba[0], 2.2f);
+    rgba[1] = std::pow(rgba[1], 2.2f);
+    rgba[2] = std::pow(rgba[2], 2.2f);
     rgba[3] = 1.0f;
 }
 
@@ -251,6 +255,11 @@ static void build_scene(MeshAtlas* atlas, ObjectInitData* objects, int num_objec
         objects[i].scale[2] = sz;
 
         object_color(i, objects[i].color);
+
+        // PBR material: ~20% metallic; roughness spread across MAT_ROUGHNESS range
+        objects[i].metallic  = (rand() % 5 == 0) ? 1.0f : 0.0f;
+        objects[i].roughness = rf(MAT_ROUGHNESS_MIN, MAT_ROUGHNESS_MAX);
+
         if (sm_verts) {
             // OBJ: texture array layer = OBJ_TEX_START + obj_id
             int obj_id = type_idx - g_num_hull_variants;

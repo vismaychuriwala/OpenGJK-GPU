@@ -8,8 +8,9 @@ uniform mat4 uProjection;
 uniform mat4 uView;
 
 struct ObjectStatic {
-    vec4 scale_pad;  // xyz = scale, w = unused
-    vec4 color;
+    vec4 scale_pad;  // xyz = scale, w = tex_index
+    vec4 color;      // rgb = linear albedo, a = unused
+    vec4 pbr;        // x = metallic, y = roughness, zw = unused
 };
 
 layout(std430, binding = 0) readonly buffer StaticSSBO {
@@ -26,9 +27,10 @@ layout(std430, binding = 2) readonly buffer QuatSSBO {
 
 out vec3 v_world_normal;
 out vec3 v_world_pos;
-out vec4 v_color;
 out vec2 v_uv;
+flat out vec4 v_color;
 flat out float v_tex_index;
+flat out vec2 v_pbr;  // x = metallic, y = roughness
 
 vec3 quat_rotate(vec4 q, vec3 v) {
     vec3 u = q.xyz;
@@ -52,6 +54,7 @@ void main() {
     v_color        = objects[id].color;
     v_uv           = a_uv;
     v_tex_index    = objects[id].scale_pad.w;
+    v_pbr          = objects[id].pbr.xy;
 
     gl_Position = uProjection * uView * vec4(v_world_pos, 1.0);
 }

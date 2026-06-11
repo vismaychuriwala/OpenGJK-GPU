@@ -21,7 +21,7 @@
 
 // Resolve a relative path against the executable's directory so that shader
 // loading works regardless of the current working directory.
-static void resolve_exe_relative(const char* relative, char* out, size_t out_size) {
+void resolve_exe_relative(const char* relative, char* out, size_t out_size) {
 #ifdef _WIN32
     char exe_path[MAX_PATH];
     GetModuleFileNameA(NULL, exe_path, MAX_PATH);
@@ -120,8 +120,9 @@ struct DrawCmd {
 struct GPUObjectStatic {
     float scale[3];
     float tex_index;   // -1 = flat color, 0 = polytope rock texture
-    float color[4];
-};  // 32 bytes
+    float color[4];    // rgb = linear albedo
+    float pbr[4];      // x = metallic, y = roughness, zw = pad
+};  // 48 bytes
 
 // ============================================================================
 // renderer_init
@@ -162,21 +163,23 @@ bool renderer_init(OpenGLRenderer* renderer,
         glGetUniformLocation(renderer->object_shader.program_id, "uProjection");
     renderer->object_shader.uniform_view =
         glGetUniformLocation(renderer->object_shader.program_id, "uView");
-    renderer->object_shader.uniform_light_dir =
-        glGetUniformLocation(renderer->object_shader.program_id, "uLightDir");
     renderer->object_shader.uniform_camera_pos =
         glGetUniformLocation(renderer->object_shader.program_id, "uCameraPos");
-    renderer->object_shader.uniform_env_map =
-        glGetUniformLocation(renderer->object_shader.program_id, "uEnvMap");
-    renderer->object_shader.uniform_has_env_map =
-        glGetUniformLocation(renderer->object_shader.program_id, "uHasEnvMap");
     renderer->object_shader.uniform_tex_array =
         glGetUniformLocation(renderer->object_shader.program_id, "uTexArray");
+    renderer->object_shader.uniform_diffuse_irradiance =
+        glGetUniformLocation(renderer->object_shader.program_id, "u_DiffuseIrradianceMap");
+    renderer->object_shader.uniform_glossy_irradiance =
+        glGetUniformLocation(renderer->object_shader.program_id, "u_GlossyIrradianceMap");
+    renderer->object_shader.uniform_brdf_lut =
+        glGetUniformLocation(renderer->object_shader.program_id, "u_BRDFLookupTexture");
 
     renderer->ground_shader.uniform_projection =
         glGetUniformLocation(renderer->ground_shader.program_id, "uProjection");
     renderer->ground_shader.uniform_view =
         glGetUniformLocation(renderer->ground_shader.program_id, "uView");
+    renderer->ground_shader.uniform_diffuse_irradiance =
+        glGetUniformLocation(renderer->ground_shader.program_id, "u_DiffuseIrradianceMap");
 
     // --- Geometry atlas upload ---
     glGenBuffers(1, &renderer->geometry_vbo);
@@ -220,6 +223,10 @@ bool renderer_init(OpenGLRenderer* renderer,
         static_data[i].color[1] = objects[i].color[1];
         static_data[i].color[2] = objects[i].color[2];
         static_data[i].color[3] = objects[i].color[3];
+        static_data[i].pbr[0]   = objects[i].metallic;
+        static_data[i].pbr[1]   = objects[i].roughness;
+        static_data[i].pbr[2]   = 0.0f;
+        static_data[i].pbr[3]   = 0.0f;
     }
 
     glGenBuffers(1, &renderer->static_ssbo);
@@ -279,13 +286,15 @@ bool renderer_init(OpenGLRenderer* renderer,
             renderer->sky_uniform_inv_proj_view =
                 glGetUniformLocation(renderer->sky_program, "uInvProjView");
             renderer->sky_uniform_env_map =
-                glGetUniformLocation(renderer->sky_program, "uEnvMap");
+                glGetUniformLocation(renderer->sky_program, "u_EnvironmentMap");
         }
         glGenVertexArrays(1, &renderer->sky_vao);
     }
 
-    // --- Environment map (equirectangular HDR) ---
-    renderer->env_map_tex = 0;
+    // --- IBL: load equirect HDR, bake cubemaps, then drop the equirect ---
+    renderer->ibl.env_cubemap        = 0;
+    renderer->ibl.diffuse_irradiance = 0;
+    renderer->ibl.glossy_prefilter   = 0;
     if (sizeof(ENV_MAP) > sizeof("")) {
         char env_path[1024];
         resolve_exe_relative("env_maps/" ENV_MAP, env_path, sizeof(env_path));
@@ -293,18 +302,44 @@ bool renderer_init(OpenGLRenderer* renderer,
         stbi_set_flip_vertically_on_load(true);
         float* data = stbi_loadf(env_path, &w, &h, &nc, 0);
         if (data) {
-            glGenTextures(1, &renderer->env_map_tex);
-            glBindTexture(GL_TEXTURE_2D, renderer->env_map_tex);
+            GLuint equirect_tex;
+            glGenTextures(1, &equirect_tex);
+            glBindTexture(GL_TEXTURE_2D, equirect_tex);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, w, h, 0, GL_RGB, GL_FLOAT, data);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glGenerateMipmap(GL_TEXTURE_2D);
             stbi_image_free(data);
-            fprintf(stderr, "Loaded env map: %s (%dx%d)\n", ENV_MAP, w, h);
+            fprintf(stderr, "Loaded env map: %s (%dx%d), baking IBL...\n", ENV_MAP, w, h);
+
+            if (!ibl_bake(equirect_tex, &renderer->ibl))
+                fprintf(stderr, "Warning: IBL bake failed\n");
+            glDeleteTextures(1, &equirect_tex);  // cubemaps are the only consumers
         } else {
             fprintf(stderr, "Warning: could not load env map: %s\n", env_path);
+        }
+    }
+
+    // --- BRDF split-sum lookup texture (linear data — NOT sRGB) ---
+    renderer->brdf_lut_tex = 0;
+    {
+        char lut_path[1024];
+        resolve_exe_relative("textures/brdfLUT.png", lut_path, sizeof(lut_path));
+        int w, h, nc;
+        stbi_set_flip_vertically_on_load(true);
+        unsigned char* data = stbi_load(lut_path, &w, &h, &nc, 4);
+        if (data) {
+            glGenTextures(1, &renderer->brdf_lut_tex);
+            glBindTexture(GL_TEXTURE_2D, renderer->brdf_lut_tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            stbi_image_free(data);
+        } else {
+            fprintf(stderr, "Warning: could not load BRDF LUT: %s\n", lut_path);
         }
     }
 
@@ -389,8 +424,9 @@ void renderer_cleanup(OpenGLRenderer* renderer) {
     glDeleteBuffers(1, &renderer->static_ssbo);
     glDeleteBuffers(1, &renderer->draw_cmd_buffer);
     glDeleteBuffers(1, &renderer->ground_vbo);
-    if (renderer->env_map_tex) glDeleteTextures(1, &renderer->env_map_tex);
-    if (renderer->tex_array)   glDeleteTextures(1, &renderer->tex_array);
+    ibl_free(&renderer->ibl);
+    if (renderer->brdf_lut_tex) glDeleteTextures(1, &renderer->brdf_lut_tex);
+    if (renderer->tex_array)    glDeleteTextures(1, &renderer->tex_array);
     if (renderer->sky_program) glDeleteProgram(renderer->sky_program);
     glDeleteVertexArrays(1, &renderer->sky_vao);
     // dynamic_pos_buffer is owned by caller
@@ -406,26 +442,24 @@ void renderer_draw(OpenGLRenderer* renderer,
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Sky (fullscreen triangle behind everything)
-    if (renderer->sky_program && renderer->env_map_tex) {
-        glDepthMask(GL_FALSE);
-        glDisable(GL_DEPTH_TEST);
-        glUseProgram(renderer->sky_program);
-        glm::mat4 inv_proj_view = glm::inverse(projection * glm::mat4(glm::mat3(view)));
-        glUniformMatrix4fv(renderer->sky_uniform_inv_proj_view, 1, GL_FALSE, &inv_proj_view[0][0]);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, renderer->env_map_tex);
-        glUniform1i(renderer->sky_uniform_env_map, 0);
-        glBindVertexArray(renderer->sky_vao);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glDepthMask(GL_TRUE);
-        glEnable(GL_DEPTH_TEST);
-    }
+    // Texture units (shared across passes):
+    // 0 = diffuse irradiance cube, 1 = object texture array,
+    // 2 = glossy prefilter cube,   3 = BRDF LUT, 0 reused for sky env cube.
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, renderer->ibl.diffuse_irradiance);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, renderer->tex_array);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, renderer->ibl.glossy_prefilter);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, renderer->brdf_lut_tex);
 
     // Ground
     glUseProgram(renderer->ground_shader.program_id);
     glUniformMatrix4fv(renderer->ground_shader.uniform_projection, 1, GL_FALSE, &projection[0][0]);
     glUniformMatrix4fv(renderer->ground_shader.uniform_view,       1, GL_FALSE, &view[0][0]);
+    if (renderer->ground_shader.uniform_diffuse_irradiance >= 0)
+        glUniform1i(renderer->ground_shader.uniform_diffuse_irradiance, 0);
     glBindVertexArray(renderer->ground_vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
@@ -434,32 +468,19 @@ void renderer_draw(OpenGLRenderer* renderer,
     glUniformMatrix4fv(renderer->object_shader.uniform_projection, 1, GL_FALSE, &projection[0][0]);
     glUniformMatrix4fv(renderer->object_shader.uniform_view,       1, GL_FALSE, &view[0][0]);
 
-    glm::vec3 light_dir(0.5f, 0.7f, 0.3f);
-    if (renderer->object_shader.uniform_light_dir >= 0)
-        glUniform3fv(renderer->object_shader.uniform_light_dir, 1, &light_dir[0]);
-
     // Extract camera world position from view matrix: pos = -(R^T * t)
     glm::vec3 cam_pos = -glm::transpose(glm::mat3(view)) * glm::vec3(view[3]);
     if (renderer->object_shader.uniform_camera_pos >= 0)
         glUniform3fv(renderer->object_shader.uniform_camera_pos, 1, &cam_pos[0]);
 
-    // Env map (unit 0)
-    if (renderer->object_shader.uniform_has_env_map >= 0)
-        glUniform1i(renderer->object_shader.uniform_has_env_map, renderer->env_map_tex ? 1 : 0);
-    if (renderer->env_map_tex) {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, renderer->env_map_tex);
-        if (renderer->object_shader.uniform_env_map >= 0)
-            glUniform1i(renderer->object_shader.uniform_env_map, 0);
-    }
-
-    // Texture array (unit 1)
-    if (renderer->tex_array) {
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, renderer->tex_array);
-        if (renderer->object_shader.uniform_tex_array >= 0)
-            glUniform1i(renderer->object_shader.uniform_tex_array, 1);
-    }
+    if (renderer->object_shader.uniform_diffuse_irradiance >= 0)
+        glUniform1i(renderer->object_shader.uniform_diffuse_irradiance, 0);
+    if (renderer->object_shader.uniform_tex_array >= 0)
+        glUniform1i(renderer->object_shader.uniform_tex_array, 1);
+    if (renderer->object_shader.uniform_glossy_irradiance >= 0)
+        glUniform1i(renderer->object_shader.uniform_glossy_irradiance, 2);
+    if (renderer->object_shader.uniform_brdf_lut >= 0)
+        glUniform1i(renderer->object_shader.uniform_brdf_lut, 3);
 
     // Bind SSBOs
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, renderer->static_ssbo);
@@ -471,6 +492,22 @@ void renderer_draw(OpenGLRenderer* renderer,
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, renderer->draw_cmd_buffer);
     glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
                                 nullptr, renderer->num_objects, 0);
+
+    // Sky last at depth 1.0 — GL_LEQUAL lets it fill only uncovered pixels
+    if (renderer->sky_program && renderer->ibl.env_cubemap) {
+        glDepthMask(GL_FALSE);
+        glDepthFunc(GL_LEQUAL);
+        glUseProgram(renderer->sky_program);
+        glm::mat4 inv_proj_view = glm::inverse(projection * glm::mat4(glm::mat3(view)));
+        glUniformMatrix4fv(renderer->sky_uniform_inv_proj_view, 1, GL_FALSE, &inv_proj_view[0][0]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, renderer->ibl.env_cubemap);
+        glUniform1i(renderer->sky_uniform_env_map, 0);
+        glBindVertexArray(renderer->sky_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+    }
 
     glBindVertexArray(0);
 }

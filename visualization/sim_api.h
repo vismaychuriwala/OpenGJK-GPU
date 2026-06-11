@@ -18,6 +18,8 @@ typedef struct {
     int*    submesh_vert_counts; // [num_submeshes] vertex counts per sub-mesh
     int    mesh_id;
     float  tex_index;   // -1 = flat color, 0 = polytope rock texture
+    float  metallic;    // PBR metallic [0,1]
+    float  roughness;   // PBR roughness [0,1]
 } ObjectInitData;
 
 typedef struct {

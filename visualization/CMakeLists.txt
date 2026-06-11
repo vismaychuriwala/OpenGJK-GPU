@@ -42,6 +42,7 @@ add_executable(gjk_visualizer
     rendering/camera.cpp
     rendering/mesh_builder.cpp
     rendering/opengl_renderer.cpp
+    rendering/ibl_precompute.cpp
     integrate_final_gjk.cu
     include/tinyobj/tiny_obj_loader.cc
 )

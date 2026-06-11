@@ -3,16 +3,18 @@
 #include <glm/glm.hpp>
 #include "../sim_api.h"
 #include "mesh_builder.h"
+#include "ibl_precompute.h"
 
 struct ShaderProgram {
     GLuint program_id;
     GLint  uniform_projection;
     GLint  uniform_view;
-    GLint  uniform_light_dir;
     GLint  uniform_camera_pos;
-    GLint  uniform_env_map;
-    GLint  uniform_has_env_map;
     GLint  uniform_tex_array;
+    // IBL (split-sum) inputs
+    GLint  uniform_diffuse_irradiance;
+    GLint  uniform_glossy_irradiance;
+    GLint  uniform_brdf_lut;
 };
 
 struct OpenGLRenderer {
@@ -37,10 +39,11 @@ struct OpenGLRenderer {
     GLuint ground_vao;
     GLuint ground_vbo;
 
-    // Environment map (unit 0)
-    GLuint env_map_tex;
+    // Baked IBL cubemaps + BRDF lookup texture
+    IBLMaps ibl;
+    GLuint  brdf_lut_tex;
 
-    // Texture array: rock layers + OBJ layers (unit 1)
+    // Texture array: rock layers + OBJ layers
     GLuint tex_array;
 
     // Sky
@@ -66,3 +69,6 @@ void renderer_draw(OpenGLRenderer* renderer,
 
 GLuint load_shader(const char* path, GLenum shader_type);
 GLuint create_shader_program(const char* vert_path, const char* frag_path);
+
+// Resolve a path relative to the executable's directory (shaders, textures, …)
+void resolve_exe_relative(const char* relative, char* out, size_t out_size);
