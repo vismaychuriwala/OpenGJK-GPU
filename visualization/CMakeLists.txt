@@ -78,18 +78,35 @@ target_link_libraries(gjk_visualizer PRIVATE
     gdi32 user32 shell32
 )
 
-# Copy shaders and OBJ assets next to the executable after build
-add_custom_command(TARGET gjk_visualizer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders
-        $<TARGET_FILE_DIR:gjk_visualizer>/shaders
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/objs
-        $<TARGET_FILE_DIR:gjk_visualizer>/objs
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/env_maps
-        $<TARGET_FILE_DIR:gjk_visualizer>/env_maps
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/textures
-        $<TARGET_FILE_DIR:gjk_visualizer>/textures
-)
+# Copy shaders and asset directories next to the executable after build.
+# objs/, env_maps/ and textures/ hold large binaries and are gitignored, so a
+# fresh checkout may not have them. copy_directory fails hard on a missing
+# source, which would break the whole post-build step, so skip what is absent
+# and say so at configure time.
+set(_VIZ_ASSET_DIRS shaders objs env_maps textures)
+set(_VIZ_MISSING_ASSETS "")
+foreach(_dir IN LISTS _VIZ_ASSET_DIRS)
+    if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/${_dir})
+        add_custom_command(TARGET gjk_visualizer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_CURRENT_SOURCE_DIR}/${_dir}
+                $<TARGET_FILE_DIR:gjk_visualizer>/${_dir}
+        )
+    else()
+        list(APPEND _VIZ_MISSING_ASSETS ${_dir})
+    endif()
+endforeach()
+
+if(_VIZ_MISSING_ASSETS)
+    string(REPLACE ";" ", " _VIZ_MISSING_ASSETS_STR "${_VIZ_MISSING_ASSETS}")
+    message(WARNING
+        "gjk_visualizer: missing asset directories (${_VIZ_MISSING_ASSETS_STR}) "
+        "under ${CMAKE_CURRENT_SOURCE_DIR}. They will not be copied next to the "
+        "executable and the visualizer will fail to load those assets at runtime. "
+        "Add them and re-run CMake to enable the copy.")
+endif()
+
+# Make F5 launch the visualizer instead of the ALL_BUILD utility project, which
+# is not an executable and fails with "Access is denied".
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    PROPERTY VS_STARTUP_PROJECT gjk_visualizer)
